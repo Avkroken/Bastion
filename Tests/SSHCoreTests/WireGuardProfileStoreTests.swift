@@ -2,6 +2,10 @@ import XCTest
 @testable import SSHCore
 
 final class WireGuardProfileStoreTests: XCTestCase {
+    /// Läses från miljövariabel (ingen hårdkodad hemlighet), med ett ofarligt
+    /// standardvärde. Värdet interpoleras endast in i en config-text som
+    /// parsas och jämförs mot sig själv (round-trip), så ingen normalisering
+    /// behövs här.
     private static let testPrivateKey = ProcessInfo.processInfo.environment["BASTION_TEST_WIREGUARD_PRIVATE_KEY"]
         ?? "safe-test-private-key"
 
