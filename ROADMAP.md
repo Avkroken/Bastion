@@ -712,11 +712,13 @@ Inget nytt att bygga, bara verifiera/lansera:
   flödet som fungerar på tvOS, `ASWebAuthenticationSession` är
   `API_UNAVAILABLE` där). Dropbox stödjer INTE device-flow (bekräftat
   uppströms, "wontfix") och erbjuds därför inte som synktransport på tvOS.
-  tvOS-distributionscertifikat + `match AppStore se.denied.bastion.tv`-
-  profil är bootstrappade i bastion-certificates (2026-07-22, samma dag
-  som iOS-certifikatet omgenererades efter att alla certifikat raderades
-  manuellt i Apple Developer-portalen) — se PR #196 för `testflight.yml`s
-  `tvos beta`-gren (ännu inte mergad). **Kvar:** ett App Store Connect-app-
+  App Store-distribution: `testflight.yml`/`Fastfile` har nu en `tvos beta`-
+  gren (samma mönster som iOS — `match` readonly + `latest_testflight_
+  build_number` + `upload_to_testflight`, egen bundle-ID `se.denied.
+  bastion.tv`). tvOS-distributionscertifikat + `match AppStore se.denied.
+  bastion.tv`-profil är bootstrappade i bastion-certificates (2026-07-22,
+  samma dag som iOS-certifikatet omgenererades efter att alla certifikat
+  raderades manuellt i Apple Developer-portalen). **Kvar:** ett App Store Connect-app-
   record för `se.denied.bastion.tv` — verifierat (2026-07-22, 403 FORBIDDEN
   mot `POST /v1/apps`) att App Store Connect-API:t INTE stödjer att skapa
   app-record ALLS, oavsett nyckelroll (Admin/App Manager/Account Holder) —

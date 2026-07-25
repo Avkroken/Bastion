@@ -47,9 +47,11 @@ final class WireGuardProfileStoreTests: XCTestCase {
     /// lagrad JSON -> ny store-instans -> tillbaka till .conf-text, allt
     /// identiskt med originalet.
     func testFullRoundTripThroughStoreAndBackToConfText() throws {
+        let privateKey = ProcessInfo.processInfo.environment["BASTION_TEST_WIREGUARD_PRIVATE_KEY"]
+            ?? "safe-test-private-key"
         let text = """
         [Interface]
-        PrivateKey = \(Self.testPrivateKey)
+        PrivateKey = \(privateKey)
         Address = 10.0.0.2/24
 
         [Peer]
