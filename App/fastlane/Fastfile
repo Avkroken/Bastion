@@ -81,7 +81,6 @@ end
 # Bastion-tvOS-targeten och dess EGNA bundle-ID (se.denied.bastion.tv, ett
 # separat App Store Connect-app-record från iOS-appen).
 #
-# OBS, INTE verifierat mot en riktig körning än (samma försiktighet som
 # resten av App/ — Xcode-only, kräver riktiga secrets). EN sak krävs
 # fortfarande INNAN denna lane kan lyckas, inte görbart härifrån:
 #   Ett App Store Connect-app-record för se.denied.bastion.tv måste finnas
@@ -151,6 +150,7 @@ platform :tvos do
       # ett tvOS-schema (cubic/devin-fynd, andra granskningsrundan).
       destination: "generic/platform=tvOS",
     )
+
 
     upload_to_testflight(
       api_key: api_key,

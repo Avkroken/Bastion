@@ -2,28 +2,10 @@ import XCTest
 @testable import SSHCore
 
 final class WireGuardConfigTests: XCTestCase {
-    /// Läses från miljövariabel (ingen hårdkodad hemlighet), med ett ofarligt
-    /// standardvärde. Trimmas och `#`-kommentarer strippas för att matcha hur
-    /// `WireGuardConfig(text:)` normaliserar värden — annars kan ett externt
-    /// satt värde med blanksteg eller `#` få testerna att falla falskt.
-    private static let testPrivateKey = WireGuardConfigTests.normalizedForConfig(
-        ProcessInfo.processInfo.environment["BASTION_TEST_WIREGUARD_PRIVATE_KEY"]
-            ?? "safe-test-private-key"
-    )
-    private static let testPresharedKey = WireGuardConfigTests.normalizedForConfig(
-        ProcessInfo.processInfo.environment["BASTION_TEST_WIREGUARD_PRESHARED_KEY"]
-            ?? "safe-test-preshared-key"
-    )
-
-    /// Efterliknar `WireGuardConfig(text:)`: strippar inledande `#`-kommentar
-    /// och trimmar omgivande blanksteg, så att `testPrivateKey`/`testPresharedKey`
-    /// alltid matchar det parsern faktiskt lagrar.
-    private static func normalizedForConfig(_ value: String) -> String {
-        value
-            .split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
-            .first.map(String.init)?
-            .trimmingCharacters(in: .whitespaces) ?? ""
-    }
+    private static let testPrivateKey = ProcessInfo.processInfo.environment["BASTION_TEST_WIREGUARD_PRIVATE_KEY"]
+        ?? "safe-test-private-key"
+    private static let testPresharedKey = ProcessInfo.processInfo.environment["BASTION_TEST_WIREGUARD_PRESHARED_KEY"]
+        ?? "safe-test-preshared-key"
 
     /// Realistisk exempelkonfiguration i det dokumenterade formatet
     /// (wg(8)/wg-quick(8), man7.org) — kommentarer, flera peers, blandad

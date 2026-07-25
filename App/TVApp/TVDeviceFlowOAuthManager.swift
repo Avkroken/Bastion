@@ -167,6 +167,14 @@ enum TVDeviceFlowOAuthManager {
                 // anroparen redan gett upp (verklig bugg i förra rundans
                 // "fortsätt vid alla fel"-fix).
                 throw CancellationError()
+            } catch let urlError as URLError where urlError.code == .cancelled {
+                // URLSession.data(for:) kastar URLError(.cancelled) vid Task-
+                // avbrott, inte CancellationError — propagera det uttryckligen
+                // innan isTransient-checken (försvarskodning: .cancelled FINNS
+                // inte i isTransient-allowlistan idag, men denna explicit case
+                // gör att vi aldrig riskerar cubic-P2/P3-regression om någon
+                // råkar lägga till .cancelled i isTransient-listan framöver).
+                throw urlError
             } catch let urlError as URLError where Self.isTransient(urlError) {
                 // Bara RIKTIGT övergående nätverksfel (timeout, tapp
                 // anslutning, ...) ska backa av och försöka igen — RFC 8628
