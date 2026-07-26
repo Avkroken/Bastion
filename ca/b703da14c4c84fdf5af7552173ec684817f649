@@ -1,0 +1,19 @@
+.github/workflows/xcode.yml
+  s_96cd0bd017048c::t_cf014235e9a073 158-181,183-184,190,195-196,203-207,209-211,213-215,220,222
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "cab703da14c4c84fdf5af7552173ec684817f649",
+  "prompts": {},
+  "sessions": {
+    "s_96cd0bd017048c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "32b91534-72ef-4e62-b9d0-d326b1a5c276",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
