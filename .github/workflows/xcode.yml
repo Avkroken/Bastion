@@ -155,44 +155,74 @@ jobs:
           echo "udid=$udid" >> "$GITHUB_OUTPUT"
           xcrun simctl list devices | grep -F "$udid"
 
+      # xcodebuild löser upp HELA paketgrafen för projektet, inte bara det
+      # schema som byggs — så även ett rent iOS-bygge kan falla på en
+      # saknad tvOS-runtime. Samma guardade steg som build-jobbet ovan.
+      - name: Ladda ner tvOS-simulatorplattform
+        run: |
+          if xcrun simctl list runtimes available 2>/dev/null | grep -q "tvOS"; then
+            echo "tvOS-runtime redan tillgänglig, hoppar över nedladdning."
+            exit 0
+          fi
+          for attempt in 1 2 3; do
+            if xcodebuild -downloadPlatform tvOS; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "Försök $attempt misslyckades, väntar innan omförsök..."
+              sleep 15
+            fi
+          done
+          echo "Alla nedladdningsförsök misslyckades." >&2
+          exit 1
+
+      # UDID:t går via env i stället för direkt ${{ }}-expansion i skalet
+      # (zizmor template-injection). Värdet kommer från vår egen simctl-
+      # output, men mönstret ska vara rätt oavsett.
       - name: Bygg iOS för simulatorn
+        env:
+          SIM_UDID: ${{ steps.sim.outputs.udid }}
         run: |
           set -euo pipefail
           xcodebuild build \
             -project App/Bastion.xcodeproj \
             -scheme Bastion \
-            -destination "id=${{ steps.sim.outputs.udid }}" \
+            -destination "id=$SIM_UDID" \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO
 
       - name: Starta appen i simulatorn
+        env:
+          SIM_UDID: ${{ steps.sim.outputs.udid }}
         run: |
           set -euo pipefail
-          udid="${{ steps.sim.outputs.udid }}"
           app=$(find build/Build/Products -maxdepth 2 -name "Bastion.app" -type d | head -1)
           [ -n "$app" ] || { echo "hittade ingen Bastion.app under build/" >&2; exit 1; }
           echo "installerar $app"
 
-          xcrun simctl boot "$udid" || true      # redan bootad är inget fel
-          xcrun simctl bootstatus "$udid" -b
-          xcrun simctl install "$udid" "$app"
-          xcrun simctl launch "$udid" se.denied.bastion
-          sleep 8                                 # låt första vyn rendera klart
+          xcrun simctl boot "$SIM_UDID" || true      # redan bootad är inget fel
+          xcrun simctl bootstatus "$SIM_UDID" -b
+          xcrun simctl install "$SIM_UDID" "$app"
+          xcrun simctl launch "$SIM_UDID" se.denied.bastion
+          sleep 8                                    # låt första vyn rendera klart
 
+      # Körs även när bygget eller starten fallerat — då är en bild av
+      # kraschskärmen ofta snabbaste vägen till varför. Kräver bara att
+      # simulatorn faktiskt hittades, annars finns inget att fotografera.
       - name: Ta skärmbilder (ljust + mörkt)
+        if: ${{ always() && steps.sim.outcome == 'success' }}
+        env:
+          SIM_UDID: ${{ steps.sim.outputs.udid }}
         run: |
           set -euo pipefail
-          udid="${{ steps.sim.outputs.udid }}"
           mkdir -p screenshots
           for mode in light dark; do
-            xcrun simctl ui "$udid" appearance "$mode"
+            xcrun simctl ui "$SIM_UDID" appearance "$mode" || true
             sleep 3
-            xcrun simctl io "$udid" screenshot "screenshots/start-$mode.png"
+            xcrun simctl io "$SIM_UDID" screenshot "screenshots/start-$mode.png"
           done
           ls -la screenshots
 
-      # Körs även när något ovan fallerat: en skärmbild av kraschskärmen är
-      # ofta det snabbaste sättet att se VARFÖR appen inte startade.
       - name: Ladda upp skärmbilder
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
