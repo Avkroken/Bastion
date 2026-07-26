@@ -110,3 +110,93 @@ jobs:
         run: swift build
       - name: swift test (SSHCore)
         run: swift test
+
+  # Visuell verifiering utan Mac. Bygget ovan bevisar bara att koden
+  # kompilerar — det fångar inte att appen kraschar vid start eller att
+  # layouten gått sönder. Detta jobb bootar en iOS-simulator, installerar
+  # appen, startar den och laddar upp skärmbilder (ljust + mörkt läge) som
+  # artefakter, så en PR kan granskas visuellt från vilken maskin som helst.
+  ios-screenshots:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Välj Xcode 26.4.1
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: "26.4.1"
+
+      - name: Installera XcodeGen
+        run: brew install xcodegen
+
+      - name: Generera Xcode-projekt
+        run: cd App && xcodegen generate
+
+      # Simulatornamn ändras mellan Xcode-versioner, så hårdkoda inte "iPhone
+      # 17" — välj den första tillgängliga iPhone-enheten i stället.
+      - name: Välj simulator
+        id: sim
+        run: |
+          set -euo pipefail
+          udid=$(xcrun simctl list devices available -j | jq -r '
+            [ .devices
+              | to_entries[]
+              | select(.key | test("iOS"))
+              | .value[]
+              | select(.isAvailable and (.name | test("iPhone")))
+            ] | .[0].udid // empty')
+          if [ -z "$udid" ]; then
+            echo "Hittade ingen tillgänglig iPhone-simulator. Tillgängligt:" >&2
+            xcrun simctl list devices available >&2
+            exit 1
+          fi
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+          xcrun simctl list devices | grep -F "$udid"
+
+      - name: Bygg iOS för simulatorn
+        run: |
+          set -euo pipefail
+          xcodebuild build \
+            -project App/Bastion.xcodeproj \
+            -scheme Bastion \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Starta appen i simulatorn
+        run: |
+          set -euo pipefail
+          udid="${{ steps.sim.outputs.udid }}"
+          app=$(find build/Build/Products -maxdepth 2 -name "Bastion.app" -type d | head -1)
+          [ -n "$app" ] || { echo "hittade ingen Bastion.app under build/" >&2; exit 1; }
+          echo "installerar $app"
+
+          xcrun simctl boot "$udid" || true      # redan bootad är inget fel
+          xcrun simctl bootstatus "$udid" -b
+          xcrun simctl install "$udid" "$app"
+          xcrun simctl launch "$udid" se.denied.bastion
+          sleep 8                                 # låt första vyn rendera klart
+
+      - name: Ta skärmbilder (ljust + mörkt)
+        run: |
+          set -euo pipefail
+          udid="${{ steps.sim.outputs.udid }}"
+          mkdir -p screenshots
+          for mode in light dark; do
+            xcrun simctl ui "$udid" appearance "$mode"
+            sleep 3
+            xcrun simctl io "$udid" screenshot "screenshots/start-$mode.png"
+          done
+          ls -la screenshots
+
+      # Körs även när något ovan fallerat: en skärmbild av kraschskärmen är
+      # ofta det snabbaste sättet att se VARFÖR appen inte startade.
+      - name: Ladda upp skärmbilder
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ios-skarmbilder
+          path: screenshots/
+          if-no-files-found: warn
