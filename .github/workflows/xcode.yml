@@ -110,3 +110,123 @@ jobs:
         run: swift build
       - name: swift test (SSHCore)
         run: swift test
+
+  # Visuell verifiering utan Mac. Bygget ovan bevisar bara att koden
+  # kompilerar — det fångar inte att appen kraschar vid start eller att
+  # layouten gått sönder. Detta jobb bootar en iOS-simulator, installerar
+  # appen, startar den och laddar upp skärmbilder (ljust + mörkt läge) som
+  # artefakter, så en PR kan granskas visuellt från vilken maskin som helst.
+  ios-screenshots:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Välj Xcode 26.4.1
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: "26.4.1"
+
+      - name: Installera XcodeGen
+        run: brew install xcodegen
+
+      - name: Generera Xcode-projekt
+        run: cd App && xcodegen generate
+
+      # Simulatornamn ändras mellan Xcode-versioner, så hårdkoda inte "iPhone
+      # 17" — välj den första tillgängliga iPhone-enheten i stället.
+      - name: Välj simulator
+        id: sim
+        run: |
+          set -euo pipefail
+          udid=$(xcrun simctl list devices available -j | jq -r '
+            [ .devices
+              | to_entries[]
+              | select(.key | test("iOS"))
+              | .value[]
+              | select(.isAvailable and (.name | test("iPhone")))
+            ] | .[0].udid // empty')
+          if [ -z "$udid" ]; then
+            echo "Hittade ingen tillgänglig iPhone-simulator. Tillgängligt:" >&2
+            xcrun simctl list devices available >&2
+            exit 1
+          fi
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+          xcrun simctl list devices | grep -F "$udid"
+
+      # xcodebuild löser upp HELA paketgrafen för projektet, inte bara det
+      # schema som byggs — så även ett rent iOS-bygge kan falla på en
+      # saknad tvOS-runtime. Samma guardade steg som build-jobbet ovan.
+      - name: Ladda ner tvOS-simulatorplattform
+        run: |
+          if xcrun simctl list runtimes available 2>/dev/null | grep -q "tvOS"; then
+            echo "tvOS-runtime redan tillgänglig, hoppar över nedladdning."
+            exit 0
+          fi
+          for attempt in 1 2 3; do
+            if xcodebuild -downloadPlatform tvOS; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "Försök $attempt misslyckades, väntar innan omförsök..."
+              sleep 15
+            fi
+          done
+          echo "Alla nedladdningsförsök misslyckades." >&2
+          exit 1
+
+      # UDID:t går via env i stället för direkt ${{ }}-expansion i skalet
+      # (zizmor template-injection). Värdet kommer från vår egen simctl-
+      # output, men mönstret ska vara rätt oavsett.
+      - name: Bygg iOS för simulatorn
+        env:
+          SIM_UDID: ${{ steps.sim.outputs.udid }}
+        run: |
+          set -euo pipefail
+          xcodebuild build \
+            -project App/Bastion.xcodeproj \
+            -scheme Bastion \
+            -destination "id=$SIM_UDID" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Starta appen i simulatorn
+        env:
+          SIM_UDID: ${{ steps.sim.outputs.udid }}
+        run: |
+          set -euo pipefail
+          app=$(find build/Build/Products -maxdepth 2 -name "Bastion.app" -type d | head -1)
+          [ -n "$app" ] || { echo "hittade ingen Bastion.app under build/" >&2; exit 1; }
+          echo "installerar $app"
+
+          xcrun simctl boot "$SIM_UDID" || true      # redan bootad är inget fel
+          xcrun simctl bootstatus "$SIM_UDID" -b
+          xcrun simctl install "$SIM_UDID" "$app"
+          xcrun simctl launch "$SIM_UDID" se.denied.bastion
+          sleep 8                                    # låt första vyn rendera klart
+
+      # Körs även när bygget eller starten fallerat — då är en bild av
+      # kraschskärmen ofta snabbaste vägen till varför. Kräver bara att
+      # simulatorn faktiskt hittades, annars finns inget att fotografera.
+      - name: Ta skärmbilder (ljust + mörkt)
+        if: ${{ always() && steps.sim.outcome == 'success' }}
+        env:
+          SIM_UDID: ${{ steps.sim.outputs.udid }}
+        run: |
+          set -euo pipefail
+          mkdir -p screenshots
+          for mode in light dark; do
+            xcrun simctl ui "$SIM_UDID" appearance "$mode" || true
+            sleep 3
+            xcrun simctl io "$SIM_UDID" screenshot "screenshots/start-$mode.png"
+          done
+          ls -la screenshots
+
+      - name: Ladda upp skärmbilder
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ios-skarmbilder
+          path: screenshots/
+          if-no-files-found: warn
