@@ -1,1 +1,2 @@
-gem "fastlane-plugin-sentry"
+# Autogenererad av fastlane. Inga plugins används just nu —
+# fastlane-plugin-sentry togs bort när Sentry avvecklades.
