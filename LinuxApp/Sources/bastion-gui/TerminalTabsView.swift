@@ -127,8 +127,9 @@ private struct TerminalPaneBody: View {
             HStack {
                 TextField("Kommando…", text: $input)
                     .onSubmit { submit() }
+                    .disabled(!controller.isActive)
                 Button("Skicka") { submit() }
-                    .disabled(input.isEmpty)
+                    .disabled(input.isEmpty || !controller.isActive)
             }
         }
     }
