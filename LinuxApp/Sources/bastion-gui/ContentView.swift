@@ -7,6 +7,7 @@ import SwiftCrossUI
 /// tillsammans, anpassat till `NavigationSplitView` utan iOS-sheets.
 @MainActor struct ContentView: View {
     @State private var model = HostListModel()
+    @State private var settings = SettingsModel()
     @State private var selectedHostID: UUID?
     @State private var editingHost: Host?
     @State private var showEditor = false
@@ -14,6 +15,7 @@ import SwiftCrossUI
     @State private var showWireGuard = false
     @State private var showTailscale = false
     @State private var showS3 = false
+    @State private var showSettings = false
     @State private var searchText = ""
     @State private var wakeMessages: [UUID: String] = [:]
     @State private var showTelnetConnect = false
@@ -44,7 +46,7 @@ import SwiftCrossUI
             sidebar
         } detail: {
             if let host = model.hosts.first(where: { $0.id == selectedHostID }) {
-                HostDetailView(host: host, store: model.store, onHostUpdated: { model.save($0) })
+                HostDetailView(host: host, store: model.store, toggles: settings.toggles, onHostUpdated: { model.save($0) })
             } else {
                 ContentUnavailableView {
                     Text("Ingen värd vald")
@@ -93,6 +95,13 @@ import SwiftCrossUI
         }
         .sheet(isPresented: $showS3) {
             S3ConnectionListView()
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView(
+                toggles: settings.toggles,
+                onSave: { settings.save($0) },
+                onClose: { showSettings = false }
+            )
         }
         // Sätter INTE showTelnetSession direkt i onConnect — den sheeten är
         // fortfarande på väg att stängas då, och att öppna nästa sheet
@@ -191,6 +200,7 @@ import SwiftCrossUI
                 Button("Telnet") { showTelnetConnect = true }
                 Button("Snabbanslutning") { showQuickConnect = true }
                 Spacer()
+                Button("Inställningar") { showSettings = true }
             }
 
             TextField("Sök…", text: $searchText)

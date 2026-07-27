@@ -6,6 +6,7 @@ import SwiftCrossUI
 struct HostDetailView: View {
     let host: Host
     var store: HostStore? = nil
+    var toggles: FeatureToggles = FeatureToggles()
     var onHostUpdated: (Host) -> Void = { _ in }
     @State private var password = ""
     @State private var connected = false
@@ -26,12 +27,24 @@ struct HostDetailView: View {
                 }
                 Spacer()
                 if connected || !needsPassword {
-                    Button("Docker") { showDocker = true }
-                    Button("Snippets") { showSnippets = true }
-                    Button("Bibliotek") { showCommandLibrary = true }
-                    Button("Filer") { showSFTPBrowser = true }
-                    Button("Tunnlar") { showPortForward = true }
-                    Button("SSH-nyckel") { showKeyDeploy = true }
+                    if toggles.showDocker {
+                        Button("Docker") { showDocker = true }
+                    }
+                    if toggles.showSnippets {
+                        Button("Snippets") { showSnippets = true }
+                    }
+                    if toggles.showCommandLibrary {
+                        Button("Bibliotek") { showCommandLibrary = true }
+                    }
+                    if toggles.showSFTPBrowser {
+                        Button("Filer") { showSFTPBrowser = true }
+                    }
+                    if toggles.showPortForward {
+                        Button("Tunnlar") { showPortForward = true }
+                    }
+                    if toggles.showKeyDeploy {
+                        Button("SSH-nyckel") { showKeyDeploy = true }
+                    }
                 }
             }
 
