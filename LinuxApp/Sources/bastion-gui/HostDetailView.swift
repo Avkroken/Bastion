@@ -41,7 +41,7 @@ struct HostDetailView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     DashboardView(host: host, password: resolvedPassword, store: store)
                     Divider()
-                    TerminalSessionView(host: host, password: resolvedPassword, initialCommand: host.startupCommand, store: store)
+                    TerminalTabsView(host: host, password: resolvedPassword, initialCommand: host.startupCommand, store: store)
                 }
             }
         }
