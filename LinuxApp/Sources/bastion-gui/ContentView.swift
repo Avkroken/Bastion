@@ -99,6 +99,7 @@ import SwiftCrossUI
         .sheet(isPresented: $showSettings) {
             SettingsView(
                 toggles: settings.toggles,
+                errorMessage: settings.saveError,
                 onSave: { settings.save($0) },
                 onClose: { showSettings = false }
             )

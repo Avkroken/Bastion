@@ -1,10 +1,12 @@
 import Foundation
 
-/// Vilka valfria funktionsknappar en klient visar per värd (Docker, Snippets,
-/// Kommandobibliotek, Filer, Tunnlar, SSH-nyckeldistribution). Alla standard
-/// `true` så befintliga installationer inte tappar knappar vid uppgradering.
-/// Persisteras separat från `HostStore` (`~/.bastion/settings.json`) eftersom
-/// det är klientinställning, inte synkad värddata.
+/// Vilka valfria funktionsknappar den här klienten visar, för ALLA värdar
+/// (Docker, Snippets, Kommandobibliotek, Filer, Tunnlar, SSH-
+/// nyckeldistribution) — klientbred inställning, inte per värd. Alla
+/// standard `true` så befintliga installationer inte tappar knappar vid
+/// uppgradering. Persisteras separat från `HostStore`
+/// (`~/.bastion/settings.json`) eftersom det är klientinställning, inte
+/// synkad värddata.
 public struct FeatureToggles: Codable, Equatable, Sendable {
     public var showDocker: Bool
     public var showSnippets: Bool
@@ -56,30 +58,39 @@ public final class AppSettingsStore {
         lock.withLock { toggles }
     }
 
-    public func update(_ newValue: FeatureToggles) {
-        lock.withLock {
+    /// Kastar och lämnar `current()` OFÖRÄNDRAD (föregående värde) om
+    /// skrivning till disk misslyckas — annars hade GUI:t tyst visat ett
+    /// värde som reverterar till det gamla efter omstart, utan att
+    /// användaren fått veta att det aldrig sparades.
+    public func update(_ newValue: FeatureToggles) throws {
+        try lock.withLock {
+            let previous = toggles
             toggles = newValue
-            persist()
+            do {
+                try persist()
+            } catch {
+                toggles = previous
+                throw error
+            }
         }
     }
 
     // Anropas med låset hållet.
-    private func persist() {
+    private func persist() throws {
         guard let path else { return }
         let dir = (path as NSString).deletingLastPathComponent
-        try? FileManager.default.createDirectory(
+        try FileManager.default.createDirectory(
             atPath: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        if let data = try? encoder.encode(toggles) {
-            try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
-        }
+        let data = try encoder.encode(toggles)
+        try data.write(to: URL(fileURLWithPath: path), options: .atomic)
     }
 }
 
 private extension NSLock {
-    func withLock<T>(_ body: () -> T) -> T {
+    func withLock<T>(_ body: () throws -> T) rethrows -> T {
         lock(); defer { unlock() }
-        return body()
+        return try body()
     }
 }
