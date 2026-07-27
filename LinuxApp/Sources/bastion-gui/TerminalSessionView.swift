@@ -56,12 +56,27 @@ final class TerminalController: ObservableObject {
             for try await chunk in shell.output {
                 buffer.feed(chunk.text)
             }
-        } catch {
+            // Strömmen tar slut normalt när fjärrshellen stänger (t.ex. `exit`
+            // eller Ctrl+D) — channelInactive avslutar den utan fel. Utan denna
+            // gren blev sessionen tyst död: ingen chain-stängning, ingen
+            // statusMessage, indata gick fortfarande att skriva i men träffade
+            // en stängd shell.
+            self.shell = nil
             await self.chain?.close()
+            self.chain = nil
+            guard !isStopped else { return }
+            statusMessage = "Sessionen avslutades."
+        } catch {
+            self.shell = nil
+            await self.chain?.close()
+            self.chain = nil
             guard !isStopped else { return }
             buffer.feed("\r\n[bastion] fel: \(error)\r\n")
+            statusMessage = "Sessionen avslutades."
         }
     }
+
+    var isActive: Bool { shell != nil }
 
     func sendLine(_ text: String) {
         guard !text.isEmpty else { return }
@@ -104,8 +119,9 @@ struct TerminalSessionView: View {
             HStack {
                 TextField("Kommando…", text: $input)
                     .onSubmit { submit() }
+                    .disabled(!controller.isActive)
                 Button("Skicka") { submit() }
-                    .disabled(input.isEmpty)
+                    .disabled(input.isEmpty || !controller.isActive)
             }
         }
         .padding()
