@@ -1,4 +1,6 @@
 import Foundation
+import Gtk
+import GtkBackend
 import SSHCore
 import SwiftCrossUI
 
@@ -22,9 +24,13 @@ import SwiftCrossUI
 /// `@State` gör att den bara kör en gång per genuin värd-identitet (`onChange`
 /// -semantik, inte per omritning), och avbryts korrekt av `.onDisappear`.
 ///
-/// SwiftCrossUI saknar swipe-actions/DragGesture i sitt publika API (se
-/// ROADMAP.md), så flikbyte sker via knapptryck i flikraden, inte genom att
-/// svepa mellan fönster. Den saknar också en `.id()`-vymodifierare (till
+/// SwiftCrossUI saknar swipe-actions/DragGesture i sitt PUBLIKA API (se
+/// ROADMAP.md) — flikbyte sker primärt via knapptryck. Äkta touchscreen-
+/// svep finns ÄNDÅ: `.inspect(.onCreate)` (GtkBackend) ger oss vyns
+/// underliggande `Gtk.Widget`, och `GestureSwipeBridge.swift` kopplar en
+/// riktig `GtkGestureSwipe` på den via rå GLib-signaler (swift-cross-uis
+/// egen `Gtk`-modul har ingen Swift-wrapper för just den gesten). Den saknar
+/// också en `.id()`-vymodifierare (till
 /// skillnad från riktiga SwiftUI) — `State`s `update(with:previousValue:)`
 /// återanvänder ALLTID föregående lagring oavsett vad konstruktorn nyss fick,
 /// så ett underliggande `TerminalPane`-hjälpvy hade aldrig bytt vilken
@@ -70,6 +76,26 @@ struct TerminalTabsView: View {
         .onDisappear {
             for tab in tabs { tab.controller.stop() }
         }
+        // Svep vänster/höger byter flik — samma riktningskonvention som
+        // sidbläddring på touchscreens (svep vänster = nästa, höger =
+        // föregående). Tröskeln på hastighet + att horisontell rörelse
+        // dominerar över vertikal filtrerar bort en vanlig lodrät
+        // scroll-gest i terminalbufferten ovanför.
+        .inspect(.onCreate) { [self] (widget: Gtk.Widget) in
+            attachSwipeGesture(to: widget) { velocityX, velocityY in
+                guard abs(velocityX) > abs(velocityY), abs(velocityX) > 200 else { return }
+                selectAdjacent(offset: velocityX < 0 ? 1 : -1)
+            }
+        }
+    }
+
+    private func selectAdjacent(offset: Int) {
+        guard let currentID = selectedTabID,
+              let index = tabs.firstIndex(where: { $0.id == currentID })
+        else { return }
+        let target = index + offset
+        guard tabs.indices.contains(target) else { return }
+        select(tabs[target])
     }
 
     private var tabBar: some View {
