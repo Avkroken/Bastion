@@ -28,7 +28,6 @@ name: TestFlight-uppladdning
 #   MATCH_PASSWORD                  Lösenfras som krypterar bastion-certificates
 #   MATCH_DEPLOY_KEY                Privat SSH-nyckel, skrivbehörig deploy key
 #                                   på blixten85/bastion-certificates
-#   SENTRY_AUTH_TOKEN               Auth token för Sentry debug files upload
 on:
   workflow_dispatch:
     inputs:
@@ -100,7 +99,6 @@ jobs:
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           APP_STORE_CONNECT_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_KEY_CONTENT }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           GIT_SSH_COMMAND: "ssh -i ~/.ssh/match_deploy_key -o IdentitiesOnly=yes"
         # `fastlane ios beta`/`fastlane tvos beta` — INTE bara `fastlane beta`
         # (som alltid kör default_platform, :ios) — annars hade tvOS-valet i

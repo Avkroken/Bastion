@@ -42,9 +42,9 @@ jobs:
       # tvOS-schemat byggs — Xcodes nya byggsystem beräknar paketgrafen för
       # ALLA targets i .xcodeproj:en (ComputePackagePrebuildTargetDependency-
       # Graph) oavsett vilket scheme som faktiskt byggs, så en saknad tvOS-SDK
-      # bröt även iOS-bygget nedan ("Unable to resolve module dependency:
-      # 'Sentry'", PR #191 — tvOS-targeten fanns i projektet, men
-      # plattformen var inte nedladdad på runnern än).
+      # bröt även iOS-bygget nedan med "Unable to resolve module dependency"
+      # (PR #191 — tvOS-targeten fanns i projektet, men plattformen var inte
+      # nedladdad på runnern än).
       # `-downloadPlatform` misslyckas ibland transient på en färsk runner
       # med "Unable to connect to simulator" (CoreSimulator-daemonen inte
       # redo än) — hoppar över nedladdningen helt om tvOS-runtime redan
