@@ -4,10 +4,23 @@ import SwiftCrossUI
 
 /// Flera samtidiga terminalsessioner mot samma värd, växlingsbara via en
 /// flikrad. Varje flik har sin egen `TerminalController` vars anslutning
-/// (`start()`) körs som ett fristående `Task` skapat vid flik-skapande —
-/// INTE via SwiftCrossUIs `.task`-modifier, som bara körs för vyer som
-/// faktiskt renderas. Med `.task` hade en bakgrundsflik tappat sin
-/// anslutning varje gång man växlade bort från den.
+/// (`start()`) körs som ett fristående `Task`, oberoende av om fliken
+/// renderas — annars hade en bakgrundsflik tappat sin anslutning varje gång
+/// man växlade bort från den.
+///
+/// Den FÖRSTA fliken skapas/startas INTE i `init` — SwiftCrossUIs `@State`
+/// överlever att vy-structen byggs om (varje gång FÖRÄLDERN, `HostDetailView`,
+/// ritar om sin `body` av vilken anledning som helst, t.ex. Dashboard-
+/// pollning, konstrueras en NY `TerminalTabsView`-instans och `init` körs
+/// om), men den GAMLA `@State`-lagringen vinner ändå över den nya via
+/// `StateImpl.update(with:previousValue:)`. Att starta en SSH-anslutning i
+/// `init` hade alltså läckt en ny, omedelbart bortkastad anslutning vid
+/// VARJE omritning (cubic/CodeRabbit-fynd, PR #214) — den skapade
+/// controllern i just den körningen av `init` skrivs över och tappas, men
+/// `Task { await controller.start() }` hann redan fyras på den. Lösningen:
+/// bootstrappa första fliken i en `.task(id: host.id)` — dess EGNA interna
+/// `@State` gör att den bara kör en gång per genuin värd-identitet (`onChange`
+/// -semantik, inte per omritning), och avbryts korrekt av `.onDisappear`.
 ///
 /// SwiftCrossUI saknar swipe-actions/DragGesture i sitt publika API (se
 /// ROADMAP.md), så flikbyte sker via knapptryck i flikraden, inte genom att
@@ -33,23 +46,10 @@ struct TerminalTabsView: View {
     let initialCommand: String?
     let store: HostStore?
 
-    @State private var tabs: [Tab]
-    @State private var selectedTabID: UUID
+    @State private var tabs: [Tab] = []
+    @State private var selectedTabID: UUID?
     @State private var selectedController: TerminalController?
     @State private var nextNumber = 2
-
-    init(host: Host, password: String?, initialCommand: String? = nil, store: HostStore? = nil) {
-        self.host = host
-        self.password = password
-        self.initialCommand = initialCommand
-        self.store = store
-        let controller = TerminalController(host: host, password: password, initialCommand: initialCommand, store: store)
-        let first = Tab(controller: controller, title: "1")
-        self._tabs = State(wrappedValue: [first])
-        self._selectedTabID = State(wrappedValue: first.id)
-        self._selectedController = State(wrappedValue: controller)
-        Task { @MainActor in await controller.start() }
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -57,6 +57,15 @@ struct TerminalTabsView: View {
             if let selectedController {
                 TerminalPaneBody(controller: selectedController)
             }
+        }
+        .task(id: host.id) {
+            guard tabs.isEmpty else { return }
+            let controller = TerminalController(host: host, password: password, initialCommand: initialCommand, store: store)
+            let first = Tab(controller: controller, title: "1")
+            tabs = [first]
+            selectedTabID = first.id
+            selectedController = controller
+            await controller.start()
         }
         .onDisappear {
             for tab in tabs { tab.controller.stop() }
