@@ -1,0 +1,22 @@
+LinuxApp/Sources/bastion-gui/TerminalTabsView.swift
+  s_426e01ebb88f59::t_351a75f22cbd5f 1-9,11-13,24-37,39-49,51-56,59-70,72-81,89-94,96-102,104-107,113-162
+  s_426e01ebb88f59::t_eb297a8c7b932f 10,14-23,38,50,57-58,71,82-88,95,103,108-112
+LinuxApp/Sources/bastion-gui/HostDetailView.swift
+  s_426e01ebb88f59::t_36b94792cd6d02 44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "e449a8ca4d08c517477d0fe9c6d22c0ab5264d51",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
