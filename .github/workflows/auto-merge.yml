@@ -79,6 +79,12 @@ jobs:
       - name: Auto-merge Claude AI PRs once checks pass
         run: |
           gh pr ready "$PR_URL" || true
+          # Buffer mot en känd race: om CI redan är grön när det här jobbet
+          # startar mergar `gh pr merge --auto` direkt, inte "när det blir
+          # grönt" — en agent som hinner pusha en uppföljande commit sekunder
+          # senare tappar den då tyst. 90s ger tid att hinna färdigt innan
+          # merge-försöket görs. Se blixten85/repo-standard#19.
+          sleep 90
           for i in 1 2 3 4 5; do
             gh pr merge --auto --squash --delete-branch "$PR_URL" && break
             echo "attempt $i failed, retrying in 60s..."
@@ -95,6 +101,7 @@ jobs:
       - name: Auto-merge trusted fix PRs once checks pass
         run: |
           gh pr ready "$PR_URL" || true
+          sleep 90 # se claude-jobbet ovan för varför
           for i in 1 2 3 4 5; do
             gh pr merge --auto --squash --delete-branch "$PR_URL" && break
             echo "attempt $i failed, retrying in 60s..."
@@ -111,6 +118,7 @@ jobs:
       - name: Auto-merge Codex AI PRs once checks pass
         run: |
           gh pr ready "$PR_URL" || true
+          sleep 90 # se claude-jobbet ovan för varför
           for i in 1 2 3 4 5; do
             gh pr merge --auto --squash --delete-branch "$PR_URL" && break
             echo "attempt $i failed, retrying in 60s..."
@@ -127,6 +135,7 @@ jobs:
       - name: Auto-merge Copilot PRs once checks pass
         run: |
           gh pr ready "$PR_URL" || true
+          sleep 90 # se claude-jobbet ovan för varför
           for i in 1 2 3 4 5; do
             gh pr merge --auto --squash --delete-branch "$PR_URL" && break
             echo "attempt $i failed, retrying in 60s..."
@@ -135,3 +144,4 @@ jobs:
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ github.token }}
+
