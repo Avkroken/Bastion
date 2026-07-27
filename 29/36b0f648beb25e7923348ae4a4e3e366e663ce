@@ -1,0 +1,21 @@
+LinuxApp/Sources/bastion-gui/TerminalSessionView.swift
+  s_426e01ebb88f59::t_37d660ba74ea87 122,124
+  s_426e01ebb88f59::t_de3f3f9c0ba184 59-68,70,72,75,79
+  s_426e01ebb88f59::t_912c02f8d4e7a2 80
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "2936b0f648beb25e7923348ae4a4e3e366e663ce",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
