@@ -49,7 +49,15 @@ private let swipeNotifyHandler: @convention(c) (
 /// skickas vidare ifall en framtida vy vill skilja på vertikalt svep.
 @MainActor
 func attachSwipeGesture(to widget: Gtk.Widget, onSwipe: @escaping (Double, Double) -> Void) {
-    guard let gesturePointer = gtk_gesture_swipe_new() else { return }
+    // widgetOpaquePointer kollas FÖRST, innan gesten skapas — annars läckte
+    // en flytande GtkGestureSwipe + den starkt hållna SwipeGestureBox
+    // permanent om widget.opaquePointer skulle vara nil: gtk_widget_add_
+    // controller (som ger gesten sin enda ägare) nås då aldrig, så dess
+    // destroy-notify (som annars släpper boxen) fyras aldrig (CodeRabbit-
+    // fynd, PR #215).
+    guard let widgetOpaquePointer = widget.opaquePointer,
+          let gesturePointer = gtk_gesture_swipe_new()
+    else { return }
     let box = SwipeGestureBox(onSwipe: onSwipe)
     let boxPointer: UnsafeMutableRawPointer = Unmanaged.passRetained(box).toOpaque()
     let instancePointer: UnsafeMutableRawPointer = UnsafeMutableRawPointer(gesturePointer)
@@ -65,7 +73,6 @@ func attachSwipeGesture(to widget: Gtk.Widget, onSwipe: @escaping (Double, Doubl
         flags
     )
 
-    guard let widgetOpaquePointer = widget.opaquePointer else { return }
     // `gtk_widget_add_controller`s widget-parameter importeras som en
     // KONKRET `UnsafeMutablePointer<GtkWidget>` (till skillnad från
     // gest-parametern, som förblir `OpaquePointer` — GtkWidget har synliga
