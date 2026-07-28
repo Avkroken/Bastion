@@ -26,7 +26,11 @@ struct SessionView: View {
                                     jump: plan.jump,
                                     initialCommand: request.initialCommand,
                                     onSessionEnded: {
-                                        debugLog("session", "fjärrshell stängde (exit/Ctrl+D) för \(request.host.alias.isEmpty ? request.host.hostName : request.host.alias) — auto-stänger vyn")
+                                        // Neutralt: täcker BÅDE normal avslutning
+                                        // (exit/Ctrl+D) OCH anslutningsfel
+                                        // (CodeRabbit-fynd — påstod tidigare
+                                        // felaktigt att det alltid var exit/Ctrl+D).
+                                        debugLog("session", "fjärrshell avslutades för \(request.host.alias.isEmpty ? request.host.hostName : request.host.alias) — auto-stänger vyn")
                                         dismiss()
                                     })
                         .ignoresSafeArea(.container, edges: .bottom)

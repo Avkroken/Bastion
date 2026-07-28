@@ -96,6 +96,13 @@ final class SSHTerminalController {
                 guard !isStopped else { return }
                 let msg = Array("\r\n[bastion] fel: \(error)\r\n".utf8)
                 self.onData?(msg[...])
+                // Utan detta lämnades SessionView öppen med en död session
+                // efter ett anslutningsfel — exakt samma "måste trycka Klar
+                // manuellt"-problem som exit/Ctrl+D-fixen ovan löste för
+                // NORMAL avslutning, bara via felvägen istället
+                // (CodeRabbit-fynd). `onSessionEnded` dokumenteras nu även
+                // täcka fel, inte bara exit/Ctrl+D — se SessionView.swift.
+                self.onSessionEnded?()
             }
         }
     }

@@ -49,11 +49,22 @@ final class AppLockManager: ObservableObject {
     /// direkt efter att en session stängts — ingen riktig bakgrundning
     /// hann ske). Bara en `.background` som varar LÄNGRE än detta räknas
     /// som en riktig bakgrundning värd att kräva ny autentisering för.
-    private static let backgroundGraceInterval: TimeInterval = 2
+    private static let backgroundGraceInterval: Duration = .seconds(2)
 
     /// Satt vid `.background` — tidsstämpeln avgör vid nästa `.active` om
     /// det var en riktig bakgrundning eller en spökövergång (se ovan).
-    private var backgroundedAt: Date?
+    /// `ContinuousClock`, INTE `Date` (CodeRabbit-fynd) — `Date`/väggklockan
+    /// kan hoppa (NTP-synk, manuell tidsändring, tidszonbyte) och skulle
+    /// kunna förkorta/förlänga den uppmätta bakgrundstiden felaktigt;
+    /// `ContinuousClock` fortsätter bara oavbrutet så länge enheten är på.
+    private var backgroundedAt: ContinuousClock.Instant?
+
+    /// Ökas varje `lock()`-anrop — låter en redan pågående `authenticate()`
+    /// upptäcka att en NY bakgrundning inträffat sedan den startade och
+    /// avstå från att committa ett förlegat resultat (CodeRabbit-fynd:
+    /// utan detta kunde ett sent lyckat Face ID-svar från FÖRE en
+    /// bakgrundning felaktigt låsa upp appen EFTER den).
+    private var lockGeneration = 0
 
     /// Anropas vid `.inactive` — döljer innehållet direkt (se `isObscured`).
     func obscure() {
@@ -67,7 +78,8 @@ final class AppLockManager: ObservableObject {
     /// låser `resolveForeground()` appen retroaktivt vid `.active`.
     func lock() {
         guard isEnabled else { return }
-        backgroundedAt = Date()
+        backgroundedAt = ContinuousClock.now
+        lockGeneration += 1
     }
 
     /// Anropas vid `.active`. Avgör om den senaste `.background`-övergången
@@ -78,10 +90,14 @@ final class AppLockManager: ObservableObject {
     func resolveForeground() -> Bool {
         defer { backgroundedAt = nil }
         guard isEnabled else { return false }
-        if let backgroundedAt, Date().timeIntervalSince(backgroundedAt) < Self.backgroundGraceInterval {
-            debugLog("applock", "spökövergång till bakgrunden ignorerad (< \(Self.backgroundGraceInterval)s)")
+        if let backgroundedAt, ContinuousClock.now - backgroundedAt < Self.backgroundGraceInterval {
+            debugLog("applock", "spökövergång till bakgrunden ignorerad (< \(Self.backgroundGraceInterval))")
             isObscured = false
-            return false
+            // Redan olåst förblir olåst (ren spökövergång) — men var appen
+            // redan LÅST innan denna korta blink ska den förbli låst, inte
+            // tyst rapporteras som upplåst (CodeRabbit-fynd: den gamla
+            // koden retunerade ovillkorligt `false` här).
+            return !isUnlocked
         }
         if backgroundedAt != nil { isUnlocked = false }
         return !isUnlocked
@@ -112,6 +128,21 @@ final class AppLockManager: ObservableObject {
         }
         isAuthenticating = true
         defer { isAuthenticating = false }
+        // Fångar generationen VID START — om lock() kör medan det här
+        // försöket väntar på LocalAuthentication (ny bakgrundning under en
+        // pågående Face ID-dialog) ska ett sent lyckat svar INTE committa
+        // isUnlocked=true för en app som redan blivit låst under tiden
+        // (CodeRabbit-fynd).
+        let generationAtStart = lockGeneration
+        func commit(_ unlocked: Bool) -> Bool {
+            guard generationAtStart == lockGeneration else {
+                debugLog("applock", "authenticate()-resultat förkastat — appen bakgrundades igen under väntan")
+                return false
+            }
+            isUnlocked = unlocked
+            if unlocked { isObscured = false }
+            return unlocked
+        }
         debugLog("applock", "authenticate() startar")
         let context = LAContext()
         var error: NSError?
@@ -133,17 +164,25 @@ final class AppLockManager: ObservableObject {
         // .deviceOwnerAuthenticationWithBiometrics tvingar fram biometri när
         // enheten har det inrullat; misslyckas/avbryts det faller vi vidare
         // till lösenkoden nedan.
-        var bioError: NSError?
-        if context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &bioError),
-           let ok = try? await context.evaluatePolicy(
-               .deviceOwnerAuthenticationWithBiometrics, localizedReason: "Lås upp Bastion"),
-           ok {
-            debugLog("applock", "biometri lyckades")
-            isUnlocked = true
-            isObscured = false
-            return true
+        if context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil) {
+            do {
+                let ok = try await context.evaluatePolicy(
+                    .deviceOwnerAuthenticationWithBiometrics, localizedReason: "Lås upp Bastion")
+                if ok {
+                    debugLog("applock", "biometri lyckades")
+                    return commit(true)
+                }
+            } catch {
+                // do/catch, INTE try? (CodeRabbit-fynd) — loggar det FAKTISKA
+                // felet från evaluatePolicy istället för canEvaluatePolicys
+                // bioError, som bara beskriver FÖRUTSÄTTNINGARNA (är
+                // biometri konfigurerat?) inte varför SJÄLVA försöket
+                // misslyckades (avbrutet, för många fel, låst ut, etc).
+                debugLog("applock", "biometri-försöket kastade fel: \(error.localizedDescription), faller tillbaka på lösenkod")
+            }
+        } else {
+            debugLog("applock", "biometri otillgänglig, faller tillbaka på lösenkod")
         }
-        debugLog("applock", "biometri misslyckades/avbröts (bioError=\(bioError?.localizedDescription ?? "-")), faller tillbaka på lösenkod")
 
         // Biometri saknas/nekades/misslyckades → lösenkod. En förbrukad
         // LAContext återanvänds inte, så skapa en färsk.
@@ -151,12 +190,10 @@ final class AppLockManager: ObservableObject {
         do {
             let success = try await fallback.evaluatePolicy(
                 .deviceOwnerAuthentication, localizedReason: "Lås upp Bastion")
-            isUnlocked = success
-            if success { isObscured = false }
-            return success
+            return commit(success)
         } catch {
-            isUnlocked = false
-            return false
+            debugLog("applock", "lösenkodsförsöket kastade fel: \(error.localizedDescription)")
+            return commit(false)
         }
     }
 

@@ -35,7 +35,13 @@ final class DebugLog: ObservableObject {
         if entries.count > maxEntries {
             entries.removeFirst(entries.count - maxEntries)
         }
-        osLog.debug("[\(category, privacy: .public)] \(message, privacy: .public)")
+        // INTE .public (CodeRabbit-fynd) — meddelandena innehåller ofta
+        // värdnamn/IP/kommandon (se SSHTerminalController-loggarna), och
+        // .public gör dem läsbara i systemloggen av VEM SOM HELST med
+        // enhetsåtkomst, inte bara via appens egen dela-funktion. Standard-
+        // redigeringen (privat, kräver enhetsupplåsning/utvecklarläge för
+        // Console.app) räcker för felsökningssyftet.
+        osLog.debug("[\(category)] \(message)")
     }
 
     func clear() {
@@ -80,11 +86,13 @@ struct DebugLogView: View {
                 ToolbarItem(placement: .primaryAction) {
                     Button("Rensa") { log.clear() }
                 }
+                #if os(iOS)
                 ToolbarItem(placement: .primaryAction) {
                     Button { showShareSheet = true } label: {
                         Image(systemName: "square.and.arrow.up")
                     }
                 }
+                #endif
             }
             .overlay {
                 if log.entries.isEmpty {
