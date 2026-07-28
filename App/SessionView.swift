@@ -24,7 +24,11 @@ struct SessionView: View {
                 if let plan {
                     BastionTerminal(target: request.host.target, auth: plan.auth,
                                     jump: plan.jump,
-                                    initialCommand: request.initialCommand)
+                                    initialCommand: request.initialCommand,
+                                    onSessionEnded: {
+                                        debugLog("session", "fjärrshell stängde (exit/Ctrl+D) för \(request.host.alias.isEmpty ? request.host.hostName : request.host.alias) — auto-stänger vyn")
+                                        dismiss()
+                                    })
                         .ignoresSafeArea(.container, edges: .bottom)
                         .background(Color.black)
                 } else {

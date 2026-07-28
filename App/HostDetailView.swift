@@ -21,6 +21,13 @@ struct HostDetailView: View {
     /// (bör inte hända i praktiken efter multisession-omskrivningen, men
     /// låter oss ändå inte kräva en anropare för varje instansiering).
     var onClose: (() -> Void)? = nil
+    /// Öppnar ÄNNU en flik till SAMMA värd (t.ex. en `tail -f`-logg vid
+    /// sidan av en vanlig shell) — synlig knapp istället för en gissad
+    /// dubbeltryck-gest (TestFlight-feedback 2026-07-28: ingen flik
+    /// upptäcktes alls eftersom SwiftUIs `TabView` döljer flikraden helt
+    /// vid bara EN öppen session). `nil` när vyn inte ingår i en
+    /// flikväxlare (samma resonemang som `onClose`).
+    var onNewTab: (() -> Void)? = nil
     @State private var showTerminal = false
     @State private var reloadToken = UUID()
 
@@ -63,6 +70,11 @@ struct HostDetailView: View {
                                 KeyDeployView(request: request, store: store) { updated in store.upsert(updated) }
                             } label: {
                                 Label("SSH-nyckel", systemImage: "key")
+                            }
+                            if let onNewTab {
+                                Button { onNewTab() } label: {
+                                    Label("Ny flik till denna värd", systemImage: "plus.rectangle.on.rectangle")
+                                }
                             }
                             if let onClose {
                                 Button(role: .destructive) { onClose() } label: {

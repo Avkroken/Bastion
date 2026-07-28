@@ -60,9 +60,25 @@ final class AppLockManager: ObservableObject {
         isObscured = false
     }
 
+    /// Skyddar mot att `.task` (vy-appearing) OCH den explicita
+    /// `scenePhase == .active`-triggern (se `BastionApp.swift`) båda kallar
+    /// `authenticate()` för samma upplåsningsförsök — Face ID-dialogen kan
+    /// annars öppnas två gånger i rad (TestFlight-feedback 2026-07-28: Face
+    /// ID kändes igen men appen krävde ändå ett manuellt tryck — troligen
+    /// för att det FÖRSTA anropet racade mot systemets egen scen-övergång
+    /// och tystnade, utan att något andra försök någonsin gjordes).
+    private var isAuthenticating = false
+
     @discardableResult
     func authenticate() async -> Bool {
         guard isEnabled else { isUnlocked = true; isObscured = false; return true }
+        guard !isAuthenticating else {
+            debugLog("applock", "authenticate() anropad medan ett försök redan pågår — ignorerar")
+            return false
+        }
+        isAuthenticating = true
+        defer { isAuthenticating = false }
+        debugLog("applock", "authenticate() startar")
         let context = LAContext()
         var error: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
@@ -88,10 +104,12 @@ final class AppLockManager: ObservableObject {
            let ok = try? await context.evaluatePolicy(
                .deviceOwnerAuthenticationWithBiometrics, localizedReason: "Lås upp Bastion"),
            ok {
+            debugLog("applock", "biometri lyckades")
             isUnlocked = true
             isObscured = false
             return true
         }
+        debugLog("applock", "biometri misslyckades/avbröts (bioError=\(bioError?.localizedDescription ?? "-")), faller tillbaka på lösenkod")
 
         // Biometri saknas/nekades/misslyckades → lösenkod. En förbrukad
         // LAContext återanvänds inte, så skapa en färsk.

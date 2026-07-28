@@ -15,57 +15,56 @@ import SSHCore
 struct MultiSessionView: View {
     @ObservedObject var manager: SessionManager
     let store: HostStore
-    #if DEBUG
-    /// Synligt live-diagnostik för svep-gesten, bara i DEBUG-bygget — så
-    /// den som testar på riktig touchhårdvara kan se/skärmdumpa/rapportera
-    /// exakt vad ett svep registrerade utan att behöva en Mac/Xcode
-    /// uppkopplad samtidigt.
-    @State private var lastSwipeDebug: String?
-    #endif
 
     var body: some View {
-        ZStack(alignment: .top) {
-            TabView(selection: Binding(
-                get: { manager.selectedID },
-                set: { manager.selectedID = $0 }
-            )) {
-                ForEach(manager.sessions) { session in
-                    HostDetailView(request: session, store: store, onClose: { manager.close(session.id) })
-                        .tabItem {
-                            Label(
-                                session.host.alias.isEmpty ? session.host.hostName : session.host.alias,
-                                systemImage: "terminal"
-                            )
-                        }
-                        .tag(Optional(session.id))
-                }
-            }
-            .gesture(
-                DragGesture(minimumDistance: 40)
-                    .onEnded { value in
-                        let horizontal = value.translation.width
-                        let vertical = value.translation.height
-                        let isHorizontal = abs(horizontal) > abs(vertical)
-                        #if DEBUG
-                        lastSwipeDebug = "svep dx=\(Int(horizontal)) dy=\(Int(vertical)) " +
-                            (isHorizontal ? "→ flikbyte" : "→ ignorerad (lodrät)")
-                        #endif
-                        guard isHorizontal else { return }
-                        selectAdjacent(offset: horizontal < 0 ? 1 : -1)
+        TabView(selection: Binding(
+            get: { manager.selectedID },
+            set: { manager.selectedID = $0 }
+        )) {
+            ForEach(manager.sessions) { session in
+                HostDetailView(
+                    request: session,
+                    store: store,
+                    onClose: {
+                        debugLog("tabs", "stänger flik för \(displayLabel(for: session))")
+                        manager.close(session.id)
+                    },
+                    onNewTab: {
+                        let new = ConnectRequest(host: session.host, password: session.password, initialCommand: nil)
+                        manager.open(new)
+                        debugLog("tabs", "ny flik till \(displayLabel(for: session)) — nu \(manager.sessions.count) flikar totalt")
                     }
-            )
-
-            #if DEBUG
-            if let lastSwipeDebug {
-                Text(lastSwipeDebug)
-                    .font(.caption)
-                    .padding(6)
-                    .background(.yellow.opacity(0.85))
-                    .cornerRadius(6)
-                    .padding(.top, 4)
+                )
+                    .tabItem {
+                        Label(displayLabel(for: session), systemImage: "terminal")
+                    }
+                    .tag(Optional(session.id))
             }
-            #endif
         }
+        .gesture(
+            DragGesture(minimumDistance: 40)
+                .onEnded { value in
+                    let horizontal = value.translation.width
+                    let vertical = value.translation.height
+                    let isHorizontal = abs(horizontal) > abs(vertical)
+                    debugLog("gesture", "svep dx=\(Int(horizontal)) dy=\(Int(vertical)) " +
+                        (isHorizontal ? "→ flikbyte" : "→ ignorerad (lodrät rörelse dominerar)"))
+                    guard isHorizontal else { return }
+                    selectAdjacent(offset: horizontal < 0 ? 1 : -1)
+                }
+        )
+    }
+
+    /// Flikar mot SAMMA värd (via "Ny flik till denna värd") ser annars
+    /// identiska ut i flikraden — numrerar dem (2), (3) osv. i den ordning
+    /// de finns i `manager.sessions`.
+    private func displayLabel(for session: ConnectRequest) -> String {
+        let base = session.host.alias.isEmpty ? session.host.hostName : session.host.alias
+        let sameHost = manager.sessions.filter { $0.host.id == session.host.id }
+        guard sameHost.count > 1, let index = sameHost.firstIndex(where: { $0.id == session.id }) else {
+            return base
+        }
+        return index == 0 ? base : "\(base) (\(index + 1))"
     }
 
     private func selectAdjacent(offset: Int) {
@@ -75,6 +74,7 @@ struct MultiSessionView: View {
         let target = index + offset
         guard manager.sessions.indices.contains(target) else { return }
         manager.selectedID = manager.sessions[target].id
+        debugLog("tabs", "växlade till flik \(target + 1)/\(manager.sessions.count): \(displayLabel(for: manager.sessions[target]))")
     }
 }
 #endif

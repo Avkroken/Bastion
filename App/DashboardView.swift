@@ -118,7 +118,7 @@ struct DashboardView: View {
             ForEach(s.disks.filter { $0.mount == "/" || !$0.filesystem.hasPrefix("tmpfs") }, id: \.mount) { d in
                 meterCard("Disk \(d.mount)", used: d.usedBytes, total: d.sizeBytes)
             }
-            if !s.containers.isEmpty { dockerCard(s.containers) }
+            if !s.containers.isEmpty && UserDefaults.standard.showDockerCard { dockerCard(s.containers) }
         }
     }
 

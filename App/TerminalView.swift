@@ -44,6 +44,13 @@ final class SSHTerminalController {
 
     /// Anropas på main med bytes att mata in i terminalvyn.
     var onData: ((ArraySlice<UInt8>) -> Void)?
+    /// Anropas EXAKT en gång när fjärrshellen stänger — antingen normalt
+    /// (`exit`/Ctrl+D, output-strömmen tar slut utan fel) eller via ett fel.
+    /// INTE vid `stop()` (använraren stängde själv, redan hanterat av
+    /// anroparen). Låter SessionView auto-stänga terminalvyn istället för
+    /// att lämna en tyst död session som kräver ett manuellt tryck på
+    /// "Klar" (TestFlight-feedback 2026-07-28).
+    var onSessionEnded: (() -> Void)?
     /// Skickas till shellen direkt efter att den öppnats (t.ex. `docker exec …`).
     var initialCommand: String?
 
@@ -55,6 +62,7 @@ final class SSHTerminalController {
     }
 
     func start(cols: Int, rows: Int) {
+        debugLog("session", "start() target=\(target.host):\(target.port) cols=\(cols) rows=\(rows)")
         Task {
             do {
                 let chain = try await SSHConnectionChain.connect(target: target, targetAuth: auth, jump: jump)
@@ -69,6 +77,13 @@ final class SSHTerminalController {
                     let bytes = chunk.bytes
                     self.onData?(bytes[...])
                 }
+                // Strömmen tog slut NORMALT — fjärrshellen stängde (t.ex.
+                // `exit`/Ctrl+D). Inte samma sak som `isStopped` (använraren
+                // stängde vyn själv) — den vägen ska INTE trigga onSessionEnded,
+                // anroparen vet redan att den stänger.
+                debugLog("session", "output-strömmen tog slut normalt (fjärrshellen stängde)")
+                await self.chain?.close()
+                if !isStopped { self.onSessionEnded?() }
             } catch {
                 // Om felet kom EFTER att chain redan var uppsatt (openShell()
                 // eller output-strömmen misslyckades, inte själva anslutningen)
@@ -77,6 +92,7 @@ final class SSHTerminalController {
                 // den redan returnerat. Ofarligt no-op om chain fortfarande är
                 // nil (connect() self själv redan städat i den vägen).
                 await self.chain?.close()
+                debugLog("session", "fel: \(error)")
                 guard !isStopped else { return }
                 let msg = Array("\r\n[bastion] fel: \(error)\r\n".utf8)
                 self.onData?(msg[...])
@@ -145,9 +161,11 @@ struct BastionTerminal: TerminalRepresentable {
     /// Se `SSHTerminalController.jump` — `nil` = direkt anslutning.
     var jump: (target: SSHTarget, auth: SSHAuth)? = nil
     var initialCommand: String? = nil
+    /// Se `SSHTerminalController.onSessionEnded`.
+    var onSessionEnded: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(target: target, auth: auth, jump: jump, initialCommand: initialCommand)
+        Coordinator(target: target, auth: auth, jump: jump, initialCommand: initialCommand, onSessionEnded: onSessionEnded)
     }
 
     private func build(_ context: Context) -> TerminalView {
@@ -176,12 +194,13 @@ struct BastionTerminal: TerminalRepresentable {
         private let controller: SSHTerminalController
         private weak var view: TerminalView?
 
-        init(target: SSHTarget, auth: SSHAuth, jump: (target: SSHTarget, auth: SSHAuth)?, initialCommand: String?) {
+        init(target: SSHTarget, auth: SSHAuth, jump: (target: SSHTarget, auth: SSHAuth)?, initialCommand: String?, onSessionEnded: (() -> Void)?) {
             self.controller = SSHTerminalController(target: target, auth: auth, jump: jump, initialCommand: initialCommand)
             super.init()
             controller.onData = { [weak self] bytes in
                 self?.view?.feed(byteArray: bytes)
             }
+            controller.onSessionEnded = onSessionEnded
         }
 
         func attach(_ view: TerminalView) {
