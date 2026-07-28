@@ -248,11 +248,20 @@ delvis andra, av konkreta skäl:
    tillgänglig i den här miljön (bara en iPhone 16 Pro och en Samsung
    Q80D, ingen Windows-touchskärm), bekräftat av användaren själv
    (2026-07-28). Bara verifierat: kompilerar/länkar/startar utan krasch.
+   **Riktig installer tillagd** (`WindowsApp/Installer.iss` +
+   `Build-Installer.ps1`, Inno Setup 6): bygger `Output\BastionSetup.exe`
+   som buntar `bastion-gui.exe` + Windows App Runtime-installeraren i EN
+   fil — runtimen körs tyst som ett `[Run]`-steg innan appen startas,
+   ingen PowerShell/manuell paketjakt synlig för slutanvändaren. Direkt
+   svar på packningsklagomålet ("allt som bastion behöver måste följas
+   med"). **EJ verifierat med en riktig `iscc`-körning** — Inno Setup är
+   Windows-only, ingen körning gjordes på VM:en denna gång (den var
+   avstängd); .iss-syntaxen är handskriven mot Inno Setup-dokumentationen,
+   inte kompilerad/testad. Verifiera med `.\Build-Installer.ps1` på
+   riktig Windows-hårdvara innan detta räknas som klart.
    **Nästa steg**: porta de riktiga vyerna från `LinuxApp/Sources/bastion-
    gui/` hit (inte påbörjat, svep-bryggan väntar på riktiga flikar att
-   växla mellan), samt en riktig installer (MSI/WiX/Inno Setup) som
-   buntar runtime-beroendet helt osynligt för slutanvändaren istället för
-   ett separat PowerShell-script.
+   växla mellan).
 4. **`bastion-cli` som headless/skriptbar fallback** (användarförslag
    2026-07-28): "Den borde kunna integreras med Linux och Windows Shell
    också, bash osv, cmd, PowerShell, så att det går att köra den remote
