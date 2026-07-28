@@ -1,0 +1,21 @@
+App/MultiSessionView.swift
+  s_426e01ebb88f59::t_3b76543cf4fc38 18-24,27-54,56-65,67
+  s_426e01ebb88f59::t_4220768c105715 9-14,70-77
+  s_426e01ebb88f59::t_914eb3ed2aee05 78
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "5a82141e58ddeccbed824840d489d51757216c05",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
