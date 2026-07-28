@@ -1,0 +1,48 @@
+App/BastionApp.swift
+  s_426e01ebb88f59::t_94fe6ed65fa3c7 24-36
+App/TerminalView.swift
+  s_426e01ebb88f59::t_dd3599af5a3237 95
+  s_426e01ebb88f59::t_8ab85b2a2525ab 65
+  s_426e01ebb88f59::t_00deb9a78bf2e0 80-83,85-86
+  s_426e01ebb88f59::t_d13d02f0692628 164-165,168
+  s_426e01ebb88f59::t_b79b0d10fc683e 84
+  s_426e01ebb88f59::t_c9b9b05ffd911b 197,203
+  s_426e01ebb88f59::t_d5ef3c12a1786e 47-53
+App/SessionView.swift
+  s_426e01ebb88f59::t_0d8b861d30d50e 27-31
+App/DebugLog.swift
+  s_426e01ebb88f59::t_fc39185ff68176 1-113
+App/HostListView.swift
+  s_426e01ebb88f59::t_3bf95da4dbc926 380-400
+  s_426e01ebb88f59::t_d45d5085018b02 128-129
+  s_426e01ebb88f59::t_525c58fa04fda1 240-245
+  s_426e01ebb88f59::t_c193301eb03261 184,190
+App/DashboardView.swift
+  s_426e01ebb88f59::t_9bc782898ee4bd 121
+App/FeatureSettingsView.swift
+  s_426e01ebb88f59::t_5f1ff29b824d92 1-51
+App/AppLockManager.swift
+  s_426e01ebb88f59::t_f094f578ab8399 63-71,75-81
+  s_426e01ebb88f59::t_b12c8f4e8d4a37 107,112
+App/HostDetailView.swift
+  s_426e01ebb88f59::t_6aefe8e8d3143b 74-78
+  s_426e01ebb88f59::t_38d8955eed930f 24-30
+App/MultiSessionView.swift
+  s_426e01ebb88f59::t_773bc0d1097674 20-35,37-41,44-67,77
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "4e9270bf6e50b7e89763a00978b64c993dc1dcfd",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
