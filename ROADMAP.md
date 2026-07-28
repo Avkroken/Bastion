@@ -235,10 +235,24 @@ delvis andra, av konkreta skäl:
    MSIX-paketregistrering nekar åtkomst (`0x80070005`) över en icke-
    interaktiv fjärrshell (WinRM) — måste köras i en riktig inloggad
    session, samma begränsningsklass som Microsoft Store-installationer.
+   **Touch-svep tillagt samma dag** (användarbegäran: "Kan du få touchen
+   att funka på Windows och Linux"): ny `WinUISwipeGestureBridge.swift` —
+   till skillnad från GTK-sidan (som behövde en rå ABI-koppling) exponerar
+   swift-winui redan `UIElement.manipulationMode`/`.manipulationCompleted`
+   direkt via sin genererade WinRT-projektion, ingen egen C-bindning
+   behövdes. Minimal tvåsidig platshållar-demo i `ContentView` (svep
+   vänster/höger växlar sida). Ett riktigt kompileringsfel hittades och
+   fixades på riktig hårdvara (`.inspect` efter `.padding()` matchar
+   `FrameworkElement`-overloaden, inte `VStack`s egen `Canvas`-variant) —
+   commit `087b0e7`. **EJ verifierat på riktig touchhårdvara** — ingen
+   tillgänglig i den här miljön (bara en iPhone 16 Pro och en Samsung
+   Q80D, ingen Windows-touchskärm), bekräftat av användaren själv
+   (2026-07-28). Bara verifierat: kompilerar/länkar/startar utan krasch.
    **Nästa steg**: porta de riktiga vyerna från `LinuxApp/Sources/bastion-
-   gui/` hit (inte påbörjat), samt en riktig installer (MSI/WiX/Inno
-   Setup) som buntar runtime-beroendet helt osynligt för slutanvändaren
-   istället för ett separat PowerShell-script.
+   gui/` hit (inte påbörjat, svep-bryggan väntar på riktiga flikar att
+   växla mellan), samt en riktig installer (MSI/WiX/Inno Setup) som
+   buntar runtime-beroendet helt osynligt för slutanvändaren istället för
+   ett separat PowerShell-script.
 4. **`bastion-cli` som headless/skriptbar fallback** (användarförslag
    2026-07-28): "Den borde kunna integreras med Linux och Windows Shell
    också, bash osv, cmd, PowerShell, så att det går att köra den remote
