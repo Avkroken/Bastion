@@ -1,0 +1,20 @@
+App/project.yml
+  s_426e01ebb88f59::t_93661dfe69a609 134-148
+  s_426e01ebb88f59::t_45ffd2dba3a6cf 155
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "f4157d81885cfedf61a84df3612619c1860e1d3b",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
