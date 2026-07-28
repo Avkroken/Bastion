@@ -207,6 +207,13 @@ struct BastionTerminal: TerminalRepresentable {
             self.view = view
             let savedID = UserDefaults.standard.string(forKey: TerminalThemeKeys.selectedID)
             view.apply(theme: TerminalTheme.theme(id: savedID))
+            // SwiftTerms standard (true) låter fjärrprogram (vim/tmux/htop)
+            // som ber om musrapportering kapa pekskärmens svep/scroll —
+            // touch-scroll slutar då fungera tills man manuellt slår av det
+            // (TestFlight-feedback 2026-07-28: "det där borde alltid funka
+            // och inte vara något man togglar av och på"). Lokal scroll/
+            // markering ska alltid vinna på touch.
+            view.allowMouseReporting = false
             let t = view.getTerminal()
             controller.start(cols: t.cols, rows: t.rows)
         }
