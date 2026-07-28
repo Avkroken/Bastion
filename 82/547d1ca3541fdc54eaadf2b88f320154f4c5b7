@@ -1,0 +1,28 @@
+App/DebugLog.swift
+  s_426e01ebb88f59::t_0086571995027b 89,95
+  s_426e01ebb88f59::t_714c5faf017be3 38-44
+App/AppLockManager.swift
+  s_426e01ebb88f59::t_d869449dbaf079 52,56-67,81-82,93-94,96-100
+  s_426e01ebb88f59::t_99e20db59413ab 131-145,167-184
+  s_426e01ebb88f59::t_edb7ed15c0b8d9 193,195-196
+App/TerminalView.swift
+  s_426e01ebb88f59::t_2abf4f63919598 99-105
+App/SessionView.swift
+  s_426e01ebb88f59::t_4783610ea94352 29-33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "82547d1ca3541fdc54eaadf2b88f320154f4c5b7",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
