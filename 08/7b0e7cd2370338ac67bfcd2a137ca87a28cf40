@@ -1,0 +1,19 @@
+WindowsApp/Sources/bastion-gui/BastionGUIApp.swift
+  s_426e01ebb88f59::t_6f69a7fe374cb7 51-58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "087b0e7cd2370338ac67bfcd2a137ca87a28cf40",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
