@@ -220,10 +220,40 @@ delvis andra, av konkreta skäl:
    Clang än Swift 6.1 (Clang 19.1.4) bundlar. Löst genom att uppgradera
    till Swift 6.3.3-RELEASE (bundlar Clang 21.1.6) — inte en riktig
    Bastion-relaterad bugg, bara toolchain-miljödrift på testmaskinen.
-   **Nästa steg nu när bygget faktiskt går grönt**: porta de riktiga
-   vyerna från `LinuxApp/Sources/bastion-gui/` hit och testa på riktigt
-   (VPS eller motsvarande) — inte påbörjat än.
-4. Riktig rå tangentbordsinmatning i Linux-terminalen (kräver att gå under
+   **2026-07-28: verifierat på RIKTIG Windows-hårdvara för första gången**
+   (lokal Windows Server 2025-VM på mp100, inte bara CI:s cross-compile).
+   `bastion-gui.exe` kraschade omedelbart ("This application requires the
+   Windows App Runtime Version 1.5" / `WinUI/SwiftApplication.swift:64:
+   Fatal error: fatal` i swift-winuis `SwiftApplication.main()`) tills
+   EXAKT rätt version av Windows App Runtime installerades —
+   `1.5-preview1` (`1.5.240205001-preview1`, dokumenterad i swift-winuis
+   README), INTE en senare 1.5.x-patch (2.3.1 eller 1.5.250108004 gav
+   samma krasch). Efter det: ett riktigt WinUI3-fönster renderade
+   ("Bastion för Windows", platshållar-UI). Ny `WindowsApp/Install-
+   Bastion.ps1` + `WindowsApp/README.md` paketerar detta beroende
+   (kontrollerar/installerar automatiskt) — se commit `addc43e`.
+   MSIX-paketregistrering nekar åtkomst (`0x80070005`) över en icke-
+   interaktiv fjärrshell (WinRM) — måste köras i en riktig inloggad
+   session, samma begränsningsklass som Microsoft Store-installationer.
+   **Nästa steg**: porta de riktiga vyerna från `LinuxApp/Sources/bastion-
+   gui/` hit (inte påbörjat), samt en riktig installer (MSI/WiX/Inno
+   Setup) som buntar runtime-beroendet helt osynligt för slutanvändaren
+   istället för ett separat PowerShell-script.
+4. **`bastion-cli` som headless/skriptbar fallback** (användarförslag
+   2026-07-28): "Den borde kunna integreras med Linux och Windows Shell
+   också, bash osv, cmd, PowerShell, så att det går att köra den remote
+   utan GUI." `bastion-cli` (rot-paketet, `Sources/bastion-cli/`) gör
+   redan detta — exec, `-L`/`-R`/-D`-portvidarebefordran, ProxyJump, ren
+   `SSHCore` utan GUI-beroende — men var ENDAST testad på macOS/Linux
+   (`xcode.yml`/CodeQL). Verifierat 2026-07-28: bygger och länkar rent
+   på Windows med samma Swift 6.1/MSVC-toolchain som `bastion-gui`, INGET
+   Windows App Runtime-beroende (ren SwiftNIO, ingen WinUI/MSIX
+   inblandad) — bekräftar att detta redan fungerar som den GUI-fria
+   reservlösningen användaren efterfrågade. Kvar: ingen dedikerad
+   Windows-CI-check för `bastion-cli` än (bara macOS/CodeQL bygger
+   rot-paketet idag), och ingen `-J`-kommandoradsflagg (bara via
+   ssh-config, se "Klart" nedan).
+5. Riktig rå tangentbordsinmatning i Linux-terminalen (kräver att gå under
    SwiftCrossUI mot GTK:s event-controllers direkt — se "Uppskjutet med avsikt").
 
 ## Klart
