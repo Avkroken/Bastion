@@ -48,7 +48,14 @@ struct ContentView: View {
         // Se WinUISwipeGestureBridge.swift — samma velocity-tröskel-mönster
         // (dominerande horisontell rörelse, > 0.2 px/ms) som LinuxApps
         // GestureSwipeBridge-anropsplats i TerminalTabsView.swift.
-        .inspect(.onCreate) { [self] (element: WinUI.Canvas) in
+        //
+        // `WinUI.FrameworkElement`, INTE `.Canvas`: `.inspect` efter
+        // `.padding()` matchar den GENERISKA `View.inspect`-overloaden
+        // (som ger `FrameworkElement`), inte VStacks egen `Canvas`-
+        // specifika variant — statisk typ vid den punkten är den
+        // modifierade `some View`, inte `VStack` längre (verifierat via
+        // riktig kompileringsfel på Windows-VM:en).
+        .inspect(.onCreate) { [self] (element: WinUI.FrameworkElement) in
             attachSwipeGesture(to: element) { velocityX, velocityY in
                 guard abs(velocityX) > abs(velocityY), abs(velocityX) > 0.2 else { return }
                 page = velocityX < 0 ? 1 : 0
