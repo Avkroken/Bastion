@@ -1,0 +1,25 @@
+App/AppLockManager.swift
+  s_426e01ebb88f59::t_d5945a0d993a35 43-57,64-67,70-87
+App/BastionApp.swift
+  s_426e01ebb88f59::t_183529f02c2f39 25-32,41-42
+App/HostDetailView.swift
+  s_426e01ebb88f59::t_e083cdb9785694 18-26
+  s_426e01ebb88f59::t_9fe64f3c6d18d4 65-67
+  s_426e01ebb88f59::t_b490de98116c2d 54-64
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "29beeac411407ac1b56b6e63289397b383046f44",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
