@@ -68,25 +68,42 @@ struct HostDetailView: View {
                     }
                     ToolbarItem(placement: .primaryAction) {
                         Menu {
-                            NavigationLink { DockerView(request: request, store: store) } label: {
-                                Label("Docker", systemImage: "shippingbox")
+                            // Var och en döljbar via "Funktioner"-inställningen
+                            // (FeatureSettingsView) — TestFlight-feedback
+                            // 2026-07-28 gällde bara Docker-kortet uttryckligen,
+                            // men samma klagomål ("ingen valmöjlighet") gäller
+                            // principiellt hela den här menyn.
+                            if UserDefaults.standard.showDockerCard {
+                                NavigationLink { DockerView(request: request, store: store) } label: {
+                                    Label("Docker", systemImage: "shippingbox")
+                                }
                             }
-                            NavigationLink { SnippetListView(request: request, store: store) } label: {
-                                Label("Snippets", systemImage: "text.badge.checkmark")
+                            if UserDefaults.standard.showSnippetsMenuItem {
+                                NavigationLink { SnippetListView(request: request, store: store) } label: {
+                                    Label("Snippets", systemImage: "text.badge.checkmark")
+                                }
                             }
-                            NavigationLink { CommandLibraryView(request: request, store: store) } label: {
-                                Label("Kommandobibliotek", systemImage: "books.vertical")
+                            if UserDefaults.standard.showCommandLibraryMenuItem {
+                                NavigationLink { CommandLibraryView(request: request, store: store) } label: {
+                                    Label("Kommandobibliotek", systemImage: "books.vertical")
+                                }
                             }
-                            NavigationLink { SFTPBrowserView(request: request, store: store) } label: {
-                                Label("Filer (SFTP)", systemImage: "folder")
+                            if UserDefaults.standard.showSFTPMenuItem {
+                                NavigationLink { SFTPBrowserView(request: request, store: store) } label: {
+                                    Label("Filer (SFTP)", systemImage: "folder")
+                                }
                             }
-                            NavigationLink { PortForwardView(request: request, store: store) } label: {
-                                Label("Portvidarebefordran", systemImage: "arrow.left.arrow.right")
+                            if UserDefaults.standard.showPortForwardMenuItem {
+                                NavigationLink { PortForwardView(request: request, store: store) } label: {
+                                    Label("Portvidarebefordran", systemImage: "arrow.left.arrow.right")
+                                }
                             }
-                            NavigationLink {
-                                KeyDeployView(request: request, store: store) { updated in store.upsert(updated) }
-                            } label: {
-                                Label("SSH-nyckel", systemImage: "key")
+                            if UserDefaults.standard.showKeyDeployMenuItem {
+                                NavigationLink {
+                                    KeyDeployView(request: request, store: store) { updated in store.upsert(updated) }
+                                } label: {
+                                    Label("SSH-nyckel", systemImage: "key")
+                                }
                             }
                             if let onNewTab {
                                 Button { onNewTab() } label: {
