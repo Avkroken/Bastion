@@ -249,10 +249,28 @@ delvis andra, av konkreta skäl:
    på Windows med samma Swift 6.1/MSVC-toolchain som `bastion-gui`, INGET
    Windows App Runtime-beroende (ren SwiftNIO, ingen WinUI/MSIX
    inblandad) — bekräftar att detta redan fungerar som den GUI-fria
-   reservlösningen användaren efterfrågade. Kvar: ingen dedikerad
-   Windows-CI-check för `bastion-cli` än (bara macOS/CodeQL bygger
-   rot-paketet idag), och ingen `-J`-kommandoradsflagg (bara via
-   ssh-config, se "Klart" nedan).
+   reservlösningen användaren efterfrågade.
+
+   **BUGG hittad vid samma verifiering, PLATTFORMSSPECIFIK**: en
+   misslyckad autentisering (fel lösenord) mot en riktig SSH-server
+   hänger OÄNDLIGT på Windows (`bastion-cli.exe ... ` blockerar för
+   alltid, 0% CPU — inte en TCP/nätverksfråga, `Test-NetConnection`
+   bekräftar porten når fram). Samma exakta anrop (fel lösenord) på
+   Linux/macOS misslyckas KORREKT och snabbt: `Fel:
+   channelFailed("End of file")`, exit-kod 2. Roten är sannolikt i hur
+   swift-nio-ssh/swift-nio hanterar kanalstängning eller async-avbrott
+   annorlunda i sin Windows-portering (jämför den redan kända,
+   uppströms-rapporterade `apple/swift-nio#3647` ovan för samma
+   allmänna riskbild: swift-nios Windows-portering skiljer sig
+   strukturellt från POSIX-sidan). EJ rotorsaksbestämt än — kräver
+   vidare felsökning i `SSHSession`/`NIOSSHHandler`-felvägen specifikt
+   under Windows. Blockerar `bastion-cli` som en pålitlig Windows-
+   fallback tills löst (en trasig autentisering ska INTE kunna hänga
+   processen för alltid).
+
+   Kvar utöver detta: ingen dedikerad Windows-CI-check för `bastion-cli`
+   än (bara macOS/CodeQL bygger rot-paketet idag), och ingen
+   `-J`-kommandoradsflagg (bara via ssh-config, se "Klart" nedan).
 5. Riktig rå tangentbordsinmatning i Linux-terminalen (kräver att gå under
    SwiftCrossUI mot GTK:s event-controllers direkt — se "Uppskjutet med avsikt").
 
