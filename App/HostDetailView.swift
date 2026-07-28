@@ -15,11 +15,15 @@ struct HostDetailView: View {
     // HostListViews instans (CodeRabbit-fynd, #126). Samma instans som
     // HostListView.swift delas hela vägen ner via MultiSessionView istället.
     let store: HostStore
-    /// Stänger (kopplar från) den här sessionen helt — skiljer sig från
-    /// "Klar" (`dismiss()`), som bara tar bort den ur sikte och lämnar den
-    /// ansluten i bakgrunden. `nil` när vyn inte ingår i en flikväxlare
-    /// (bör inte hända i praktiken efter multisession-omskrivningen, men
-    /// låter oss ändå inte kräva en anropare för varje instansiering).
+    /// Stänger (kopplar från) den här SPECIFIKA fliken/sessionen — vad
+    /// toolbarens "Klar"-knapp anropar. Ett rått `dismiss()` här hade
+    /// stängt HELA MultiSessionView-täckvyn (alla flikar på en gång),
+    /// eftersom den här vyn är TabView-roten utan egen NavigationStack-
+    /// historik att poppa (TestFlight-feedback 2026-07-28: "inga tillbaka-
+    /// knappar, man hamnar alltid på ursprungsmenyn"). `nil` när vyn inte
+    /// ingår i en flikväxlare (bör inte hända i praktiken efter multi-
+    /// session-omskrivningen, men låter oss ändå inte kräva en anropare
+    /// för varje instansiering) — då faller "Klar" tillbaka på `dismiss()`.
     var onClose: (() -> Void)? = nil
     /// Öppnar ÄNNU en flik till SAMMA värd (t.ex. en `tail -f`-logg vid
     /// sidan av en vanlig shell) — synlig knapp istället för en gissad
@@ -47,7 +51,20 @@ struct HostDetailView: View {
                 }
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
-                        Button("Klar") { dismiss() }
+                        // `dismiss()` här löser till NÄRMASTE presentation —
+                        // och eftersom den här vyn är TabView-ROTEN inuti
+                        // MultiSessionViews fullScreenCover (ingen egen
+                        // NavigationStack-historik att poppa), stänger ett rått
+                        // `dismiss()`-anrop HELA flikväxlaren, alla flikar,
+                        // inte bara den man tittar på (TestFlight-feedback
+                        // 2026-07-28: "inga tillbaka-knappar, man hamnar
+                        // alltid på ursprungsmenyn"). `onClose` stänger bara
+                        // DENNA flik — HostListViews `isEmpty`-lyssnare tar
+                        // hand om att stänga hela täckvyn när sista fliken
+                        // väl försvinner.
+                        Button("Klar") {
+                            if let onClose { onClose() } else { dismiss() }
+                        }
                     }
                     ToolbarItem(placement: .primaryAction) {
                         Menu {
@@ -74,11 +91,6 @@ struct HostDetailView: View {
                             if let onNewTab {
                                 Button { onNewTab() } label: {
                                     Label("Ny flik till denna värd", systemImage: "plus.rectangle.on.rectangle")
-                                }
-                            }
-                            if let onClose {
-                                Button(role: .destructive) { onClose() } label: {
-                                    Label("Stäng session", systemImage: "xmark.circle")
                                 }
                             }
                         } label: {

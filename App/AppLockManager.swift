@@ -40,17 +40,51 @@ final class AppLockManager: ObservableObject {
         isUnlocked = !UserDefaults.standard.bool(forKey: AppLockKeys.enabled)
     }
 
+    /// Kort nådperiod för spökövergångar till `.background` — att stänga en
+    /// nästlad `fullScreenCover` (t.ex. terminalsessionen i `SessionView`,
+    /// särskilt med SwiftTerms egna tangentbords-accessory som first
+    /// responder) kan på vissa iOS-versioner utlösa en BLIXTSNABB, äkta
+    /// `.background`-övergång utan att appen faktiskt lämnat förgrunden
+    /// (TestFlight-feedback 2026-07-28: "man hamnar direkt på låsskärmen"
+    /// direkt efter att en session stängts — ingen riktig bakgrundning
+    /// hann ske). Bara en `.background` som varar LÄNGRE än detta räknas
+    /// som en riktig bakgrundning värd att kräva ny autentisering för.
+    private static let backgroundGraceInterval: TimeInterval = 2
+
+    /// Satt vid `.background` — tidsstämpeln avgör vid nästa `.active` om
+    /// det var en riktig bakgrundning eller en spökövergång (se ovan).
+    private var backgroundedAt: Date?
+
     /// Anropas vid `.inactive` — döljer innehållet direkt (se `isObscured`).
     func obscure() {
         guard isEnabled else { return }
         isObscured = true
     }
 
-    /// Anropas vid `.background` — nästa gång appen blir aktiv krävs
-    /// autentisering igen (om påslaget).
+    /// Anropas vid `.background` — noterar BARA tidpunkten. Om appen är
+    /// tillbaka i förgrunden inom `backgroundGraceInterval` betraktas det
+    /// som en spökövergång (se ovan) och `isUnlocked` rörs aldrig — annars
+    /// låser `resolveForeground()` appen retroaktivt vid `.active`.
     func lock() {
         guard isEnabled else { return }
-        isUnlocked = false
+        backgroundedAt = Date()
+    }
+
+    /// Anropas vid `.active`. Avgör om den senaste `.background`-övergången
+    /// (om någon) var äkta eller en spökövergång, och låser appen retroaktivt
+    /// bara i det äkta fallet. Returnerar `true` om appen förblir/blir låst
+    /// (anroparen ska då trigga `authenticate()`), annars `false`.
+    @discardableResult
+    func resolveForeground() -> Bool {
+        defer { backgroundedAt = nil }
+        guard isEnabled else { return false }
+        if let backgroundedAt, Date().timeIntervalSince(backgroundedAt) < Self.backgroundGraceInterval {
+            debugLog("applock", "spökövergång till bakgrunden ignorerad (< \(Self.backgroundGraceInterval)s)")
+            isObscured = false
+            return false
+        }
+        if backgroundedAt != nil { isUnlocked = false }
+        return !isUnlocked
     }
 
     /// Anropas vid `.active` om appen ALDRIG hann låsas (t.ex. en kort
