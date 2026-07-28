@@ -1,0 +1,21 @@
+ROADMAP.md
+  s_426e01ebb88f59::t_533334f78ad508 242
+  s_426e01ebb88f59::t_63ee0598dbb6ba 223-241,243-255
+  s_426e01ebb88f59::t_09000db1c136a7 256
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "0524a2addc9608d105d0836f02ec6885d4304403",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
