@@ -1,0 +1,22 @@
+WindowsApp/Sources/bastion-gui/BastionGUIApp.swift
+  s_426e01ebb88f59::t_97560ab66cb994 28-33,36-42,44-45,48-56
+  s_426e01ebb88f59::t_93c4b08e078544 3
+WindowsApp/Sources/bastion-gui/WinUISwipeGestureBridge.swift
+  s_426e01ebb88f59::t_2057467080125e 1-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "661a188a61a9fe16276fb36349135359e2d27ff3",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
