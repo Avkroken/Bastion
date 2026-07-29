@@ -14,6 +14,7 @@
 
 [Setup]
 AppName={#MyAppName}
+AppVersion=1.0
 AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
