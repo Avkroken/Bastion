@@ -1419,18 +1419,22 @@ den lokala `bastion-winserver`-VM:en (Windows Server 2025, build 26100,
 alla WinAppSDK/WinUI-DLL:er korrekt (verifierat: filerna finns faktiskt i
 `bin/.../win-x64/`, inte bara antaget).
 
-**EJ verifierat: att appen faktiskt RENDERAR.** Körning via WinRM (icke-
-interaktiv session) kraschar omedelbart:
-`Faulting module: Microsoft.UI.Xaml.dll, Exception code: 0xc000027b`
-(stowed exception/fast-fail). VM:en HAR en aktiv interaktiv RDP-session
-(`query session` visar `rdp-tcp#0 Administrator 2 Active`), men WinRM-
-kommandon körs i en annan, icke-interaktiv session utan DWM/composition-
-åtkomst — samma klass av session-isolationsproblem som redan dokumenterat
-för touchscreen-verifieringen
-([[project-bastion-linuxapp-touchscreen-goal]], "ingen levande session att
-testa i"). Inte en kodbugg i sig, men olöst: nästa steg är att köra
-`bastion-gui.exe` INIFRÅN den redan aktiva RDP-sessionen (session 2), inte
-via en fristående WinRM-kommandokörning.
+**RENDERING VERIFIERAD (2026-07-30, senare pass).** Körning via WinRM
+(icke-interaktiv session, eller ens via `schtasks /it` från en
+scheduled-task-kontext) ger antingen en krasch
+(`Microsoft.UI.Xaml.dll`, `0xc000027b`) eller ett processfönster utan
+`MainWindowHandle` — bekräftat samma klass session-isolationsproblem som
+touchscreen-verifieringen ([[project-bastion-linuxapp-touchscreen-goal]]).
+LÖSNINGEN: koppla upp mot VM:ens redan aktiva RDP-session (`rdp-tcp#0`,
+session 2, `xfreerdp3` från denna Linux-värd) och skriva launch-kommandot
+DIREKT i en redan öppen interaktiv terminal i den sessionen (via `xdotool`
+mot den lokala Xvfb-skärmen som visar RDP-klienten) — INTE via WinRM eller
+en scheduled task, båda kör i fel session/window-station trots
+`/it`-flaggan. Resultatet: ett riktigt, korrekt renderat `Bastion`-fönster
+(NavigationView + "Värdar"-menyalternativ + platshållartexten "Ingen
+session öppen — värdlistan är inte kopplad in än." — exakt `MainWindow.xaml`
+som skriven), skärmdump tagen som bevis, processen städad och den
+tillfälliga `schtasks`-uppgiften borttagen efteråt.
 
 **Klart samma dag, sjätte pass: `LinuxApp` Docker-vy** — port av
 `Sources/SSHCore/DockerService.swift` (`docker.rs`: validering mot
@@ -1503,7 +1507,11 @@ integrationstest (`full_round_trip_against_a_real_sftp_server`) kör mkdir
 → write → read → list → rename → remove_file → remove_dir i en egen
 engångsmapp under `/tmp`, rör aldrig något annat på testmaskinen.
 
-Kvar: koppla in HostList/HostStore/SSH.NET i `WindowsApp` (nästa steg efter
-render-verifiering), synk-UI, krypterade molntransporter i Rust, chmod/
-chown/komprimera/packa upp i SFTP-vyn (se task-listan i motsvarande Claude
-Code-session).
+**Klart samma dag, tionde pass: `WindowsApp`-rendering verifierad** — se
+uppdaterad status ovan i "Scaffolda ny WindowsApp/"-avsnittet. Nästa steg
+för Windows-sidan är nu funktionsutveckling, inte längre toolchain-
+verifiering.
+
+Kvar: koppla in HostList/HostStore/SSH.NET i `WindowsApp`, synk-UI,
+krypterade molntransporter i Rust, chmod/chown/komprimera/packa upp i
+SFTP-vyn (se task-listan i motsvarande Claude Code-session).
