@@ -1,0 +1,57 @@
+WindowsApp/Bastion.Core/SyncEngine.cs
+  s_426e01ebb88f59::t_443fce9206ea1b 1-54
+WindowsApp/MainWindow.xaml
+  s_426e01ebb88f59::t_563ba9d4f4bd80 6-10,12-39,44
+WindowsApp/Bastion.Core/ReferenceDate.cs
+  s_426e01ebb88f59::t_c98c06627c8044 11
+  s_426e01ebb88f59::t_4cc5f737b7ff71 1-10,12-38
+WindowsApp/Bastion.Core.Tests/Bastion.Core.Tests.csproj
+  s_426e01ebb88f59::t_81731cf2764574 25-30
+  s_426e01ebb88f59::t_c2e3e1a01c4df9 21-24
+  s_426e01ebb88f59::t_a6faa1626ba4f8 1-20,31
+WindowsApp/.gitignore
+  s_426e01ebb88f59::t_95bb2412b81707 1-2
+WindowsApp/Bastion.Core/Host.cs
+  s_426e01ebb88f59::t_5eb2a998be45b9 1-32
+WindowsApp/Bastion.Core.Tests/HostAuthTests.cs
+  s_426e01ebb88f59::t_28260989afdb1a 1-33
+WindowsApp/Bastion.Core/SyncProvider.cs
+  s_426e01ebb88f59::t_d16066655ebc8a 1-35
+WindowsApp/Bastion.Core/HostAuth.cs
+  s_426e01ebb88f59::t_bae130d474bfed 1-89
+WindowsApp/Bastion.Core/RemotePlatform.cs
+  s_426e01ebb88f59::t_eb2de2c33a0e82 1-34
+WindowsApp/Bastion.Core/HostStore.cs
+  s_426e01ebb88f59::t_a67f6f3e474d33 1-95
+WindowsApp/MainWindow.xaml.cs
+  s_426e01ebb88f59::t_2f631ef6145e94 1-2,4,8-14,17-19,24-85
+WindowsApp/Bastion.Core.Tests/csharp-hosts-fixture.json
+  s_426e01ebb88f59::t_e3539d4ba55360 1-25
+WindowsApp/Bastion.Core.Tests/ReferenceDateTests.cs
+  s_426e01ebb88f59::t_72f3d55c1c4832 1-16
+WindowsApp/Bastion.Core.Tests/HostStoreTests.cs
+  s_426e01ebb88f59::t_80a72bde6d204f 1-140
+WindowsApp/WindowsApp.csproj
+  s_426e01ebb88f59::t_c0b9cc0458e288 28-31
+WindowsApp/Bastion.Core/SyncState.cs
+  s_426e01ebb88f59::t_1b04d2e02a1d02 1-56
+WindowsApp/Bastion.Core/Bastion.Core.csproj
+  s_426e01ebb88f59::t_12e0cffc5a6dc3 1-3,5-9
+  s_426e01ebb88f59::t_71f3222507ab8f 4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.17",
+  "base_commit_sha": "77549b9dc066bba1abfa30e803231ced6c8e1226",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
