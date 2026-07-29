@@ -1,0 +1,33 @@
+WindowsApp/WindowsApp.csproj
+  s_426e01ebb88f59::t_9a6df951313be2 1-28
+WindowsApp/App.xaml.cs
+  s_426e01ebb88f59::t_43d609419fc592 1-19
+WindowsApp/MainWindow.xaml
+  s_426e01ebb88f59::t_73ad21523e800e 1-27
+WindowsApp/App.xaml
+  s_426e01ebb88f59::t_4f6f9eddd7b1b7 1-12
+WindowsApp/app.manifest
+  s_426e01ebb88f59::t_fa325ae0db07f2 1-25
+WindowsApp/MainWindow.xaml.cs
+  s_426e01ebb88f59::t_fe0cf02c9804a3 1-12
+WindowsApp/.gitignore
+  s_426e01ebb88f59::t_83f74e8aa5c2a6 1-2
+ROADMAP.md
+  s_426e01ebb88f59::t_02d7416be1c64f 1411-1438
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.17",
+  "base_commit_sha": "a615fc52491e010d7689dd1ba09ceed1aeac64a5",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
