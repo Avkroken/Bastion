@@ -28,7 +28,7 @@ if (-not $swiftExe) {
     Write-Error "Hittar inte swift.exe i PATH -- kan inte lokalisera Swift-runtime-DLL:erna att bunta."
     exit 1
 }
-$swiftProgramsRoot = Split-Path (Split-Path (Split-Path (Split-Path $swiftExe)))
+$swiftProgramsRoot = Split-Path (Split-Path (Split-Path (Split-Path (Split-Path $swiftExe))))
 $runtimeBinDir = Get-ChildItem (Join-Path $swiftProgramsRoot "Runtimes\*\usr\bin") -Directory -ErrorAction SilentlyContinue |
     Select-Object -First 1
 if (-not $runtimeBinDir) {
