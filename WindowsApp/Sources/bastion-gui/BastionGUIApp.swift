@@ -4,12 +4,12 @@ import WinUI
 import WinUIBackend
 
 /// Windows-motsvarigheten till `LinuxApp/` — samma SSHCore, samma
-/// host-databas, men SwiftCrossUIs `WinUIBackend` istället för `GtkBackend`.
-/// Medvetet minimal första version: bevisar att pipelinen (Package.swift +
-/// CI på windows-latest-runnern) faktiskt kompilerar innan de riktiga
-/// vyerna i `LinuxApp/Sources/bastion-gui/` porteras hit. Ingen lokal
-/// Windows-maskin att testköra mot ännu, så varje steg görs litet och
-/// verifieras via CI istället för lokalt (som för `App/`).
+/// host-databas, samma vyer (portade från `LinuxApp/Sources/bastion-gui/`,
+/// se ROADMAP.md för portningshistoriken), men SwiftCrossUIs `WinUIBackend`
+/// istället för `GtkBackend`. De tre filer som skiljer sig mellan
+/// plattformarna (denna, `TerminalTabsView.swift`, `WinUISwipeGestureBridge.swift`
+/// vs LinuxApps `GestureSwipeBridge.swift`) är just de som rör den råa
+/// touch-gest-kopplingen — allt annat är oförändrad SwiftCrossUI-kod.
 @main
 struct BastionGUIApp: App {
     var body: some Scene {
@@ -17,49 +17,5 @@ struct BastionGUIApp: App {
             ContentView()
         }
         .defaultSize(width: 900, height: 560)
-    }
-}
-
-struct ContentView: View {
-    private var hostCount: Int {
-        HostStore().all().count
-    }
-
-    // Två platshållarsidor bara för att bevisa svep-navigering fungerar
-    // end-to-end INNAN de riktiga vyerna (host-lista, terminalflikar) från
-    // LinuxApp/Sources/bastion-gui/ porteras hit — samma anledning till att
-    // ContentView i övrigt fortfarande är en platshållare, se ROADMAP.md.
-    @State private var page = 0
-
-    var body: some View {
-        VStack(spacing: 12) {
-            if page == 0 {
-                Text("Bastion för Windows").font(.title2)
-                Text("\(hostCount) sparade värdar").foregroundColor(.gray)
-            } else {
-                Text("Inställningar").font(.title2)
-                Text("Platshållare — svep tillbaka åt vänster.").foregroundColor(.gray)
-            }
-            Text("Fullständigt UI porteras hit i ett senare steg.").foregroundColor(.gray)
-            Text("Svep vänster/höger för att växla sida (touch, EJ verifierat på riktig hårdvara).")
-                .font(.caption).foregroundColor(.gray)
-        }
-        .padding()
-        // Se WinUISwipeGestureBridge.swift — samma velocity-tröskel-mönster
-        // (dominerande horisontell rörelse, > 0.2 px/ms) som LinuxApps
-        // GestureSwipeBridge-anropsplats i TerminalTabsView.swift.
-        //
-        // `WinUI.FrameworkElement`, INTE `.Canvas`: `.inspect` efter
-        // `.padding()` matchar den GENERISKA `View.inspect`-overloaden
-        // (som ger `FrameworkElement`), inte VStacks egen `Canvas`-
-        // specifika variant — statisk typ vid den punkten är den
-        // modifierade `some View`, inte `VStack` längre (verifierat via
-        // riktig kompileringsfel på Windows-VM:en).
-        .inspect(.onCreate) { [self] (element: WinUI.FrameworkElement) in
-            attachSwipeGesture(to: element) { velocityX, velocityY in
-                guard abs(velocityX) > abs(velocityY), abs(velocityX) > 0.2 else { return }
-                page = velocityX < 0 ? 1 : 0
-            }
-        }
     }
 }
