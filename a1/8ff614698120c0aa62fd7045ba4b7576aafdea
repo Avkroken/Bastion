@@ -1,0 +1,22 @@
+LinuxApp/src/main.rs
+  s_426e01ebb88f59::t_b630b702d171c3 273-345,349-352,354,356,360,379,394-395,403,410,415-418,423-426,439-442,454-456
+  s_426e01ebb88f59::t_732bfc393506af 419-421
+  s_426e01ebb88f59::t_2c365410ea5990 64,69-70,80,84
+  s_426e01ebb88f59::t_2c4f74d5e2db4e 422
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.17",
+  "base_commit_sha": "a18ff614698120c0aa62fd7045ba4b7576aafdea",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
