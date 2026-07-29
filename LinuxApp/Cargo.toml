@@ -9,3 +9,7 @@ adw = { version = "0.7", package = "libadwaita", features = ["v1_5"] }
 russh = "0.45"
 russh-keys = "0.45"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+dirs = "5"

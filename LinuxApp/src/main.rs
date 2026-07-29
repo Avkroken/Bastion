@@ -1,6 +1,9 @@
 use adw::prelude::*;
 use gtk::glib;
 
+#[allow(dead_code)] // konsumeras av HostList-UI:t (task #7), inte kopplat in än
+mod host;
+
 const APP_ID: &str = "se.denied.bastion";
 
 fn main() -> glib::ExitCode {
