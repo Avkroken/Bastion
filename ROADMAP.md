@@ -1533,6 +1533,32 @@ värd genom UI:t, den dök upp i listan, klick visade rätt platshållartext,
 och `~/.bastion/hosts.json` på VM:en innehöll exakt rätt wire-format —
 inte bara byggt, faktiskt kört och sett fungera.
 
-Kvar: SSH.NET-anslutning + terminal i `WindowsApp`, synk-UI, krypterade
+**Klart samma dag, tolfte pass: `WindowsApp` SSH.NET-anslutning + riktig
+terminal — FULLSTÄNDIGT visuellt end-to-end-verifierad.** Ny `SshSession`
+(Bastion.Core, SSH.NET är rent C# — portabel, testad direkt på Linux mot
+en riktig sshd, 15 xUnit-tester inkl. exit-stänger-sessionen via
+`ShellStream.Closed` och TOFU-avvisning av ändrad värdnyckel). Terminalen
+renderas med xterm.js i en `WebView2` (vendrat lokalt i `Assets/xterm/`,
+ingen CDN) — WinUI 3 har ingen inbyggd VTE-motsvarighet.
+
+Verifierat: klick på en riktig värd i `WindowsApp` kopplade upp mot en
+levande sshd på värdmaskinen (via VM:ens virbr0-gateway, `192.168.122.1`),
+visade en RIKTIG `berduf@mp100:~$`-prompt i xterm.js, tog emot inskrivet
+`echo hello-from-windowsapp-terminal` och fick tillbaka rätt utdata, och
+`exit` stängde sessionen rent ("Sessionen avslutades"). Hela kedjan —
+tangentbord → `window.chrome.webview.postMessage` → `ShellStream.Write` →
+riktigt fjärrskal → `ShellStream.DataReceived` → `window.feed(...)` →
+xterm.js — fungerar. Detta var INTE bara byggt utan faktiskt kört och sett
+fungera, med skärmdumpar som bevis (samma xfreerdp+xdotool-teknik som
+tidigare render-verifiering). All testinfrastruktur (temporär nyckel i
+authorized_keys, testfil på VM:en) städad efteråt.
+
+KÄND BEGRÄNSNING (dokumenterad i SshSession.cs): bara nyckelfil (utan
+lösenfras) och lösenord — SSH.NET saknar agent-protokollstöd, så
+HostAuth.AgentDefault är inte porterat till WindowsApp. UI:t har heller
+ingen auth-typväljare än (alla nya värdar skapas med AgentDefault, som
+alltså inte fungerar i WindowsApp ännu — nästa steg).
+
+Kvar: auth-typväljare i "Lägg till värd"-dialogen, synk-UI, krypterade
 molntransporter i Rust, chmod/chown/komprimera/packa upp i SFTP-vyn (se
 task-listan i motsvarande Claude Code-session).
