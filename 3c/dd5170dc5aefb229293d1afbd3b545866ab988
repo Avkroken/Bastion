@@ -1,0 +1,19 @@
+WindowsApp/MainWindow.xaml.cs
+  s_426e01ebb88f59::t_b2a0b382ce5172 47-52,59-66,73-74,96-98
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.17",
+  "base_commit_sha": "3cdd5170dc5aefb229293d1afbd3b545866ab988",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
