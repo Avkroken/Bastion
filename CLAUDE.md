@@ -24,5 +24,5 @@ inte via delad kod:
 - `Android/` byggs via `./gradlew` (kräver JDK 17+ och Android SDK
   command-line tools, se `Android/local.properties` som inte committas)
 - `WindowsApp/` byggs via `dotnet build` (WinUI 3, kräver Windows App SDK)
-- `LinuxApp/` byggs via `cargo build` (kräver GTK4-devpaket)
+- `LinuxApp/` byggs via `cargo build` (kräver `libgtk-4-dev` + `libadwaita-1-dev`)
 - OAuth är PKCE-baserat — inga klienthemligheter i koden, bara publika klient-ID:n

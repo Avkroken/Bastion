@@ -1,0 +1,11 @@
+[package]
+name = "bastion-linuxapp"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gtk = { version = "0.9", package = "gtk4", features = ["v4_12"] }
+adw = { version = "0.7", package = "libadwaita", features = ["v1_5"] }
+russh = "0.45"
+russh-keys = "0.45"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
