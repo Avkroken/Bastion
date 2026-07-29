@@ -1,0 +1,77 @@
+WindowsApp/Sources/bastion-gui/SettingsModel.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-28
+WindowsApp/Sources/bastion-gui/HostEditView.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-322
+WindowsApp/Sources/bastion-gui/SnippetEditView.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-42
+WindowsApp/Sources/bastion-gui/TerminalGridView.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-80
+WindowsApp/Sources/bastion-gui/KeyDeployView.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-269
+WindowsApp/Sources/bastion-gui/WireGuardProfileEditView.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-47
+WindowsApp/Sources/bastion-gui/SFTPBrowserView.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-471
+WindowsApp/Sources/bastion-gui/S3BrowserView.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-340
+WindowsApp/Sources/bastion-gui/TailscaleDiscoveryView.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-141
+WindowsApp/Sources/bastion-gui/HostListModel.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-35
+WindowsApp/Sources/bastion-gui/PortForwardView.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-204
+WindowsApp/Sources/bastion-gui/CommandLibraryView.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-75
+WindowsApp/Sources/bastion-gui/SnippetListView.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-117
+WindowsApp/Sources/bastion-gui/TelnetConnectView.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-41
+WindowsApp/Sources/bastion-gui/SettingsView.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-56
+WindowsApp/Sources/bastion-gui/DashboardView.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-218
+WindowsApp/Sources/bastion-gui/HostDetailView.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-104
+WindowsApp/Sources/bastion-gui/HostColor.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-38
+WindowsApp/Sources/bastion-gui/AuthResolver.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-56
+WindowsApp/Sources/bastion-gui/WireGuardProfileListView.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-80
+WindowsApp/Sources/bastion-gui/BastionGUIApp.swift
+  s_426e01ebb88f59::t_1d5e6a0e2b9669 7-12
+WindowsApp/Sources/bastion-gui/ContentView.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-266
+WindowsApp/Sources/bastion-gui/ImportConfigView.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-27
+WindowsApp/Sources/bastion-gui/QuickConnectView.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-56
+WindowsApp/Sources/bastion-gui/TerminalBuffer.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-243
+WindowsApp/Sources/bastion-gui/TerminalSessionView.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-160
+WindowsApp/Sources/bastion-gui/S3ConnectionEditView.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-62
+WindowsApp/Sources/bastion-gui/TerminalTabsView.swift
+  s_426e01ebb88f59::t_dd3887b09bf701 1-167
+WindowsApp/Sources/bastion-gui/DockerView.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-217
+WindowsApp/Sources/bastion-gui/TelnetSessionView.swift
+  s_426e01ebb88f59::t_6d92f70b9db822 1-183
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "98f9931f2f01fea0a272c599433a0e001a164e5d",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
