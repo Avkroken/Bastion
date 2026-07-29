@@ -3,25 +3,43 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
-    <NavigationView x:Name="RootNavigationView"
-                     IsSettingsVisible="False"
-                     IsBackButtonVisible="Collapsed"
-                     PaneDisplayMode="Left">
-        <NavigationView.MenuItems>
-            <NavigationViewItem Content="Värdar" Icon="List" />
-        </NavigationView.MenuItems>
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="280" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
 
-        <Grid>
-            <StackPanel HorizontalAlignment="Center"
-                        VerticalAlignment="Center"
-                        Spacing="8">
-                <TextBlock Text="Bastion"
-                           FontSize="28"
-                           HorizontalAlignment="Center" />
-                <TextBlock Text="Ingen session öppen — värdlistan är inte kopplad in än."
+        <Grid Grid.Column="0" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="0,0,1,0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <StackPanel Grid.Row="0" Orientation="Horizontal" Padding="12,8" Spacing="8">
+                <TextBlock Text="Värdar" FontSize="18" VerticalAlignment="Center" HorizontalAlignment="Stretch" />
+                <Button x:Name="AddHostButton" Content="+" Click="OnAddHostClicked" HorizontalAlignment="Right" />
+            </StackPanel>
+
+            <ListView x:Name="HostListView" Grid.Row="1" SelectionMode="None" ItemClick="OnHostItemClicked" IsItemClickEnabled="True">
+                <ListView.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Margin="8,4">
+                            <TextBlock Text="{Binding Alias}" FontWeight="SemiBold" />
+                            <TextBlock Text="{Binding Subtitle}" Opacity="0.7" FontSize="12" />
+                        </StackPanel>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+        </Grid>
+
+        <Grid Grid.Column="1">
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8">
+                <TextBlock Text="Bastion" FontSize="28" HorizontalAlignment="Center" />
+                <TextBlock x:Name="ContentPlaceholder"
+                           Text="Ingen session öppen — välj en värd i listan."
                            Opacity="0.7"
                            HorizontalAlignment="Center" />
             </StackPanel>
         </Grid>
-    </NavigationView>
+    </Grid>
 </Window>

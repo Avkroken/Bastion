@@ -25,4 +25,8 @@
     <PackageReference Include="SSH.NET" Version="2024.2.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="Bastion.Core\Bastion.Core.csproj" />
+  </ItemGroup>
+
 </Project>
