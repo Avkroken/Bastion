@@ -1,0 +1,45 @@
+LinuxApp/src/ssh.rs
+  s_426e01ebb88f59::t_f1e119164f0563 112
+  s_426e01ebb88f59::t_f6e84488c871cb 43
+  s_426e01ebb88f59::t_c1c1be152ac23a 63
+LinuxApp/src/sftp.rs
+  s_426e01ebb88f59::t_554daaf3b38e13 135
+  s_426e01ebb88f59::t_3f9ce014016bc9 1-12,15-73,75-77,79,81-134,136-157,171-199
+  s_426e01ebb88f59::t_318849ed57c608 74,78,80
+  s_426e01ebb88f59::t_3942de2609ab21 158-170
+  s_426e01ebb88f59::t_9e00ccca430404 13-14
+  s_426e01ebb88f59::t_47e82baba09242 200-245
+LinuxApp/Cargo.toml
+  s_426e01ebb88f59::t_049d4ecb688581 18
+LinuxApp/src/main.rs
+  s_426e01ebb88f59::t_b63257893af89b 1646-1732
+  s_426e01ebb88f59::t_ace4b77921dc30 1467-1469
+  s_426e01ebb88f59::t_46788f62baf7ea 499-522
+  s_426e01ebb88f59::t_38b7a34e343895 253-267
+  s_426e01ebb88f59::t_19fac50e7cccf9 420-424,429
+  s_426e01ebb88f59::t_ad0c8030df0d52 272
+  s_426e01ebb88f59::t_4cad7fe95d2a21 1541-1562
+  s_426e01ebb88f59::t_bcbcb90d070883 1317-1466,1470-1540,1563-1645,1733-1812
+  s_426e01ebb88f59::t_795bafdbc2c1e3 13
+  s_426e01ebb88f59::t_6096aaa85b47fe 288-290
+ROADMAP.md
+  s_426e01ebb88f59::t_154fc6777541a6 1481-1505,1507-1508
+LinuxApp/Cargo.lock
+  s_426e01ebb88f59::t_12d97369379b12 46-54,106,130-132,212-221,249-261,287-292,376-389,571-576,848-859,986-991,1037-1060,1068,1164-1172,1362-1374,1571-1579,1588,1661,1719,1726-1745,1770-1775,1817-1826,1891-1896,2065-2074,2088-2098,2137-2150,2301-2310,2365-2399,2406-2423
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.17",
+  "base_commit_sha": "948879544af904b6a0e5852014c187fd15052081",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
