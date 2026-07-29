@@ -1,6 +1,0 @@
-.build/
-.swiftpm/
-Package.resolved
-Output/
-windowsappruntimeinstall-x64.exe
-Redist/
