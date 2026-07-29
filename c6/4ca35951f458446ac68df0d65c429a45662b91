@@ -1,0 +1,43 @@
+WindowsApp/Assets/xterm/xterm.js
+  s_426e01ebb88f59::t_99dff8e48a341d 1-2
+WindowsApp/Bastion.Core.Tests/SshSessionTests.cs
+  s_426e01ebb88f59::t_17e2661ac84cf9 1-56,59-61,64-94
+  s_426e01ebb88f59::t_8fb8ebf62b308d 57-58,62-63
+WindowsApp/Assets/xterm/xterm.css
+  s_426e01ebb88f59::t_99dff8e48a341d 1-209
+WindowsApp/WindowsApp.csproj
+  s_426e01ebb88f59::t_f0de2448c8594b 24-26,33-36
+  s_426e01ebb88f59::t_d41900a5c969b8 37-38
+WindowsApp/Bastion.Core/Bastion.Core.csproj
+  s_426e01ebb88f59::t_ee5b27cf76a4f6 9-12
+WindowsApp/Assets/xterm/xterm-addon-fit.js
+  s_426e01ebb88f59::t_99dff8e48a341d 1-2
+WindowsApp/Bastion.Core/SshSession.cs
+  s_426e01ebb88f59::t_362da83b302995 1-92
+WindowsApp/Assets/xterm/LICENSE
+  s_426e01ebb88f59::t_bc4d76dd1dfd6f 1-21
+WindowsApp/MainWindow.xaml.cs
+  s_426e01ebb88f59::t_e33606525d89e7 3,6,20,22-23,85,87-134,136,138-183
+WindowsApp/Bastion.Core/KnownHosts.cs
+  s_426e01ebb88f59::t_55ad9a7417043b 1-64
+WindowsApp/MainWindow.xaml
+  s_426e01ebb88f59::t_675d002c1a843b 36,43
+WindowsApp/Assets/xterm/terminal.html
+  s_426e01ebb88f59::t_4dd9abfb21a53a 1-35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.17",
+  "base_commit_sha": "c64ca35951f458446ac68df0d65c429a45662b91",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
