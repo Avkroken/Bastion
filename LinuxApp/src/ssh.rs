@@ -407,4 +407,40 @@ mod tests {
         let containers = crate::docker::parse_list(&output);
         assert!(!containers.is_empty(), "väntade minst en container på testmaskinen, fick ingen");
     }
+
+    /// Verifierar att skriva `exit` i den interaktiva shellen faktiskt
+    /// stänger SSH-sessionen (får `SshEvent::Closed`) — det uttryckliga
+    /// kravet "exit måste avsluta sessionen". `main.rs::start_session`
+    /// reagerar på just denna händelse genom att stänga fliken.
+    #[test]
+    #[ignore = "kräver en riktig localhost-sshd + en nyckel förberedd i authorized_keys, se ROADMAP.md"]
+    fn typing_exit_in_the_shell_closes_the_session() {
+        let key_path = std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
+        let user = std::env::var("USER").expect("USER måste vara satt");
+        let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
+        host.auth = HostAuth::KeyFile(key_path);
+
+        let session = spawn_shell(host, None, 80, 24);
+        // Vänta in första skalpromptens data innan vi skriver något, annars
+        // kan "exit\n" hamna innan skalet ens är redo att läsa stdin.
+        drain_until_data_error_or_closed(&session, Duration::from_secs(10))
+            .expect("fick aldrig en initial prompt från skalet");
+
+        session.input.send_blocking(b"exit\n".to_vec()).expect("kunde inte skicka exit till skalet");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut closed = false;
+        while std::time::Instant::now() < deadline {
+            match session.output.recv_blocking() {
+                Ok(SshEvent::Closed) => {
+                    closed = true;
+                    break;
+                }
+                Ok(SshEvent::Error(e)) => panic!("SSH-fel istället för en ren stängning: {e}"),
+                Ok(_) => continue,
+                Err(_) => break,
+            }
+        }
+        assert!(closed, "sessionen stängdes aldrig efter att exit skrevs i skalet");
+    }
 }

@@ -5,10 +5,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use vte::prelude::*;
 
+mod command_library;
 mod docker;
 mod host;
 mod known_hosts;
 mod settings;
+mod snippet;
 mod ssh;
 #[allow(dead_code)] // synk-UI (välja/konfigurera en SyncProvider) är inte byggt än
 mod sync;
@@ -31,6 +33,7 @@ fn build_ui(app: &adw::Application) {
     let settings_store = Rc::new(RefCell::new(settings::AppSettingsStore::open(
         settings::AppSettingsStore::default_path(),
     )));
+    let snippet_store = Rc::new(RefCell::new(snippet::SnippetStore::open(snippet::SnippetStore::default_path())));
 
     let list = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
@@ -41,7 +44,7 @@ fn build_ui(app: &adw::Application) {
         .margin_bottom(12)
         .build();
     let area = SessionArea::new();
-    refresh_list(&list, &store, app, &area, &settings_store);
+    refresh_list(&list, &store, app, &area, &settings_store, &snippet_store);
 
     let scrolled = gtk::ScrolledWindow::builder().child(&list).vexpand(true).build();
 
@@ -58,7 +61,9 @@ fn build_ui(app: &adw::Application) {
         area,
         #[strong]
         settings_store,
-        move |_| show_host_dialog(&app, &store, &list, &area, &settings_store, None)
+        #[strong]
+        snippet_store,
+        move |_| show_host_dialog(&app, &store, &list, &area, &settings_store, &snippet_store, None)
     ));
 
     let settings_button = gtk::Button::from_icon_name("preferences-system-symbolic");
@@ -74,7 +79,9 @@ fn build_ui(app: &adw::Application) {
         list,
         #[strong]
         area,
-        move |_| show_settings_dialog(&app, &settings_store, &store, &list, &area)
+        #[strong]
+        snippet_store,
+        move |_| show_settings_dialog(&app, &settings_store, &store, &list, &area, &snippet_store)
     ));
 
     let sidebar_header = adw::HeaderBar::new();
@@ -140,11 +147,12 @@ fn refresh_list(
     app: &adw::Application,
     area: &Rc<SessionArea>,
     settings_store: &Rc<RefCell<settings::AppSettingsStore>>,
+    snippet_store: &Rc<RefCell<snippet::SnippetStore>>,
 ) {
     while let Some(row) = list.row_at_index(0) {
         list.remove(&row);
     }
-    let show_docker = settings_store.borrow().current().show_docker;
+    let toggles = settings_store.borrow().current();
     for h in store.borrow().all() {
         let row = adw::ActionRow::builder()
             .title(&h.alias)
@@ -157,7 +165,7 @@ fn refresh_list(
             .valign(gtk::Align::Center)
             .css_classes(["flat"])
             .build();
-        let menu = gio_menu_for(show_docker);
+        let menu = gio_menu_for(&toggles);
         menu_button.set_menu_model(Some(&menu));
         row.add_suffix(&menu_button);
 
@@ -174,12 +182,14 @@ fn refresh_list(
             area,
             #[strong]
             settings_store,
+            #[strong]
+            snippet_store,
             #[strong(rename_to = host_id)]
             h.id,
             move |_, _| {
                 let host = store.borrow().all().iter().find(|x| x.id == host_id).map(|h| (*h).clone());
                 if let Some(host) = host {
-                    show_host_dialog(&app, &store, &list, &area, &settings_store, Some(host));
+                    show_host_dialog(&app, &store, &list, &area, &settings_store, &snippet_store, Some(host));
                 }
             }
         ));
@@ -195,11 +205,13 @@ fn refresh_list(
             area,
             #[strong]
             settings_store,
+            #[strong]
+            snippet_store,
             #[strong(rename_to = host_id)]
             h.id,
             move |_, _| {
                 store.borrow_mut().delete(host_id).expect("kunde inte ta bort värden");
-                refresh_list(&list, &store, &app, &area, &settings_store);
+                refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store);
             }
         ));
         let docker_action = gtk::gio::SimpleAction::new("docker", None);
@@ -217,20 +229,44 @@ fn refresh_list(
                 }
             }
         ));
+        let commands_action = gtk::gio::SimpleAction::new("commands", None);
+        commands_action.connect_activate(clone!(
+            #[strong]
+            store,
+            #[strong]
+            area,
+            #[strong]
+            snippet_store,
+            #[strong(rename_to = host_id)]
+            h.id,
+            move |_, _| {
+                let host = store.borrow().all().iter().find(|x| x.id == host_id).map(|h| (*h).clone());
+                if let Some(host) = host {
+                    let snippet_store = snippet_store.clone();
+                    require_password(&area, host, move |area, host, password| {
+                        open_command_library_view(area, host, password, &snippet_store)
+                    });
+                }
+            }
+        ));
         action_group.add_action(&edit_action);
         action_group.add_action(&delete_action);
         action_group.add_action(&docker_action);
+        action_group.add_action(&commands_action);
         row.insert_action_group("host", Some(&action_group));
 
         list.append(&row);
     }
 }
 
-fn gio_menu_for(show_docker: bool) -> gtk::gio::Menu {
+fn gio_menu_for(toggles: &settings::FeatureToggles) -> gtk::gio::Menu {
     let menu = gtk::gio::Menu::new();
     menu.append(Some("Redigera"), Some("host.edit"));
-    if show_docker {
+    if toggles.show_docker {
         menu.append(Some("Docker"), Some("host.docker"));
+    }
+    if toggles.show_command_library {
+        menu.append(Some("Kommandon"), Some("host.commands"));
     }
     menu.append(Some("Ta bort"), Some("host.delete"));
     menu
@@ -243,6 +279,7 @@ fn show_host_dialog(
     list: &gtk::ListBox,
     area: &Rc<SessionArea>,
     settings_store: &Rc<RefCell<settings::AppSettingsStore>>,
+    snippet_store: &Rc<RefCell<snippet::SnippetStore>>,
     existing: Option<Host>,
 ) {
     let is_edit = existing.is_some();
@@ -305,6 +342,8 @@ fn show_host_dialog(
         area,
         #[strong]
         settings_store,
+        #[strong]
+        snippet_store,
         #[weak]
         win,
         #[strong]
@@ -329,7 +368,7 @@ fn show_host_dialog(
                 h
             };
             store.borrow_mut().upsert(host).expect("kunde inte spara värden");
-            refresh_list(&list, &store, &app, &area, &settings_store);
+            refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store);
             win.close();
         }
     ));
@@ -348,13 +387,20 @@ fn show_settings_dialog(
     store: &Rc<RefCell<HostStore>>,
     list: &gtk::ListBox,
     area: &Rc<SessionArea>,
+    snippet_store: &Rc<RefCell<snippet::SnippetStore>>,
 ) {
     let current = settings_store.borrow().current();
 
     let docker_row = adw::SwitchRow::builder().title("Docker").subtitle("Visa Docker-knappen på värdar").active(current.show_docker).build();
+    let commands_row = adw::SwitchRow::builder()
+        .title("Kommandobibliotek")
+        .subtitle("Visa Kommandon-knappen på värdar")
+        .active(current.show_command_library)
+        .build();
 
     let group = adw::PreferencesGroup::builder().title("Funktioner").build();
     group.add(&docker_row);
+    group.add(&commands_row);
     let page = adw::PreferencesPage::new();
     page.add(&group);
 
@@ -387,6 +433,8 @@ fn show_settings_dialog(
         app,
         #[strong]
         area,
+        #[strong]
+        snippet_store,
         move |row| {
             let mut toggles = settings_store.borrow().current();
             toggles.show_docker = row.is_active();
@@ -394,7 +442,31 @@ fn show_settings_dialog(
                 .borrow_mut()
                 .update(toggles)
                 .expect("kunde inte spara inställningarna");
-            refresh_list(&list, &store, &app, &area, &settings_store);
+            refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store);
+        }
+    ));
+
+    commands_row.connect_active_notify(clone!(
+        #[strong]
+        settings_store,
+        #[strong]
+        store,
+        #[weak]
+        list,
+        #[strong]
+        app,
+        #[strong]
+        area,
+        #[strong]
+        snippet_store,
+        move |row| {
+            let mut toggles = settings_store.borrow().current();
+            toggles.show_command_library = row.is_active();
+            settings_store
+                .borrow_mut()
+                .update(toggles)
+                .expect("kunde inte spara inställningarna");
+            refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store);
         }
     ));
 
@@ -843,4 +915,352 @@ fn show_docker_logs(area: &Rc<SessionArea>, host: &host::Host, password: &Option
             text_view.buffer().set_text(&text);
         }
     ));
+}
+
+/// Öppnar Kommandobibliotek+Snippets-vyn för `host` i en ny flik: statiska
+/// referenskommandon (`command_library.rs`) + användarens egna sparade
+/// snippets (`snippet.rs`). Port av App/CommandLibraryView.swift.
+fn open_command_library_view(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    snippet_store: &Rc<RefCell<snippet::SnippetStore>>,
+) {
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(12)
+        .margin_bottom(12)
+        .build();
+    let scrolled = gtk::ScrolledWindow::builder().child(&list).vexpand(true).build();
+
+    let add_button = gtk::Button::from_icon_name("list-add-symbolic");
+    add_button.set_tooltip_text(Some("Ny snippet"));
+    let toolbar = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).margin_start(12).margin_end(12).margin_top(8).build();
+    toolbar.append(&gtk::Label::builder().label(format!("Kommandon: {}", host.alias)).hexpand(true).halign(gtk::Align::Start).build());
+    toolbar.append(&add_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&toolbar);
+    content.append(&scrolled);
+
+    let page = area.tab_view.append(&content);
+    page.set_title(&format!("Kommandon: {}", host.alias));
+    area.tab_view.set_selected_page(&page);
+    area.update_placeholder();
+
+    add_button.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        host,
+        #[strong]
+        password,
+        #[strong]
+        snippet_store,
+        #[weak]
+        list,
+        move |_| show_snippet_edit_dialog(&area, host.clone(), password.clone(), &snippet_store, &list, None)
+    ));
+
+    refresh_command_library_list(area, &host, &password, snippet_store, &list);
+}
+
+fn refresh_command_library_list(
+    area: &Rc<SessionArea>,
+    host: &host::Host,
+    password: &Option<String>,
+    snippet_store: &Rc<RefCell<snippet::SnippetStore>>,
+    list: &gtk::ListBox,
+) {
+    while let Some(row) = list.row_at_index(0) {
+        list.remove(&row);
+    }
+
+    for s in snippet_store.borrow().all() {
+        list.append(&build_snippet_row(area, host, password, snippet_store, s.clone(), list));
+    }
+    for entry in command_library::all() {
+        list.append(&build_library_entry_row(area, host, password, entry));
+    }
+}
+
+fn build_snippet_row(
+    area: &Rc<SessionArea>,
+    host: &host::Host,
+    password: &Option<String>,
+    snippet_store: &Rc<RefCell<snippet::SnippetStore>>,
+    snippet: snippet::Snippet,
+    list: &gtk::ListBox,
+) -> adw::ActionRow {
+    let row = adw::ActionRow::builder().title(&snippet.name).subtitle(&snippet.template).build();
+    let suffix = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(4).valign(gtk::Align::Center).build();
+
+    let run_button = gtk::Button::from_icon_name("media-playback-start-symbolic");
+    run_button.set_tooltip_text(Some("Kör"));
+    run_button.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        host,
+        #[strong]
+        password,
+        #[strong]
+        snippet,
+        move |_| run_snippet(&area, host.clone(), password.clone(), snippet.clone())
+    ));
+
+    let edit_button = gtk::Button::from_icon_name("document-edit-symbolic");
+    edit_button.set_tooltip_text(Some("Redigera"));
+    edit_button.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        host,
+        #[strong]
+        password,
+        #[strong]
+        snippet_store,
+        #[weak]
+        list,
+        #[strong]
+        snippet,
+        move |_| show_snippet_edit_dialog(&area, host.clone(), password.clone(), &snippet_store, &list, Some(snippet.clone()))
+    ));
+
+    let delete_button = gtk::Button::from_icon_name("user-trash-symbolic");
+    delete_button.set_tooltip_text(Some("Ta bort"));
+    delete_button.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        host,
+        #[strong]
+        password,
+        #[strong]
+        snippet_store,
+        #[weak]
+        list,
+        #[strong(rename_to = snippet_id)]
+        snippet.id,
+        move |_| {
+            snippet_store.borrow_mut().delete(snippet_id).expect("kunde inte ta bort snippeten");
+            refresh_command_library_list(&area, &host, &password, &snippet_store, &list);
+        }
+    ));
+
+    suffix.append(&run_button);
+    suffix.append(&edit_button);
+    suffix.append(&delete_button);
+    row.add_suffix(&suffix);
+    row
+}
+
+fn build_library_entry_row(
+    area: &Rc<SessionArea>,
+    host: &host::Host,
+    password: &Option<String>,
+    entry: command_library::Entry,
+) -> adw::ActionRow {
+    let mut subtitle = format!("[{}] {}", entry.category.label(), entry.summary);
+    if let Some(example) = entry.example {
+        subtitle.push_str(&format!(" — t.ex. {example}"));
+    }
+    let row = adw::ActionRow::builder().title(entry.command).subtitle(subtitle).build();
+
+    let suffix = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(4).valign(gtk::Align::Center).build();
+
+    if let Some(docs_url) = entry.docs_url {
+        let docs_button = gtk::Button::from_icon_name("help-about-symbolic");
+        docs_button.set_tooltip_text(Some("Dokumentation"));
+        docs_button.connect_clicked(move |_| {
+            gtk::gio::AppInfo::launch_default_for_uri(docs_url, gtk::gio::AppLaunchContext::NONE).ok();
+        });
+        suffix.append(&docs_button);
+    }
+
+    let run_button = gtk::Button::from_icon_name("media-playback-start-symbolic");
+    run_button.set_tooltip_text(Some("Kör"));
+    run_button.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        host,
+        #[strong]
+        password,
+        move |_| {
+            let snippet = snippet::Snippet::new(entry.summary.to_string(), entry.command.to_string());
+            run_snippet(&area, host.clone(), password.clone(), snippet);
+        }
+    ));
+    suffix.append(&run_button);
+    row.add_suffix(&suffix);
+    row
+}
+
+/// Kör en snippet: fyller i `{{variabler}}` via en dialog om det finns
+/// några, annars öppnar direkt en ny terminalflik med det rendrade
+/// kommandot som `startup_command` (samma mönster som Docker-shell).
+fn run_snippet(area: &Rc<SessionArea>, host: host::Host, password: Option<String>, snippet: snippet::Snippet) {
+    if snippet.variable_names().is_empty() {
+        launch_rendered_command(area, host, password, &snippet.name, snippet.rendered(&std::collections::HashMap::new()));
+    } else {
+        prompt_snippet_variables(area, host, password, snippet);
+    }
+}
+
+fn launch_rendered_command(area: &Rc<SessionArea>, host: host::Host, password: Option<String>, title_suffix: &str, command: String) {
+    let mut h = host;
+    h.startup_command = Some(command);
+    h.alias = format!("{}: {title_suffix}", h.alias);
+    start_session(area, h, password);
+}
+
+fn prompt_snippet_variables(area: &Rc<SessionArea>, host: host::Host, password: Option<String>, snippet: snippet::Snippet) {
+    let names = snippet.variable_names();
+    let group = adw::PreferencesGroup::builder().title(&snippet.name).description(&snippet.template).build();
+    let entries: Vec<(String, adw::EntryRow)> = names
+        .iter()
+        .map(|name| {
+            let entry_row = adw::EntryRow::builder().title(name.as_str()).build();
+            group.add(&entry_row);
+            (name.clone(), entry_row)
+        })
+        .collect();
+
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+
+    let run_button = gtk::Button::with_label("Kör");
+    run_button.add_css_class("suggested-action");
+    let cancel_button = gtk::Button::with_label("Avbryt");
+    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    header.pack_start(&cancel_button);
+    header.pack_end(&run_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&page);
+
+    let win = adw::Window::builder()
+        .transient_for(&area.overlay.root().and_downcast::<gtk::Window>().expect("inget fönster"))
+        .modal(true)
+        .default_width(420)
+        .default_height(320)
+        .title("Fyll i kommandot")
+        .content(&content)
+        .build();
+
+    cancel_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        move |_| win.close()
+    ));
+    run_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        #[strong]
+        area,
+        #[strong]
+        host,
+        #[strong]
+        password,
+        #[strong]
+        snippet,
+        move |_| {
+            let values: std::collections::HashMap<String, String> =
+                entries.iter().map(|(name, row)| (name.clone(), row.text().to_string())).collect();
+            let rendered = snippet.rendered(&values);
+            win.close();
+            launch_rendered_command(&area, host.clone(), password.clone(), &snippet.name, rendered);
+        }
+    ));
+
+    win.present();
+}
+
+fn show_snippet_edit_dialog(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    snippet_store: &Rc<RefCell<snippet::SnippetStore>>,
+    list: &gtk::ListBox,
+    existing: Option<snippet::Snippet>,
+) {
+    let is_edit = existing.is_some();
+    let name_row = adw::EntryRow::builder().title("Namn").build();
+    let template_row = adw::EntryRow::builder().title("Kommando (t.ex. docker restart {{service}})").build();
+    if let Some(s) = &existing {
+        name_row.set_text(&s.name);
+        template_row.set_text(&s.template);
+    }
+
+    let group = adw::PreferencesGroup::new();
+    group.add(&name_row);
+    group.add(&template_row);
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+
+    let save_button = gtk::Button::with_label(if is_edit { "Spara" } else { "Lägg till" });
+    save_button.add_css_class("suggested-action");
+    let cancel_button = gtk::Button::with_label("Avbryt");
+    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    header.pack_start(&cancel_button);
+    header.pack_end(&save_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&page);
+
+    let win = adw::Window::builder()
+        .transient_for(&area.overlay.root().and_downcast::<gtk::Window>().expect("inget fönster"))
+        .modal(true)
+        .default_width(420)
+        .default_height(240)
+        .title("Snippet")
+        .content(&content)
+        .build();
+
+    cancel_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        move |_| win.close()
+    ));
+    save_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        #[strong]
+        area,
+        #[strong]
+        host,
+        #[strong]
+        password,
+        #[strong]
+        snippet_store,
+        #[weak]
+        list,
+        #[strong]
+        existing,
+        move |_| {
+            let name = name_row.text().to_string();
+            let template = template_row.text().to_string();
+            if name.is_empty() || template.is_empty() {
+                return;
+            }
+            let snippet = if let Some(mut s) = existing.clone() {
+                s.name = name;
+                s.template = template;
+                s
+            } else {
+                snippet::Snippet::new(name, template)
+            };
+            snippet_store.borrow_mut().upsert(snippet).expect("kunde inte spara snippeten");
+            refresh_command_library_list(&area, &host, &password, &snippet_store, &list);
+            win.close();
+        }
+    ));
+
+    win.present();
 }

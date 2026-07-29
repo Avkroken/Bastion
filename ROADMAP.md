@@ -1459,7 +1459,26 @@ SSH-nyckeldistribution) round-trippar korrekt genom filen men saknar UI
 än — de har ingen vy att gömma i LinuxApp (se ovan). Detta uppfyller det
 uttryckligen namngivna kravet "Docker måste vara valfritt".
 
+**Klart samma dag, åttonde pass: `LinuxApp` Kommandobibliotek + Snippets +
+Funktioner-togglen för det** — port av `Sources/SSHCore/CommandLibrary.swift`
+(`command_library.rs`, alla 30 statiska referenskommandon Docker/Linux/Git/
+Cloudflare/Tailscale/WireGuard/systemd) + `Snippet.swift`/`SnippetStore.swift`
+(`snippet.rs`, `~/.bastion/snippets.json`, `{{variabel}}`-rendering). UI: en
+"Kommandon"-flik per värd listar båda; "Kör" fyller i variabler via en
+dialog om det behövs, annars öppnar direkt en ny terminalflik med
+kommandot som `startup_command` — samma återanvända mönster som
+Docker-shell, ingen ny SSH-kod. Egna snippets går att lägga till/redigera/
+ta bort. Funktioner-inställningen har nu även en Kommandobibliotek-toggle.
+
+**Explicit verifierat denna session (adresserar tidigare påpekande):**
+"exit måste avsluta sessionen" — ett nytt riktigt test
+(`ssh::tests::typing_exit_in_the_shell_closes_the_session`) skriver
+faktiskt `exit\n` i en levande SSH-shell och verifierar att
+`SshEvent::Closed` kommer tillbaka (vilket `start_session` i `main.rs`
+redan reagerar på genom att stänga fliken) — inte bara antaget från
+tidigare commits.
+
 Kvar: koppla in HostList/HostStore/SSH.NET i `WindowsApp` (nästa steg efter
-render-verifiering), Snippets/SFTP-vyer i `LinuxApp` (däribland togglar för
-dem när de finns), synk-UI, krypterade molntransporter i Rust (se
-task-listan i motsvarande Claude Code-session).
+render-verifiering), SFTP-vy i `LinuxApp` (+ togglen för den), synk-UI,
+krypterade molntransporter i Rust (se task-listan i motsvarande Claude
+Code-session).
