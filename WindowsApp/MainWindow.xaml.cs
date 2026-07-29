@@ -44,18 +44,34 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Auth-alternativ som faktiskt FUNGERAR i WindowsApp (se SshSession.cs).
+    /// AgentDefault (SSH-agent) saknas medvetet — SSH.NET har inget
+    /// agent-protokollstöd — så den döljs här istället för att skapa värdar
+    /// som ser sparade ut men aldrig kan ansluta.
+    /// </summary>
     private async void OnAddHostClicked(object sender, RoutedEventArgs e)
     {
         var aliasBox = new TextBox { PlaceholderText = "Alias" };
         var hostBox = new TextBox { PlaceholderText = "Värdnamn/IP" };
         var userBox = new TextBox { PlaceholderText = "Användare" };
         var portBox = new TextBox { PlaceholderText = "Port", Text = "22" };
+        var authCombo = new ComboBox
+        {
+            ItemsSource = new[] { "Nyckelfil", "Lösenord (frågas vid varje anslutning)" },
+            SelectedIndex = 0,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+        };
+        var keyPathBox = new TextBox { PlaceholderText = @"Sökväg till privat nyckel, t.ex. C:\Users\du\.ssh\id_ed25519" };
+        authCombo.SelectionChanged += (_, _) => keyPathBox.Visibility = authCombo.SelectedIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
 
         var panel = new StackPanel { Spacing = 8 };
         panel.Children.Add(aliasBox);
         panel.Children.Add(hostBox);
         panel.Children.Add(userBox);
         panel.Children.Add(portBox);
+        panel.Children.Add(authCombo);
+        panel.Children.Add(keyPathBox);
 
         var dialog = new ContentDialog
         {
@@ -77,6 +93,9 @@ public sealed partial class MainWindow : Window
 
         var host = Host.Create(alias, hostName, user);
         if (long.TryParse(portBox.Text, out var port)) host.Port = port;
+        host.Auth = authCombo.SelectedIndex == 0
+            ? new HostAuth.KeyFile(keyPathBox.Text.Trim())
+            : new HostAuth.AskPassword();
 
         _store.Upsert(host);
         Refresh();
