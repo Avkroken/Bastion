@@ -1381,6 +1381,18 @@ end-to-end mot en levande lokal sshd.
   Linux-motsvarighet.
 - Ingen terminalstorlek-ombindning vid fönsterresize (fast 80x24).
 
-Kvar: flikar med touchscreen-swipe mellan sessioner, Funktioner-inställningar
-(Docker valfritt m.m.), `WindowsApp/`-scaffold, samt design av synkprotokollet
-(se task-listan i motsvarande Claude Code-session).
+**Klart samma dag, senare pass:** flikar (`AdwTabView`/`AdwTabBar`, en SSH-
+session per flik) + touchscreen-svep mellan dem (`GestureSwipe`,
+400px/s-tröskel) — motsvarar iOS MultiSessionView. Flikstängning (manuell
+eller fjärrskalets EOF) stänger SSH-anslutningen rent.
+
+**Medvetet UPPSKJUTET, inte glömt:** Funktioner-inställningar (Docker
+valfritt m.m.) kräver att Docker/Snippets/SFTP/portvidarebefordran-vyerna
+finns FÖRST i LinuxApp — de finns inte än (bara HostList+terminal). Att
+bygga togglar för obefintliga funktioner nu vore tomt skelett. Bygg
+underliggande vyer, lägg till togglar när det finns något att gömma.
+
+Kvar: `WindowsApp/`-scaffold (C#/.NET+WinUI3+SSH.NET), design av
+synkprotokollet, host-key-verifiering i `LinuxApp/src/ssh.rs`, Docker/
+Snippets/SFTP-vyer + därefter Funktioner-togglar (se task-listan i
+motsvarande Claude Code-session).
