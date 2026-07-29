@@ -270,37 +270,42 @@ delvis andra, av konkreta skäl:
    guiden (Select Destination → Ready to Install → Installing → Finish)
    fungerade felfritt, skrivbordsikon skapades korrekt.
 
-   **NY BLOCKERANDE BUGG hittad vid samma verifiering**: `bastion-gui.exe`
-   startar men kraschar omedelbart (både vid autostart efter installation
-   och vid manuell start från skrivbordsikonen). Windows händelselogg
-   (Application) visar ett konsekvent, upprepat fel:
-   `Exception code: 0xc000001d` (STATUS_ILLEGAL_INSTRUCTION), faulting
-   module `swiftCore.dll` (från den separat installerade Swift 6.1-
-   toolchainen, `...\Programs\Swift\Runtimes\6.1.0\usr\bin\swiftCore.dll`),
-   fault offset `0x17bf6`. VM:en kör med `cpu mode='host-passthrough'`
-   (inga instruktioner maskeras av libvirt/QEMU) mot en AMD Ryzen 5 7430U
-   (Zen 3, `avx`+`avx2` men INGEN `avx512*`) — en trolig men EJ verifierad
-   hypotes är att den officiella Swift-for-Windows-toolchainens
-   `swiftCore.dll` innehåller en instruktion (t.ex. AVX-512-baserad
-   memcpy/hash-rutin) som denna CPU saknar. Inte root-orsakad denna
-   session — kräver antingen disassemblering av kraschadressen eller
-   test på en CPU med bredare instruktionsstöd (eller Intel med AVX-512)
-   för att bekräfta/avfärda hypotesen.
+   **Krasch hittad OCH LÖST samma session (2026-07-29)**: `bastion-gui.exe`
+   kraschade omedelbart efter installation. Windows händelselogg visade
+   `Exception code: 0xc000001d` (STATUS_ILLEGAL_INSTRUCTION) i
+   `swiftCore.dll` — en första hypotes (AVX-512-instruktion som VM:ens
+   AMD Ryzen 7430U saknar) verifierades vara FEL genom disassemblering
+   (`objdump`): instruktionen på kraschadressen var en avsiktlig `ud2`-
+   trap direkt efter ett `call`, inte en olaglig CPU-instruktion — det
+   vanliga kompilatormönstret efter anrop till en `noreturn`-funktion.
+   Den riktiga orsaken hittades genom att köra appen i en riktig konsol
+   (`cmd.exe`, inte en bakgrundslogg — WinRM/Start-Process-omdirigerad
+   stdout buffrades bort och visade aldrig felet): swift-winuis egen
+   `catch`-block skrev ut det verkliga felet innan `fatalError("fatal")`:
 
-   Detta är separat från och blockerar INTE installer-paketeringsarbetet
-   ovan (installern fungerar mekaniskt perfekt — problemet är att den
-   installerade appen kraschar på just denna testmaskins CPU). Notera
-   också: installern buntar INTE Swift-runtime-DLL:erna
-   (`swiftCore.dll` m.fl.) — de finns bara på VM:en för att Swift-
-   toolchainen råkar vara installerad där för byggen. En riktig
-   slutanvändare utan Swift installerat skulle få ett "DLL saknas"-fel
-   direkt, oavsett CPU-buggen ovan. Det är en känd, ej ännu löst,
-   paketeringslucka.
+       Failed to initialize WindowsAppRuntimeInitializer:
+       missingBootstrapper(["swift-winui_CWinAppSDK.resources\
+       Microsoft.WindowsAppRuntime.Bootstrap.dll", ...])
 
-   **Nästa steg**: (1) root-orsaka CPU-instruktionskraschen (annan
-   testmaskin/CPU, eller disassemblera runt offset 0x17bf6 i swiftCore.dll),
-   (2) bunta Swift-runtime-DLL:erna i `Installer.iss` så appen inte kräver
-   en separat Swift-installation, (3) porta de riktiga vyerna från
+   SwiftPM skapar en resursmapp `swift-winui_CWinAppSDK.resources`
+   (innehåller `Microsoft.WindowsAppRuntime.Bootstrap.dll`) bredvid
+   `.exe`-filen vid `swift build` — men `Installer.iss` kopierade bara
+   själva `.exe`-filen, aldrig denna mapp. Fixat genom att lägga till en
+   `[Files]`-post för mappen (commit `0e9952f`). **Verifierat på riktig
+   hårdvara**: ombyggd installer + ren installation + körning från
+   skrivbordsikon i en interaktiv session gav ett fullt renderat WinUI-
+   fönster ("Bastion för Windows", "0 sparade värdar", läser `HostStore`
+   korrekt) — ingen krasch. Svep-gesten testades INTE denna gång (kräver
+   äkta touch-input, en syntetisk musdrag via xdotool triggar inte
+   `ManipulationCompleted`) — kvarstår overifierad på riktig
+   touchhårdvara, som redan dokumenterat.
+
+   Kvarstående, separat, ej blockerande paketeringslucka: installern
+   buntar fortfarande INTE Swift-runtime-DLL:erna (`swiftCore.dll` m.fl.)
+   — de finns bara på testVM:en för att Swift-toolchainen råkar vara
+   installerad där för byggen. En slutanvändare utan Swift installerat
+   skulle få ett "DLL saknas"-fel. Nästa steg: (1) bunta Swift-runtime-
+   DLL:erna i `Installer.iss`, (2) porta de riktiga vyerna från
    `LinuxApp/Sources/bastion-gui/` hit (inte påbörjat, svep-bryggan väntar
    på riktiga flikar att växla mellan).
 4. **`bastion-cli` som headless/skriptbar fallback** (användarförslag
