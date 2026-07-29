@@ -1478,7 +1478,32 @@ faktiskt `exit\n` i en levande SSH-shell och verifierar att
 redan reagerar på genom att stänga fliken) — inte bara antaget från
 tidigare commits.
 
+**Klart samma dag, nionde pass: `LinuxApp` SFTP-bläddrare** — port av
+App/SFTPBrowserModel.swifts kärnfunktioner via `russh-sftp`-cratet ovanpå
+den befintliga `ssh::connect()`-hjälpen. `sftp.rs`: en bakgrundstråd med en
+enda återanvänd `SftpSession` (samma `ensureClient()`-cache-princip som
+Swift), kommandon via kanal (list/read/write/mkdir/remove_file/remove_dir/
+rename). UI: "Filer"-flik per värd, mapp-först-sortering, textredigering
+med binär-innehåll-detektering (UTF-8-avkodningsfel → skrivskyddad
+platshållartext, samma säkerhetsmarginal som Swiftsidans `isBinary`-fält —
+sparaknappen kan aldrig råka skriva över binärt innehåll med text). Ny
+Filer-toggle i Funktioner-inställningen.
+
+**Fälla hittad och fixad under verifiering:** `SftpSession::write()`
+öppnar bara med `OpenFlags::WRITE` — misslyckas med "No such file" på en
+NY fil, till skillnad från Swiftsidans `SFTPClient.writeFile` som alltid
+kan skapa. Egen `write_file()`-hjälp med `CREATE|TRUNCATE|WRITE` löser det.
+
+**Medvetet uppskjutet** (dokumenterat i `sftp.rs`, inte dolt): chmod/chown/
+komprimera/packa upp (Swiftsidans `chmod`/`chown`/`compress`/`extract`) —
+bara lista/navigera/ladda upp/ladda ner/ta bort/mkdir/döp om är porterat.
+
+Verifierat END-TO-END mot en levande sshd, inte bara byggt: ett komplett
+integrationstest (`full_round_trip_against_a_real_sftp_server`) kör mkdir
+→ write → read → list → rename → remove_file → remove_dir i en egen
+engångsmapp under `/tmp`, rör aldrig något annat på testmaskinen.
+
 Kvar: koppla in HostList/HostStore/SSH.NET i `WindowsApp` (nästa steg efter
-render-verifiering), SFTP-vy i `LinuxApp` (+ togglen för den), synk-UI,
-krypterade molntransporter i Rust (se task-listan i motsvarande Claude
+render-verifiering), synk-UI, krypterade molntransporter i Rust, chmod/
+chown/komprimera/packa upp i SFTP-vyn (se task-listan i motsvarande Claude
 Code-session).

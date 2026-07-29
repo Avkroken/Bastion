@@ -1,0 +1,245 @@
+//! SFTP-bläddrare, port av App/SFTPBrowserModel.swift (kärnfunktioner).
+//! Kör på en egen bakgrundstråd (egen tokio-runtime, precis som `ssh::run`)
+//! och tar emot kommandon via en kanal — en enda SFTP-session återanvänds
+//! för hela bläddringen, precis som Swiftsidans `ensureClient()`-cache.
+//!
+//! KÄND BEGRÄNSNING (dokumenterad, inte dold): chmod/chown/komprimera/packa
+//! upp (Swiftsidans `chmod`/`chown`/`compress`/`extract`) är INTE porterade
+//! än — bara lista/navigera/ladda upp/ladda ner/ta bort/mkdir/döp om. Se
+//! ROADMAP.md.
+
+use crate::host::Host;
+use russh_sftp::client::SftpSession;
+use russh_sftp::protocol::OpenFlags;
+use tokio::io::AsyncWriteExt;
+
+#[derive(Debug, Clone)]
+pub struct Entry {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
+}
+
+enum Command {
+    List { path: String, reply: async_channel::Sender<Result<Vec<Entry>, String>> },
+    Read { path: String, reply: async_channel::Sender<Result<Vec<u8>, String>> },
+    Write { path: String, data: Vec<u8>, reply: async_channel::Sender<Result<(), String>> },
+    Mkdir { path: String, reply: async_channel::Sender<Result<(), String>> },
+    RemoveFile { path: String, reply: async_channel::Sender<Result<(), String>> },
+    RemoveDir { path: String, reply: async_channel::Sender<Result<(), String>> },
+    Rename { from: String, to: String, reply: async_channel::Sender<Result<(), String>> },
+}
+
+#[derive(Clone)]
+pub struct SftpHandle {
+    tx: async_channel::Sender<Command>,
+}
+
+impl SftpHandle {
+    pub async fn list(&self, path: String) -> Result<Vec<Entry>, String> {
+        let (reply, rx) = async_channel::bounded(1);
+        self.send(Command::List { path, reply }, rx).await
+    }
+
+    pub async fn read(&self, path: String) -> Result<Vec<u8>, String> {
+        let (reply, rx) = async_channel::bounded(1);
+        self.send(Command::Read { path, reply }, rx).await
+    }
+
+    pub async fn write(&self, path: String, data: Vec<u8>) -> Result<(), String> {
+        let (reply, rx) = async_channel::bounded(1);
+        self.send(Command::Write { path, data, reply }, rx).await
+    }
+
+    pub async fn mkdir(&self, path: String) -> Result<(), String> {
+        let (reply, rx) = async_channel::bounded(1);
+        self.send(Command::Mkdir { path, reply }, rx).await
+    }
+
+    pub async fn remove_file(&self, path: String) -> Result<(), String> {
+        let (reply, rx) = async_channel::bounded(1);
+        self.send(Command::RemoveFile { path, reply }, rx).await
+    }
+
+    pub async fn remove_dir(&self, path: String) -> Result<(), String> {
+        let (reply, rx) = async_channel::bounded(1);
+        self.send(Command::RemoveDir { path, reply }, rx).await
+    }
+
+    pub async fn rename(&self, from: String, to: String) -> Result<(), String> {
+        let (reply, rx) = async_channel::bounded(1);
+        self.send(Command::Rename { from, to, reply }, rx).await
+    }
+
+    async fn send<T>(&self, cmd: Command, rx: async_channel::Receiver<Result<T, String>>) -> Result<T, String> {
+        // Går aldrig i praktiken (bakgrundstråden svarar alltid), men
+        // undviker att hänga för evigt om tråden redan dött.
+        if self.tx.send(cmd).await.is_err() {
+            return Err("SFTP-bakgrundstråden är inte längre igång".to_string());
+        }
+        rx.recv().await.unwrap_or_else(|_| Err("SFTP-bakgrundstråden svarade aldrig".to_string()))
+    }
+}
+
+/// Startar SFTP-anslutningen på en ny bakgrundstråd. Om själva anslutningen
+/// misslyckas svarar handtaget med samma fel på varje efterföljande
+/// kommando istället för att panika eller hänga tyst.
+pub fn spawn(host: Host, password: Option<String>) -> SftpHandle {
+    let (tx, rx) = async_channel::unbounded::<Command>();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("kunde inte starta tokio-runtimen för SFTP-tråden");
+        rt.block_on(async move {
+            match connect_sftp(host, password).await {
+                Ok(session) => run(session, rx).await,
+                Err(e) => {
+                    while let Ok(cmd) = rx.recv().await {
+                        reply_error(cmd, &e);
+                    }
+                }
+            }
+        });
+    });
+    SftpHandle { tx }
+}
+
+async fn connect_sftp(host: Host, password: Option<String>) -> Result<SftpSession, String> {
+    let session = crate::ssh::connect(&host, password, None).await?;
+    let channel = session
+        .channel_open_session()
+        .await
+        .map_err(|e| format!("kunde inte öppna kanal: {e}"))?;
+    channel
+        .request_subsystem(true, "sftp")
+        .await
+        .map_err(|e| format!("sftp-subsystemet nekades: {e}"))?;
+    SftpSession::new(channel.into_stream())
+        .await
+        .map_err(|e| format!("sftp-handskakning misslyckades: {e}"))
+}
+
+async fn run(session: SftpSession, rx: async_channel::Receiver<Command>) {
+    while let Ok(cmd) = rx.recv().await {
+        match cmd {
+            Command::List { path, reply } => {
+                let result = list(&session, &path).await;
+                let _ = reply.send(result).await;
+            }
+            Command::Read { path, reply } => {
+                let result = session.read(path).await.map_err(|e| e.to_string());
+                let _ = reply.send(result).await;
+            }
+            Command::Write { path, data, reply } => {
+                let result = write_file(&session, path, &data).await;
+                let _ = reply.send(result).await;
+            }
+            Command::Mkdir { path, reply } => {
+                let result = session.create_dir(path).await.map_err(|e| e.to_string());
+                let _ = reply.send(result).await;
+            }
+            Command::RemoveFile { path, reply } => {
+                let result = session.remove_file(path).await.map_err(|e| e.to_string());
+                let _ = reply.send(result).await;
+            }
+            Command::RemoveDir { path, reply } => {
+                let result = session.remove_dir(path).await.map_err(|e| e.to_string());
+                let _ = reply.send(result).await;
+            }
+            Command::Rename { from, to, reply } => {
+                let result = session.rename(from, to).await.map_err(|e| e.to_string());
+                let _ = reply.send(result).await;
+            }
+        }
+    }
+}
+
+/// `SftpSession::write` bara öppnar med `OpenFlags::WRITE`, vilket
+/// misslyckas med "No such file" om filen inte redan finns — till skillnad
+/// från Swiftsidans `SFTPClient.writeFile` (öppnar alltid med skapa-flaggan,
+/// eftersom både "spara en ny fil" och "spara en ändrad fil" ska fungera).
+async fn write_file(session: &SftpSession, path: String, data: &[u8]) -> Result<(), String> {
+    let mut file = session
+        .open_with_flags(path, OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE)
+        .await
+        .map_err(|e| e.to_string())?;
+    file.write_all(data).await.map_err(|e| e.to_string())?;
+    file.shutdown().await.map_err(|e| e.to_string())
+}
+
+async fn list(session: &SftpSession, path: &str) -> Result<Vec<Entry>, String> {
+    let read_dir = session.read_dir(path).await.map_err(|e| e.to_string())?;
+    let mut entries: Vec<Entry> = read_dir
+        .filter(|e| e.file_name() != "." && e.file_name() != "..")
+        .map(|e| Entry { name: e.file_name(), is_dir: e.file_type().is_dir(), size: e.metadata().len() })
+        .collect();
+    // Mapp-först, sedan alfabetiskt inom varje grupp — samma sortering som
+    // Swiftsidans `sortedEntries`.
+    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+    Ok(entries)
+}
+
+fn reply_error(cmd: Command, message: &str) {
+    match cmd {
+        Command::List { reply, .. } => {
+            let _ = reply.send_blocking(Err(message.to_string()));
+        }
+        Command::Read { reply, .. } => {
+            let _ = reply.send_blocking(Err(message.to_string()));
+        }
+        Command::Write { reply, .. }
+        | Command::Mkdir { reply, .. }
+        | Command::RemoveFile { reply, .. }
+        | Command::RemoveDir { reply, .. }
+        | Command::Rename { reply, .. } => {
+            let _ = reply.send_blocking(Err(message.to_string()));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::{Host, HostAuth};
+
+    /// Riktig end-to-end-övning mot localhosts sshd: mkdir/write/read/list/
+    /// rename/remove i en engångsmapp under /tmp — skapar och tar bort sin
+    /// EGEN testmapp, rör aldrig något annat på testmaskinen.
+    #[test]
+    #[ignore = "kräver en riktig localhost-sshd + en nyckel förberedd i authorized_keys, se ROADMAP.md"]
+    fn full_round_trip_against_a_real_sftp_server() {
+        let key_path = std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
+        let user = std::env::var("USER").expect("USER måste vara satt");
+        let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
+        host.auth = HostAuth::KeyFile(key_path);
+
+        let dir = format!("/tmp/bastion-sftp-test-{}", uuid::Uuid::new_v4());
+        let handle = spawn(host, None);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            handle.mkdir(dir.clone()).await.expect("mkdir misslyckades");
+
+            let file_path = format!("{dir}/hello.txt");
+            handle.write(file_path.clone(), b"hej bastion".to_vec()).await.expect("write misslyckades");
+
+            let content = handle.read(file_path.clone()).await.expect("read misslyckades");
+            assert_eq!(content, b"hej bastion");
+
+            let entries = handle.list(dir.clone()).await.expect("list misslyckades");
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].name, "hello.txt");
+            assert!(!entries[0].is_dir);
+            assert_eq!(entries[0].size, 11);
+
+            let renamed_path = format!("{dir}/renamed.txt");
+            handle.rename(file_path, renamed_path.clone()).await.expect("rename misslyckades");
+            let entries = handle.list(dir.clone()).await.expect("list efter rename misslyckades");
+            assert_eq!(entries[0].name, "renamed.txt");
+
+            handle.remove_file(renamed_path).await.expect("remove_file misslyckades");
+            handle.remove_dir(dir).await.expect("remove_dir misslyckades");
+        });
+    }
+}

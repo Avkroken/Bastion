@@ -40,7 +40,7 @@ pub struct SshSession {
 /// TOFU-avslag med ett förklarande meddelande (istället för `Ok(false)`,
 /// som bara ger ett generiskt "UnknownKey").
 #[derive(Debug)]
-enum ConnectError {
+pub(crate) enum ConnectError {
     Russh(russh::Error),
     HostKeyChanged(String),
 }
@@ -60,7 +60,7 @@ impl std::fmt::Display for ConnectError {
     }
 }
 
-struct ClientHandler {
+pub(crate) struct ClientHandler {
     host: String,
     port: u16,
     known_hosts: Arc<KnownHosts>,
@@ -109,7 +109,7 @@ pub fn spawn_shell(host: Host, password: Option<String>, cols: u32, rows: u32) -
 
 /// Ansluter och autentiserar — delad av den interaktiva shell-sessionen
 /// (`run`) och engångskommandon (`run_command_once`, t.ex. Docker-anrop).
-async fn connect(
+pub(crate) async fn connect(
     host: &Host,
     password: Option<String>,
     known_hosts_path_override: Option<std::path::PathBuf>,

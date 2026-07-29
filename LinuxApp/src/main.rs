@@ -10,6 +10,7 @@ mod docker;
 mod host;
 mod known_hosts;
 mod settings;
+mod sftp;
 mod snippet;
 mod ssh;
 #[allow(dead_code)] // synk-UI (välja/konfigurera en SyncProvider) är inte byggt än
@@ -249,10 +250,26 @@ fn refresh_list(
                 }
             }
         ));
+        let sftp_action = gtk::gio::SimpleAction::new("sftp", None);
+        sftp_action.connect_activate(clone!(
+            #[strong]
+            store,
+            #[strong]
+            area,
+            #[strong(rename_to = host_id)]
+            h.id,
+            move |_, _| {
+                let host = store.borrow().all().iter().find(|x| x.id == host_id).map(|h| (*h).clone());
+                if let Some(host) = host {
+                    require_password(&area, host, open_sftp_view);
+                }
+            }
+        ));
         action_group.add_action(&edit_action);
         action_group.add_action(&delete_action);
         action_group.add_action(&docker_action);
         action_group.add_action(&commands_action);
+        action_group.add_action(&sftp_action);
         row.insert_action_group("host", Some(&action_group));
 
         list.append(&row);
@@ -267,6 +284,9 @@ fn gio_menu_for(toggles: &settings::FeatureToggles) -> gtk::gio::Menu {
     }
     if toggles.show_command_library {
         menu.append(Some("Kommandon"), Some("host.commands"));
+    }
+    if toggles.show_sftp_browser {
+        menu.append(Some("Filer"), Some("host.sftp"));
     }
     menu.append(Some("Ta bort"), Some("host.delete"));
     menu
@@ -397,10 +417,16 @@ fn show_settings_dialog(
         .subtitle("Visa Kommandon-knappen på värdar")
         .active(current.show_command_library)
         .build();
+    let sftp_row = adw::SwitchRow::builder()
+        .title("Filer (SFTP)")
+        .subtitle("Visa Filer-knappen på värdar")
+        .active(current.show_sftp_browser)
+        .build();
 
     let group = adw::PreferencesGroup::builder().title("Funktioner").build();
     group.add(&docker_row);
     group.add(&commands_row);
+    group.add(&sftp_row);
     let page = adw::PreferencesPage::new();
     page.add(&group);
 
@@ -462,6 +488,30 @@ fn show_settings_dialog(
         move |row| {
             let mut toggles = settings_store.borrow().current();
             toggles.show_command_library = row.is_active();
+            settings_store
+                .borrow_mut()
+                .update(toggles)
+                .expect("kunde inte spara inställningarna");
+            refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store);
+        }
+    ));
+
+    sftp_row.connect_active_notify(clone!(
+        #[strong]
+        settings_store,
+        #[strong]
+        store,
+        #[weak]
+        list,
+        #[strong]
+        app,
+        #[strong]
+        area,
+        #[strong]
+        snippet_store,
+        move |row| {
+            let mut toggles = settings_store.borrow().current();
+            toggles.show_sftp_browser = row.is_active();
             settings_store
                 .borrow_mut()
                 .update(toggles)
@@ -1263,4 +1313,500 @@ fn show_snippet_edit_dialog(
     ));
 
     win.present();
+}
+
+/// Öppnar SFTP-bläddraren för `host` i en ny flik. Port av
+/// App/SFTPBrowserModel.swift (kärnfunktioner — se sftp.rs för vad som
+/// medvetet är uppskjutet: chmod/chown/komprimera/packa upp).
+fn open_sftp_view(area: &Rc<SessionArea>, host: host::Host, password: Option<String>) {
+    let handle = sftp::spawn(host.clone(), password);
+    let current_path = Rc::new(RefCell::new(".".to_string()));
+
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(12)
+        .margin_bottom(12)
+        .build();
+    let scrolled = gtk::ScrolledWindow::builder().child(&list).vexpand(true).build();
+
+    let path_label = gtk::Label::builder().halign(gtk::Align::Start).hexpand(true).build();
+    let up_button = gtk::Button::from_icon_name("go-up-symbolic");
+    up_button.set_tooltip_text(Some("Upp en nivå"));
+    let mkdir_button = gtk::Button::from_icon_name("folder-new-symbolic");
+    mkdir_button.set_tooltip_text(Some("Ny mapp"));
+    let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
+
+    let toolbar = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(4).margin_start(12).margin_end(12).margin_top(8).build();
+    toolbar.append(&up_button);
+    toolbar.append(&path_label);
+    toolbar.append(&mkdir_button);
+    toolbar.append(&refresh_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&toolbar);
+    content.append(&scrolled);
+
+    let page = area.tab_view.append(&content);
+    page.set_title(&format!("Filer: {}", host.alias));
+    area.tab_view.set_selected_page(&page);
+    area.update_placeholder();
+
+    up_button.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        handle,
+        #[strong]
+        current_path,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        move |_| {
+            let mut path = current_path.borrow_mut();
+            if *path != "." {
+                *path = match path.rfind('/') {
+                    Some(slash) => path[..slash].to_string(),
+                    None => ".".to_string(),
+                };
+                let new_path = path.clone();
+                drop(path);
+                refresh_sftp_list(&area, handle.clone(), current_path.clone(), new_path, &list, &path_label);
+            }
+        }
+    ));
+
+    mkdir_button.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        handle,
+        #[strong]
+        current_path,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        move |_| prompt_new_folder_name(&area, handle.clone(), current_path.clone(), &list, &path_label)
+    ));
+
+    refresh_button.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        handle,
+        #[strong]
+        current_path,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        move |_| {
+            let path = current_path.borrow().clone();
+            refresh_sftp_list(&area, handle.clone(), current_path.clone(), path, &list, &path_label);
+        }
+    ));
+
+    let initial_path = current_path.borrow().clone();
+    refresh_sftp_list(area, handle, current_path, initial_path, &list, &path_label);
+}
+
+fn refresh_sftp_list(
+    area: &Rc<SessionArea>,
+    handle: sftp::SftpHandle,
+    current_path: Rc<RefCell<String>>,
+    path: String,
+    list: &gtk::ListBox,
+    path_label: &gtk::Label,
+) {
+    path_label.set_text(&path);
+    glib::spawn_future_local(clone!(
+        #[strong]
+        area,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        async move {
+            while let Some(row) = list.row_at_index(0) {
+                list.remove(&row);
+            }
+            match handle.list(path.clone()).await {
+                Ok(entries) => {
+                    for entry in entries {
+                        list.append(&build_sftp_entry_row(&area, handle.clone(), current_path.clone(), path.clone(), entry, &list, &path_label));
+                    }
+                }
+                Err(e) => list.append(&error_row(&e)),
+            }
+        }
+    ));
+}
+
+fn joined_path(base: &str, name: &str) -> String {
+    if base == "." {
+        name.to_string()
+    } else {
+        format!("{base}/{name}")
+    }
+}
+
+fn build_sftp_entry_row(
+    area: &Rc<SessionArea>,
+    handle: sftp::SftpHandle,
+    current_path: Rc<RefCell<String>>,
+    path: String,
+    entry: sftp::Entry,
+    list: &gtk::ListBox,
+    path_label: &gtk::Label,
+) -> adw::ActionRow {
+    let subtitle = if entry.is_dir { "Mapp".to_string() } else { format!("{} bytes", entry.size) };
+    let row = adw::ActionRow::builder().title(&entry.name).subtitle(subtitle).activatable(true).build();
+    let icon = gtk::Image::from_icon_name(if entry.is_dir { "folder-symbolic" } else { "text-x-generic-symbolic" });
+    row.add_prefix(&icon);
+
+    row.connect_activated(clone!(
+        #[strong]
+        area,
+        #[strong]
+        handle,
+        #[strong]
+        current_path,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        #[strong]
+        entry,
+        #[strong]
+        path,
+        move |_| {
+            let full_path = joined_path(&path, &entry.name);
+            if entry.is_dir {
+                *current_path.borrow_mut() = full_path.clone();
+                refresh_sftp_list(&area, handle.clone(), current_path.clone(), full_path, &list, &path_label);
+            } else {
+                open_sftp_file_editor(&area, handle.clone(), full_path);
+            }
+        }
+    ));
+
+    let delete_button = gtk::Button::from_icon_name("user-trash-symbolic");
+    delete_button.set_tooltip_text(Some("Ta bort"));
+    delete_button.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        handle,
+        #[strong]
+        current_path,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        #[strong]
+        entry,
+        #[strong]
+        path,
+        move |_| {
+            let full_path = joined_path(&path, &entry.name);
+            let is_dir = entry.is_dir;
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                handle,
+                #[strong]
+                current_path,
+                #[weak]
+                list,
+                #[weak]
+                path_label,
+                #[strong]
+                path,
+                async move {
+                    let result = if is_dir { handle.remove_dir(full_path).await } else { handle.remove_file(full_path).await };
+                    if let Err(e) = result {
+                        list.append(&error_row(&e));
+                        return;
+                    }
+                    refresh_sftp_list(&area, handle.clone(), current_path, path, &list, &path_label);
+                }
+            ));
+        }
+    ));
+
+    let rename_button = gtk::Button::from_icon_name("document-edit-symbolic");
+    rename_button.set_tooltip_text(Some("Döp om"));
+    rename_button.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        handle,
+        #[strong]
+        current_path,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        #[strong]
+        entry,
+        #[strong]
+        path,
+        move |_| prompt_rename(&area, handle.clone(), current_path.clone(), path.clone(), entry.clone(), &list, &path_label)
+    ));
+
+    row.add_suffix(&rename_button);
+    row.add_suffix(&delete_button);
+    row
+}
+
+fn prompt_new_folder_name(area: &Rc<SessionArea>, handle: sftp::SftpHandle, current_path: Rc<RefCell<String>>, list: &gtk::ListBox, path_label: &gtk::Label) {
+    let name_row = adw::EntryRow::builder().title("Mappnamn").build();
+    let group = adw::PreferencesGroup::new();
+    group.add(&name_row);
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+
+    let create_button = gtk::Button::with_label("Skapa");
+    create_button.add_css_class("suggested-action");
+    let cancel_button = gtk::Button::with_label("Avbryt");
+    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    header.pack_start(&cancel_button);
+    header.pack_end(&create_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&page);
+
+    let win = adw::Window::builder()
+        .transient_for(&area.overlay.root().and_downcast::<gtk::Window>().expect("inget fönster"))
+        .modal(true)
+        .default_width(360)
+        .default_height(160)
+        .title("Ny mapp")
+        .content(&content)
+        .build();
+
+    cancel_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        move |_| win.close()
+    ));
+    create_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        #[strong]
+        area,
+        #[strong]
+        handle,
+        #[strong]
+        current_path,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        move |_| {
+            let name = name_row.text().to_string();
+            if name.is_empty() {
+                return;
+            }
+            win.close();
+            let base = current_path.borrow().clone();
+            let full_path = joined_path(&base, &name);
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                handle,
+                #[strong]
+                current_path,
+                #[weak]
+                list,
+                #[weak]
+                path_label,
+                async move {
+                    if let Err(e) = handle.mkdir(full_path).await {
+                        list.append(&error_row(&e));
+                        return;
+                    }
+                    let path = current_path.borrow().clone();
+                    refresh_sftp_list(&area, handle.clone(), current_path, path, &list, &path_label);
+                }
+            ));
+        }
+    ));
+
+    win.present();
+}
+
+fn prompt_rename(
+    area: &Rc<SessionArea>,
+    handle: sftp::SftpHandle,
+    current_path: Rc<RefCell<String>>,
+    path: String,
+    entry: sftp::Entry,
+    list: &gtk::ListBox,
+    path_label: &gtk::Label,
+) {
+    let name_row = adw::EntryRow::builder().title("Nytt namn").text(&entry.name).build();
+    let group = adw::PreferencesGroup::new();
+    group.add(&name_row);
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+
+    let save_button = gtk::Button::with_label("Döp om");
+    save_button.add_css_class("suggested-action");
+    let cancel_button = gtk::Button::with_label("Avbryt");
+    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    header.pack_start(&cancel_button);
+    header.pack_end(&save_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&page);
+
+    let win = adw::Window::builder()
+        .transient_for(&area.overlay.root().and_downcast::<gtk::Window>().expect("inget fönster"))
+        .modal(true)
+        .default_width(360)
+        .default_height(160)
+        .title("Döp om")
+        .content(&content)
+        .build();
+
+    cancel_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        move |_| win.close()
+    ));
+    save_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        #[strong]
+        area,
+        #[strong]
+        handle,
+        #[strong]
+        current_path,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        move |_| {
+            let new_name = name_row.text().to_string();
+            if new_name.is_empty() {
+                return;
+            }
+            win.close();
+            let from = joined_path(&path, &entry.name);
+            let to = joined_path(&path, &new_name);
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                handle,
+                #[strong]
+                current_path,
+                #[weak]
+                list,
+                #[weak]
+                path_label,
+                async move {
+                    if let Err(e) = handle.rename(from, to).await {
+                        list.append(&error_row(&e));
+                        return;
+                    }
+                    let path = current_path.borrow().clone();
+                    refresh_sftp_list(&area, handle.clone(), current_path, path, &list, &path_label);
+                }
+            ));
+        }
+    ));
+
+    win.present();
+}
+
+/// Läser filen och visar den redigerbar om innehållet är giltig UTF-8 —
+/// annars en tydlig platshållartext (samma "spara MÅSTE vara avstängt för
+/// binärt innehåll"-lärdom som Swiftsidans `EditingFile.isBinary`).
+fn open_sftp_file_editor(area: &Rc<SessionArea>, handle: sftp::SftpHandle, path: String) {
+    let text_view = gtk::TextView::builder().monospace(true).build();
+    let scrolled = gtk::ScrolledWindow::builder().child(&text_view).vexpand(true).build();
+
+    let save_button = gtk::Button::with_label("Spara");
+    save_button.add_css_class("suggested-action");
+    save_button.set_sensitive(false);
+    let close_button = gtk::Button::with_label("Stäng");
+    let header = adw::HeaderBar::builder().show_end_title_buttons(false).title_widget(&gtk::Label::new(Some(&path))).build();
+    header.pack_start(&close_button);
+    header.pack_end(&save_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&scrolled);
+
+    let win = adw::Window::builder()
+        .transient_for(&area.overlay.root().and_downcast::<gtk::Window>().expect("inget fönster"))
+        .modal(true)
+        .default_width(700)
+        .default_height(500)
+        .content(&content)
+        .build();
+    win.present();
+
+    close_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        move |_| win.close()
+    ));
+    save_button.connect_clicked(clone!(
+        #[strong]
+        handle,
+        #[strong]
+        path,
+        #[weak]
+        text_view,
+        move |_| {
+            let buffer = text_view.buffer();
+            let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
+            glib::spawn_future_local(clone!(
+                #[strong]
+                handle,
+                #[strong]
+                path,
+                async move {
+                    let _ = handle.write(path, text.into_bytes()).await;
+                }
+            ));
+        }
+    ));
+
+    glib::spawn_future_local(clone!(
+        #[weak]
+        text_view,
+        #[weak]
+        save_button,
+        async move {
+            match handle.read(path).await {
+                Ok(bytes) => match String::from_utf8(bytes) {
+                    Ok(text) => {
+                        text_view.buffer().set_text(&text);
+                        save_button.set_sensitive(true);
+                    }
+                    Err(e) => {
+                        text_view.buffer().set_text(&format!(
+                            "(binärt innehåll, {} bytes — kan inte visas eller redigeras som text)",
+                            e.into_bytes().len()
+                        ));
+                        text_view.set_editable(false);
+                    }
+                },
+                Err(e) => text_view.buffer().set_text(&format!("Fel: {e}")),
+            }
+        }
+    ));
 }
