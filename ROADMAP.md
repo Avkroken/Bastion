@@ -1447,8 +1447,19 @@ Docker-containrar på utvecklingsmaskinen (plex/maintainerr/fetcher/
 watchtower) — men ENDAST läsande (`docker ps`), aldrig start/stopp/
 omstart mot riktiga containrar i ett test.
 
+**Klart samma dag, sjunde pass: `LinuxApp` Funktioner-inställningar
+(Docker-delen)** — port av `Sources/SSHCore/AppSettings.swift`
+(`settings.rs`, `~/.bastion/settings.json`, samma sex fält/wire-format som
+Swift, inklusive `showSFTPBrowser`s versala SFTP-akronym som avviker från
+serdes automatiska camelCase — verifierat mot en riktig `swift`-körning).
+En inställningsknapp i sidopanelen öppnar en dialog med en Docker-toggle;
+avstängd döljer den "Docker"-menyposten på alla värdrader direkt. De
+övriga fem fälten (Snippets/Kommandobibliotek/SFTP/portvidarebefordran/
+SSH-nyckeldistribution) round-trippar korrekt genom filen men saknar UI
+än — de har ingen vy att gömma i LinuxApp (se ovan). Detta uppfyller det
+uttryckligen namngivna kravet "Docker måste vara valfritt".
+
 Kvar: koppla in HostList/HostStore/SSH.NET i `WindowsApp` (nästa steg efter
-render-verifiering), Snippets/SFTP-vyer i `LinuxApp` + därefter
-Funktioner-togglar (Docker-delen av togglen kan nu byggas — Docker-vyn
-finns), synk-UI, krypterade molntransporter i Rust (se task-listan i
-motsvarande Claude Code-session).
+render-verifiering), Snippets/SFTP-vyer i `LinuxApp` (däribland togglar för
+dem när de finns), synk-UI, krypterade molntransporter i Rust (se
+task-listan i motsvarande Claude Code-session).

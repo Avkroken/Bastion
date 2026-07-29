@@ -3,12 +3,12 @@ use gtk::glib;
 use gtk::glib::clone;
 use std::cell::RefCell;
 use std::rc::Rc;
-use uuid::Uuid;
 use vte::prelude::*;
 
 mod docker;
 mod host;
 mod known_hosts;
+mod settings;
 mod ssh;
 #[allow(dead_code)] // synk-UI (välja/konfigurera en SyncProvider) är inte byggt än
 mod sync;
@@ -28,6 +28,9 @@ fn build_ui(app: &adw::Application) {
     let store = Rc::new(RefCell::new(
         HostStore::open(HostStore::default_path()).expect("kunde inte öppna host-databasen"),
     ));
+    let settings_store = Rc::new(RefCell::new(settings::AppSettingsStore::open(
+        settings::AppSettingsStore::default_path(),
+    )));
 
     let list = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
@@ -38,7 +41,7 @@ fn build_ui(app: &adw::Application) {
         .margin_bottom(12)
         .build();
     let area = SessionArea::new();
-    refresh_list(&list, &store, app, &area);
+    refresh_list(&list, &store, app, &area, &settings_store);
 
     let scrolled = gtk::ScrolledWindow::builder().child(&list).vexpand(true).build();
 
@@ -53,11 +56,30 @@ fn build_ui(app: &adw::Application) {
         list,
         #[strong]
         area,
-        move |_| show_host_dialog(&app, &store, &list, &area, None)
+        #[strong]
+        settings_store,
+        move |_| show_host_dialog(&app, &store, &list, &area, &settings_store, None)
+    ));
+
+    let settings_button = gtk::Button::from_icon_name("preferences-system-symbolic");
+    settings_button.set_tooltip_text(Some("Funktioner"));
+    settings_button.connect_clicked(clone!(
+        #[weak]
+        app,
+        #[strong]
+        settings_store,
+        #[strong]
+        store,
+        #[weak]
+        list,
+        #[strong]
+        area,
+        move |_| show_settings_dialog(&app, &settings_store, &store, &list, &area)
     ));
 
     let sidebar_header = adw::HeaderBar::new();
     sidebar_header.pack_end(&add_button);
+    sidebar_header.pack_end(&settings_button);
 
     let sidebar_content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     sidebar_content.append(&sidebar_header);
@@ -112,10 +134,17 @@ fn build_ui(app: &adw::Application) {
 /// Bygger om värdlistan från HostStore. Långtryck på en rad öppnar
 /// redigera/ta-bort-menyn — touchscreen-vänligt (motsvarar iOS-menyn för
 /// samma gest, se b30bec8).
-fn refresh_list(list: &gtk::ListBox, store: &Rc<RefCell<HostStore>>, app: &adw::Application, area: &Rc<SessionArea>) {
+fn refresh_list(
+    list: &gtk::ListBox,
+    store: &Rc<RefCell<HostStore>>,
+    app: &adw::Application,
+    area: &Rc<SessionArea>,
+    settings_store: &Rc<RefCell<settings::AppSettingsStore>>,
+) {
     while let Some(row) = list.row_at_index(0) {
         list.remove(&row);
     }
+    let show_docker = settings_store.borrow().current().show_docker;
     for h in store.borrow().all() {
         let row = adw::ActionRow::builder()
             .title(&h.alias)
@@ -128,7 +157,7 @@ fn refresh_list(list: &gtk::ListBox, store: &Rc<RefCell<HostStore>>, app: &adw::
             .valign(gtk::Align::Center)
             .css_classes(["flat"])
             .build();
-        let menu = gio_menu_for(h.id);
+        let menu = gio_menu_for(show_docker);
         menu_button.set_menu_model(Some(&menu));
         row.add_suffix(&menu_button);
 
@@ -143,12 +172,14 @@ fn refresh_list(list: &gtk::ListBox, store: &Rc<RefCell<HostStore>>, app: &adw::
             list,
             #[strong]
             area,
+            #[strong]
+            settings_store,
             #[strong(rename_to = host_id)]
             h.id,
             move |_, _| {
                 let host = store.borrow().all().iter().find(|x| x.id == host_id).map(|h| (*h).clone());
                 if let Some(host) = host {
-                    show_host_dialog(&app, &store, &list, &area, Some(host));
+                    show_host_dialog(&app, &store, &list, &area, &settings_store, Some(host));
                 }
             }
         ));
@@ -162,11 +193,13 @@ fn refresh_list(list: &gtk::ListBox, store: &Rc<RefCell<HostStore>>, app: &adw::
             list,
             #[strong]
             area,
+            #[strong]
+            settings_store,
             #[strong(rename_to = host_id)]
             h.id,
             move |_, _| {
                 store.borrow_mut().delete(host_id).expect("kunde inte ta bort värden");
-                refresh_list(&list, &store, &app, &area);
+                refresh_list(&list, &store, &app, &area, &settings_store);
             }
         ));
         let docker_action = gtk::gio::SimpleAction::new("docker", None);
@@ -193,10 +226,12 @@ fn refresh_list(list: &gtk::ListBox, store: &Rc<RefCell<HostStore>>, app: &adw::
     }
 }
 
-fn gio_menu_for(_host_id: Uuid) -> gtk::gio::Menu {
+fn gio_menu_for(show_docker: bool) -> gtk::gio::Menu {
     let menu = gtk::gio::Menu::new();
     menu.append(Some("Redigera"), Some("host.edit"));
-    menu.append(Some("Docker"), Some("host.docker"));
+    if show_docker {
+        menu.append(Some("Docker"), Some("host.docker"));
+    }
     menu.append(Some("Ta bort"), Some("host.delete"));
     menu
 }
@@ -207,6 +242,7 @@ fn show_host_dialog(
     store: &Rc<RefCell<HostStore>>,
     list: &gtk::ListBox,
     area: &Rc<SessionArea>,
+    settings_store: &Rc<RefCell<settings::AppSettingsStore>>,
     existing: Option<Host>,
 ) {
     let is_edit = existing.is_some();
@@ -267,6 +303,8 @@ fn show_host_dialog(
         app,
         #[strong]
         area,
+        #[strong]
+        settings_store,
         #[weak]
         win,
         #[strong]
@@ -291,9 +329,79 @@ fn show_host_dialog(
                 h
             };
             store.borrow_mut().upsert(host).expect("kunde inte spara värden");
-            refresh_list(&list, &store, &app, &area);
+            refresh_list(&list, &store, &app, &area, &settings_store);
             win.close();
         }
+    ));
+
+    win.present();
+}
+
+/// Funktioner-inställningar: just nu bara Docker-togglen (det uttryckligen
+/// namngivna kravet) — Snippets/Kommandobibliotek/SFTP/portvidarebefordran/
+/// SSH-nyckeldistribution har ingen vy att gömma i LinuxApp än (se
+/// ROADMAP.md), så deras fält finns i `settings::FeatureToggles` (för att
+/// inte tappa en delad settings.json-fils övriga värden) men saknar UI här.
+fn show_settings_dialog(
+    app: &adw::Application,
+    settings_store: &Rc<RefCell<settings::AppSettingsStore>>,
+    store: &Rc<RefCell<HostStore>>,
+    list: &gtk::ListBox,
+    area: &Rc<SessionArea>,
+) {
+    let current = settings_store.borrow().current();
+
+    let docker_row = adw::SwitchRow::builder().title("Docker").subtitle("Visa Docker-knappen på värdar").active(current.show_docker).build();
+
+    let group = adw::PreferencesGroup::builder().title("Funktioner").build();
+    group.add(&docker_row);
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+
+    let close_button = gtk::Button::with_label("Klar");
+    close_button.add_css_class("suggested-action");
+    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    header.pack_end(&close_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&page);
+
+    let win = adw::Window::builder()
+        .transient_for(&app.active_window().expect("inget aktivt fönster"))
+        .modal(true)
+        .default_width(420)
+        .default_height(260)
+        .title("Inställningar")
+        .content(&content)
+        .build();
+
+    docker_row.connect_active_notify(clone!(
+        #[strong]
+        settings_store,
+        #[strong]
+        store,
+        #[weak]
+        list,
+        #[strong]
+        app,
+        #[strong]
+        area,
+        move |row| {
+            let mut toggles = settings_store.borrow().current();
+            toggles.show_docker = row.is_active();
+            settings_store
+                .borrow_mut()
+                .update(toggles)
+                .expect("kunde inte spara inställningarna");
+            refresh_list(&list, &store, &app, &area, &settings_store);
+        }
+    ));
+
+    close_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        move |_| win.close()
     ));
 
     win.present();
