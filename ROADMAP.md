@@ -1373,13 +1373,20 @@ SSH-anslutning via `russh` kopplad till en VTE4-terminalwidget — verifierat
 end-to-end mot en levande lokal sshd.
 
 **Kända begränsningar i SSH-lagret (dokumenterade i `src/ssh.rs`), näst på tur:**
-- Ingen host-key-verifiering än (`check_server_key` accepterar allt) — måste
-  porteras från `Sources/SSHCore/KnownHosts.swift`/`HostKeyValidator.swift`
-  innan detta är produktionsklart.
 - Bara `HostAuth::KeyFile` (utan lösenfras), `AgentDefault` (ssh-agent) och
   `AskPassword` stöds. `KeychainKey`/`CertificateFile`/`BitwardenItem` saknar
   Linux-motsvarighet.
 - Ingen terminalstorlek-ombindning vid fönsterresize (fast 80x24).
+
+**Klart samma dag, tredje pass: TOFU host-key-verifiering** —
+`src/known_hosts.rs` portar `Sources/SSHCore/KnownHosts.swift` rakt av (samma
+filformat, `~/.bastion/known_hosts`), `check_server_key` avvisar nu en
+ändrad värdnyckel istället för att acceptera allt. Verifierat end-to-end mot
+en levande sshd: dels en normal anslutning (lärde/litade på den riktiga
+nyckeln, återanvände en post som redan fanns i `~/.bastion/known_hosts` från
+tidigare Bastion-bruk på samma maskin — samma fil delas alltså redan
+konceptuellt med Swift-sidan), dels en medveten manipulerad known_hosts-post
+som korrekt gav ett avslag med ett förklarande felmeddelande.
 
 **Klart samma dag, senare pass:** flikar (`AdwTabView`/`AdwTabBar`, en SSH-
 session per flik) + touchscreen-svep mellan dem (`GestureSwipe`,

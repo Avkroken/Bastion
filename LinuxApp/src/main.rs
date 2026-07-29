@@ -7,6 +7,7 @@ use uuid::Uuid;
 use vte::prelude::*;
 
 mod host;
+mod known_hosts;
 mod ssh;
 
 use host::{Host, HostStore};

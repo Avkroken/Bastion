@@ -3,10 +3,9 @@
 //! Kommunicerar med UI-tråden via `async_channel` (Send+Sync, kan pollas från
 //! både tokio och glibs `spawn_local`).
 //!
-//! KÄND BEGRÄNSNING (dokumenterad, inte dold): `check_server_key` accepterar
-//! just nu ALLA värdnycklar utan verifiering. Sources/SSHCore/KnownHosts.swift
-//! + HostKeyValidator.swift gör riktig TOFU-verifiering på Apple-sidan — samma
-//! logik måste porteras hit innan detta är produktionsklart. Se ROADMAP.md.
+//! Host-key-verifiering: TOFU via `crate::known_hosts::KnownHosts`, samma
+//! princip och filformat som Sources/SSHCore/KnownHosts.swift +
+//! HostKeyValidator.swift.
 //!
 //! KÄND BEGRÄNSNING: bara `HostAuth::KeyFile` (utan lösenfras),
 //! `HostAuth::AgentDefault` (ssh-agent) och `HostAuth::AskPassword`
@@ -15,10 +14,11 @@
 //! motsvarighet ännu.
 
 use crate::host::{Host, HostAuth};
+use crate::known_hosts::{KnownHosts, Verdict};
 use russh::client::{self, Handle};
 use russh::keys::agent::client::AgentClient;
 use russh::keys::key::PublicKey;
-use russh::keys::load_secret_key;
+use russh::keys::{load_secret_key, PublicKeyBase64};
 use russh::ChannelMsg;
 use std::sync::Arc;
 
@@ -35,14 +35,53 @@ pub struct SshSession {
     pub output: async_channel::Receiver<SshEvent>,
 }
 
-struct ClientHandler;
+/// `client::connect`s felväg — måste implementera `From<russh::Error>` för
+/// att uppfylla `Handler::Error`s bound, men bär också vårt eget
+/// TOFU-avslag med ett förklarande meddelande (istället för `Ok(false)`,
+/// som bara ger ett generiskt "UnknownKey").
+#[derive(Debug)]
+enum ConnectError {
+    Russh(russh::Error),
+    HostKeyChanged(String),
+}
+
+impl From<russh::Error> for ConnectError {
+    fn from(e: russh::Error) -> Self {
+        ConnectError::Russh(e)
+    }
+}
+
+impl std::fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConnectError::Russh(e) => write!(f, "{e}"),
+            ConnectError::HostKeyChanged(msg) => write!(f, "{msg}"),
+        }
+    }
+}
+
+struct ClientHandler {
+    host: String,
+    port: u16,
+    known_hosts: Arc<KnownHosts>,
+}
 
 #[async_trait::async_trait]
 impl client::Handler for ClientHandler {
-    type Error = russh::Error;
+    type Error = ConnectError;
 
-    async fn check_server_key(&mut self, _server_public_key: &PublicKey) -> Result<bool, Self::Error> {
-        Ok(true) // TODO(#known-hosts): TOFU-verifiering, se modulnoten ovan
+    async fn check_server_key(&mut self, server_public_key: &PublicKey) -> Result<bool, Self::Error> {
+        let key_string = format!("{} {}", server_public_key.name(), server_public_key.public_key_base64());
+        match self.known_hosts.check(&self.host, self.port, &key_string) {
+            Verdict::Trusted | Verdict::Learned => Ok(true),
+            Verdict::Changed(stored) => Err(ConnectError::HostKeyChanged(format!(
+                "VÄRDNYCKELN FÖR {}:{} HAR ÄNDRATS — möjlig man-i-mitten-attack eller en \
+                 ombyggd server. Lagrad: \"{stored}\" Ny: \"{key_string}\". Om ändringen är \
+                 väntad (t.ex. ominstallerad server), ta bort motsvarande rad i \
+                 ~/.bastion/known_hosts manuellt.",
+                self.host, self.port
+            ))),
+        }
     }
 }
 
@@ -58,7 +97,7 @@ pub fn spawn_shell(host: Host, password: Option<String>, cols: u32, rows: u32) -
             .build()
             .expect("kunde inte starta tokio-runtimen för SSH-tråden");
         rt.block_on(async move {
-            if let Err(e) = run(host, password, cols, rows, input_rx, output_tx.clone()).await {
+            if let Err(e) = run(host, password, cols, rows, input_rx, output_tx.clone(), None).await {
                 let _ = output_tx.send(SshEvent::Error(e)).await;
             }
             let _ = output_tx.send(SshEvent::Closed).await;
@@ -75,10 +114,15 @@ async fn run(
     rows: u32,
     input_rx: async_channel::Receiver<Vec<u8>>,
     output_tx: async_channel::Sender<SshEvent>,
+    known_hosts_path_override: Option<std::path::PathBuf>,
 ) -> Result<(), String> {
+    let known_hosts = Arc::new(KnownHosts::open(Some(
+        known_hosts_path_override.unwrap_or_else(KnownHosts::default_path),
+    )));
     let config = Arc::new(client::Config::default());
     let addr = (host.host_name.as_str(), host.port as u16);
-    let mut session: Handle<ClientHandler> = client::connect(config, addr, ClientHandler)
+    let handler = ClientHandler { host: host.host_name.clone(), port: host.port as u16, known_hosts };
+    let mut session: Handle<ClientHandler> = client::connect(config, addr, handler)
         .await
         .map_err(|e| format!("anslutning misslyckades: {e}"))?;
 
@@ -184,10 +228,47 @@ async fn authenticate(
 }
 
 #[cfg(test)]
+fn spawn_shell_with_known_hosts(
+    host: Host,
+    password: Option<String>,
+    cols: u32,
+    rows: u32,
+    known_hosts_path: std::path::PathBuf,
+) -> SshSession {
+    let (input_tx, input_rx) = async_channel::unbounded::<Vec<u8>>();
+    let (output_tx, output_rx) = async_channel::unbounded::<SshEvent>();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async move {
+            if let Err(e) = run(host, password, cols, rows, input_rx, output_tx.clone(), Some(known_hosts_path)).await
+            {
+                let _ = output_tx.send(SshEvent::Error(e)).await;
+            }
+            let _ = output_tx.send(SshEvent::Closed).await;
+        });
+    });
+    SshSession { input: input_tx, output: output_rx }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::host::Host;
     use std::time::Duration;
+
+    fn drain_until_data_error_or_closed(session: &SshSession, timeout: Duration) -> Result<(), String> {
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            match session.output.recv_blocking() {
+                Ok(SshEvent::Data(_)) => return Ok(()),
+                Ok(SshEvent::Error(e)) => return Err(e),
+                Ok(SshEvent::Closed) => return Err("stängdes utan data eller fel".into()),
+                Ok(SshEvent::Connected) => continue,
+                Err(_) => return Err("output-kanalen stängdes oväntat".into()),
+            }
+        }
+        Err("timeout".into())
+    }
 
     /// Riktig end-to-end-anslutning mot localhosts sshd (samma tjänst som
     /// `systemctl status ssh` visar aktiv). Kräver en nyckel som redan är
@@ -203,20 +284,37 @@ mod tests {
         host.auth = HostAuth::KeyFile(key_path);
 
         let session = spawn_shell(host, None, 80, 24);
-        let mut got_data = false;
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while std::time::Instant::now() < deadline {
-            match session.output.recv_blocking() {
-                Ok(SshEvent::Data(_)) => {
-                    got_data = true;
-                    break;
-                }
-                Ok(SshEvent::Error(e)) => panic!("SSH-fel: {e}"),
-                Ok(SshEvent::Closed) => break,
-                Ok(SshEvent::Connected) => continue,
-                Err(_) => break,
-            }
+        assert!(
+            drain_until_data_error_or_closed(&session, Duration::from_secs(10)).is_ok(),
+            "fick aldrig någon data tillbaka från fjärrskalet"
+        );
+    }
+
+    /// Samma riktiga sshd, men denna gång med en förorenad known_hosts-fil
+    /// (en falsk nyckel förinlagd för 127.0.0.1:22) — verifierar att TOFU
+    /// faktiskt AVVISAR anslutningen istället för att bara logga en varning.
+    #[test]
+    #[ignore = "kräver en riktig localhost-sshd + en nyckel förberedd i authorized_keys, se ROADMAP.md"]
+    fn rejects_connection_when_host_key_has_changed() {
+        let key_path = std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
+        let user = std::env::var("USER").expect("USER måste vara satt");
+        let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
+        host.auth = HostAuth::KeyFile(key_path);
+
+        let known_hosts_path =
+            std::env::temp_dir().join(format!("bastion-tofu-test-{}.known_hosts", uuid::Uuid::new_v4()));
+        std::fs::write(&known_hosts_path, "127.0.0.1:22 ssh-ed25519 FALSKT-INTE-DEN-RIKTIGA-NYCKELN\n").unwrap();
+
+        let session = spawn_shell_with_known_hosts(host, None, 80, 24, known_hosts_path.clone());
+        let result = drain_until_data_error_or_closed(&session, Duration::from_secs(10));
+        std::fs::remove_file(&known_hosts_path).ok();
+
+        match result {
+            Err(msg) => assert!(
+                msg.contains("HAR ÄNDRATS"),
+                "väntade ett host-key-avslag, fick: {msg}"
+            ),
+            Ok(()) => panic!("anslutningen borde ha avvisats p.g.a. ändrad värdnyckel, men lyckades"),
         }
-        assert!(got_data, "fick aldrig någon data tillbaka från fjärrskalet");
     }
 }
