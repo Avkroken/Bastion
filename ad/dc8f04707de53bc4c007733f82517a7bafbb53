@@ -1,0 +1,26 @@
+WindowsApp/Installer.iss
+  s_426e01ebb88f59::t_1bad13f997f1ab 43-47
+WindowsApp/.gitignore
+  s_426e01ebb88f59::t_dc38884df00768 6
+WindowsApp/Build-Installer.ps1
+  s_426e01ebb88f59::t_73afc291d8cc61 21-42
+WindowsApp/README.md
+  s_426e01ebb88f59::t_67e63f0fda872c 29-32
+  s_426e01ebb88f59::t_9e212e17a7cd29 68-70
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "addc8f04707de53bc4c007733f82517a7bafbb53",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
