@@ -1,0 +1,27 @@
+<Window
+    x:Class="Bastion.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <NavigationView x:Name="RootNavigationView"
+                     IsSettingsVisible="False"
+                     IsBackButtonVisible="Collapsed"
+                     PaneDisplayMode="Left">
+        <NavigationView.MenuItems>
+            <NavigationViewItem Content="Värdar" Icon="List" />
+        </NavigationView.MenuItems>
+
+        <Grid>
+            <StackPanel HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        Spacing="8">
+                <TextBlock Text="Bastion"
+                           FontSize="28"
+                           HorizontalAlignment="Center" />
+                <TextBlock Text="Ingen session öppen — värdlistan är inte kopplad in än."
+                           Opacity="0.7"
+                           HorizontalAlignment="Center" />
+            </StackPanel>
+        </Grid>
+    </NavigationView>
+</Window>

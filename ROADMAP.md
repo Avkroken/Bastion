@@ -1408,6 +1408,31 @@ instans-test: två oberoende `HostStore`-instanser konvergerar via en delad
 konfigurera en synkmapp än (biblioteksnivå klart, inte ytnivå); krypterade
 molntransporter (Dropbox/Drive/OneDrive) inte porterade.
 
-Kvar: `WindowsApp/`-scaffold (C#/.NET+WinUI3+SSH.NET), Docker/Snippets/
-SFTP-vyer + därefter Funktioner-togglar, synk-UI, krypterade
-molntransporter i Rust (se task-listan i motsvarande Claude Code-session).
+**Klart samma dag, femte pass: `WindowsApp/`-scaffold (C#/.NET + WinUI 3 +
+SSH.NET)** — `WindowsApp.csproj` (net8.0-windows10.0.19041.0,
+`WindowsAppSDKSelfContained=true`, `Microsoft.WindowsAppSDK` 1.6 +
+`SSH.NET`), minimal `App`/`MainWindow` (NavigationView-skal, ingen
+HostList/SSH-koppling än — det är nästa steg, inte detta). Verifierat på
+den lokala `bastion-winserver`-VM:en (Windows Server 2025, build 26100,
+.NET SDK 8.0.423 installerat via winget): **`dotnet build` lyckas rent,
+0 varningar/0 fel, första försöket** — självständig deployment bundlar
+alla WinAppSDK/WinUI-DLL:er korrekt (verifierat: filerna finns faktiskt i
+`bin/.../win-x64/`, inte bara antaget).
+
+**EJ verifierat: att appen faktiskt RENDERAR.** Körning via WinRM (icke-
+interaktiv session) kraschar omedelbart:
+`Faulting module: Microsoft.UI.Xaml.dll, Exception code: 0xc000027b`
+(stowed exception/fast-fail). VM:en HAR en aktiv interaktiv RDP-session
+(`query session` visar `rdp-tcp#0 Administrator 2 Active`), men WinRM-
+kommandon körs i en annan, icke-interaktiv session utan DWM/composition-
+åtkomst — samma klass av session-isolationsproblem som redan dokumenterat
+för touchscreen-verifieringen
+([[project-bastion-linuxapp-touchscreen-goal]], "ingen levande session att
+testa i"). Inte en kodbugg i sig, men olöst: nästa steg är att köra
+`bastion-gui.exe` INIFRÅN den redan aktiva RDP-sessionen (session 2), inte
+via en fristående WinRM-kommandokörning.
+
+Kvar: koppla in HostList/HostStore/SSH.NET i `WindowsApp` (nästa steg efter
+render-verifiering), Docker/Snippets/SFTP-vyer i `LinuxApp` + därefter
+Funktioner-togglar, synk-UI, krypterade molntransporter i Rust (se
+task-listan i motsvarande Claude Code-session).
