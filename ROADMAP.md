@@ -1399,7 +1399,15 @@ finns FÖRST i LinuxApp — de finns inte än (bara HostList+terminal). Att
 bygga togglar för obefintliga funktioner nu vore tomt skelett. Bygg
 underliggande vyer, lägg till togglar när det finns något att gömma.
 
-Kvar: `WindowsApp/`-scaffold (C#/.NET+WinUI3+SSH.NET), design av
-synkprotokollet, host-key-verifiering i `LinuxApp/src/ssh.rs`, Docker/
-Snippets/SFTP-vyer + därefter Funktioner-togglar (se task-listan i
-motsvarande Claude Code-session).
+**Klart samma dag, fjärde pass: formellt synkprotokoll, dokumenterat OCH
+implementerat** — se [SYNC_PROTOCOL.md](SYNC_PROTOCOL.md). `LinuxApp/src/
+sync.rs` porterar `SyncEngine.merge` + `FolderSyncProvider` från Swift,
+`HostStore::sync` kopplar ihop dem. Verifierat med ett riktigt cross-
+instans-test: två oberoende `HostStore`-instanser konvergerar via en delad
+`FolderSyncProvider`-fil till samma tillstånd. Ingen UI för att välja/
+konfigurera en synkmapp än (biblioteksnivå klart, inte ytnivå); krypterade
+molntransporter (Dropbox/Drive/OneDrive) inte porterade.
+
+Kvar: `WindowsApp/`-scaffold (C#/.NET+WinUI3+SSH.NET), Docker/Snippets/
+SFTP-vyer + därefter Funktioner-togglar, synk-UI, krypterade
+molntransporter i Rust (se task-listan i motsvarande Claude Code-session).

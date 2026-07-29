@@ -9,6 +9,8 @@ use vte::prelude::*;
 mod host;
 mod known_hosts;
 mod ssh;
+#[allow(dead_code)] // synk-UI (välja/konfigurera en SyncProvider) är inte byggt än
+mod sync;
 
 use host::{Host, HostStore};
 use ssh::SshEvent;

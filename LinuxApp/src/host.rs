@@ -295,6 +295,18 @@ impl HostStore {
         self.persist()
     }
 
+    /// Full synkrunda mot en transport: hämta fjärrtillstånd, slå ihop
+    /// lokalt, skriv tillbaka det sammanslagna — motsvarar
+    /// `HostStore.sync(with:)` i Swift. Se `crate::sync`.
+    #[allow(dead_code)] // synk-UI är inte byggt än, se crate::sync-modulnoten
+    pub fn sync(&mut self, provider: &impl crate::sync::SyncProvider) -> std::io::Result<()> {
+        let remote = provider.pull()?.unwrap_or_default();
+        let local = std::mem::take(&mut self.state);
+        self.state = crate::sync::merge(local, remote);
+        self.persist()?;
+        provider.push(&self.state)
+    }
+
     fn persist(&self) -> std::io::Result<()> {
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir)?;
