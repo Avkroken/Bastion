@@ -1,0 +1,27 @@
+LinuxApp/Cargo.toml
+  s_426e01ebb88f59::t_43e1a16188e3c0 12-15
+LinuxApp/src/host.rs
+  s_426e01ebb88f59::t_f5118e8e9d570a 1-353,368-381
+  s_426e01ebb88f59::t_fca1eb788f5ea0 354-367
+LinuxApp/src/main.rs
+  s_426e01ebb88f59::t_6a96940f351152 4
+  s_426e01ebb88f59::t_db78805bd3d9c4 5-6
+LinuxApp/Cargo.lock
+  s_426e01ebb88f59::t_8a6ec3b50a8500 79,84-85,87,135-140,343-363,643-653,931-947,1000-1008,1125-1130,1353-1358,1386-1397,1544-1549,1620-1632,1957-1968,1987-2031,2060-2068,2075,2087-2101,2108-2110,2112-2115,2118-2123,2130-2135,2142-2147,2160-2165,2172-2177,2184-2189,2196-2201,2242-2247
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.17",
+  "base_commit_sha": "c7b90f03e6d4dc131ef8a54cccf31b540379aa4e",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
