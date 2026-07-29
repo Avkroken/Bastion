@@ -32,6 +32,14 @@ PrivilegesRequired=lowest
 
 [Files]
 Source: ".build\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+; swift-winui kraver denna resursbunt bredvid .exe-filen for att hitta
+; Microsoft.WindowsAppRuntime.Bootstrap.dll -- utan den kraschar appen med
+; "missingBootstrapper" (WinUI/SwiftApplication.swift:64), verifierat pa
+; riktig hardvara 2026-07-29. SwiftPM skapar mappen automatiskt i
+; .build\release\ vid bygge, men Inno Setup kopierade den INTE innan denna
+; rad las till -- det var den faktiska rotorsaken till kraschen, inte en
+; CPU-instruktionsbrist (den hypotesen var felaktig, se ROADMAP.md).
+Source: ".build\release\swift-winui_CWinAppSDK.resources\*"; DestDir: "{app}\swift-winui_CWinAppSDK.resources"; Flags: ignoreversion recursesubdirs
 ; Runtime-installeraren laddas ned vid byggtillfallet (se Build-Installer.ps1)
 ; och buntas in har istallet for att hamtas vid installation -- sa
 ; installationen fungerar aven utan natverksatkomst pa malmaskinen.
