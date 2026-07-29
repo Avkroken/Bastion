@@ -40,6 +40,11 @@ Source: ".build\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 ; rad las till -- det var den faktiska rotorsaken till kraschen, inte en
 ; CPU-instruktionsbrist (den hypotesen var felaktig, se ROADMAP.md).
 Source: ".build\release\swift-winui_CWinAppSDK.resources\*"; DestDir: "{app}\swift-winui_CWinAppSDK.resources"; Flags: ignoreversion recursesubdirs
+; Swift-runtime-DLL:erna (swiftCore.dll m.fl.) -- utan dessa krascher
+; bastion-gui.exe med "DLL saknas" pa en maskin utan Swift installerat.
+; Build-Installer.ps1 kopierar dem hit fran den lokala Swift-installationen
+; innan denna .iss-fil kompileras.
+Source: "Redist\SwiftRuntime\*.dll"; DestDir: "{app}"; Flags: ignoreversion
 ; Runtime-installeraren laddas ned vid byggtillfallet (se Build-Installer.ps1)
 ; och buntas in har istallet for att hamtas vid installation -- sa
 ; installationen fungerar aven utan natverksatkomst pa malmaskinen.

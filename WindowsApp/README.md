@@ -26,8 +26,10 @@ och `.exe`-filen bär inte med sig detta beroende). Utan det: krasch
 
 ### Alternativ 1: `BastionSetup.exe` (rekommenderat för slutanvändare)
 
-En enda installer-fil buntar `bastion-gui.exe` + Windows App Runtime
-tillsammans — ingen PowerShell, ingen manuell paketjakt. Bygg den själv:
+En enda installer-fil buntar `bastion-gui.exe` + Windows App Runtime +
+Swift-runtime-DLL:erna (`swiftCore.dll` m.fl.) + swift-winuis bootstrap-
+resurser tillsammans — ingen PowerShell, ingen manuell paketjakt, ingen
+separat Swift-installation krävs på målmaskinen. Bygg den själv:
 
 ```powershell
 .\Build-Installer.ps1
@@ -63,3 +65,6 @@ fjärrshell som WinRM. Kräver nätverksåtkomst vid körning, till skillnad fr�
 - `BastionSetup.exe` måste byggas manuellt (`Build-Installer.ps1`) tills
   detta görs till ett CI-artefakt-steg — den färdigbyggda filen distribueras
   inte i repot.
+- Touch-svep (`WinUISwipeGestureBridge.swift`) är EJ verifierat på riktig
+  touchhårdvara — bara kompilering/rendering, ingen fysisk Windows-touchskärm
+  tillgänglig i utvecklingsmiljön.
