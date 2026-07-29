@@ -1337,3 +1337,34 @@ Inget nytt att bygga, bara verifiera/lansera:
   typsnitt-API) eller ett byte av renderingslager för att göra rätt.
   Terminalfärger i App/ (SwiftTerm) är opåverkade av allt ovan — SwiftTerm
   har redan eget stöd för både musrapportering och ligaturer.
+Under Windows-portningen av LinuxApp-vyerna (commit 98f9931) upptäcktes att
+`WinUIBackend` (SwiftCrossUI) saknar `BackendFeatures.Sheets` — alla 9
+`.sheet()`-baserade popup-vyer i den porterade `ContentView.swift` kraschade
+på Windows. Det ledde till en diskussion om vad ett rent Windows-native
+alternativ hade sett ut, och slutsatsen blev ett definitivt beslut:
+> "Det är bättre att göra ett gediget jobb från början och göra varje
+> plattforms klient native. Och sammankopplingen mellan klienterna sker på
+> annat sätt än att dela kod. [...] Skriv varje klient efter dess native
+> plattform."
+**Beslut:**
+- `LinuxApp/` (SwiftCrossUI/GTK4) och `WindowsApp/` (SwiftCrossUI/WinUIBackend,
+  commit 98f9931-portningen) är borttagna helt, inte frysta som referens.
+  `.github/workflows/linux-gui.yml`/`windows-gui.yml` borttagna med samma
+  commit (byggde bara de borttagna paketen).
+- Ny `WindowsApp/`: C#/.NET + WinUI 3 + SSH.NET, byggs från grunden.
+- Ny `LinuxApp/`: Rust + GTK4 (gtk4-rs) + russh/libssh2, byggs från grunden.
+- `SSHCore` delas INTE längre av Windows/Linux — samma princip som redan
+  gällde `Android/` (Kotlin + Apache MINA SSHD). `SSHCore` förblir kärnan
+  bara för `App/` (iOS/macOS), eftersom Swift redan är native där.
+- Sammankoppling mellan klienter (host-databas-synk m.m.) byggs vidare på
+  befintligt synklager till ett formellt, klientoberoende protokoll/API —
+  inte en helt ny tjänst, inte delad UI- eller SSH-kod.
+**Varför:** uttalat produktmål (samma session) — inte att minimera kod/arbete,
+utan att bygga den klient folk väljer framför alla andra, oavsett plattform,
+utan att behöva jonglera flera olika leverantörers klienter för samma syfte.
+Ett delat cross-platform UI-ramverk (SwiftCrossUI) släpar efter varje enskild
+plattforms verkliga förmågor (Sheets-luckan var bara det senaste exemplet) —
+motsatsen till målet.
+**Status:** rivning klar. Scaffoldning av nya `WindowsApp/`/`LinuxApp/` samt
+design av synkprotokollet är näst på tur (se task-listan i motsvarande
+Claude Code-session).
