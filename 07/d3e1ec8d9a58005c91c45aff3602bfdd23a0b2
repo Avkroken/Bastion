@@ -1,0 +1,29 @@
+LinuxApp/Cargo.toml
+  s_426e01ebb88f59::t_80cff323534e9e 1-6
+  s_426e01ebb88f59::t_d5dac03f816222 7-11
+LinuxApp/src/main.rs
+  s_426e01ebb88f59::t_80cff323534e9e 28
+  s_426e01ebb88f59::t_a74744fedef24f 1-27
+LinuxApp/.gitignore
+  s_426e01ebb88f59::t_13d197e23e550f 1
+CLAUDE.md
+  s_426e01ebb88f59::t_edf6e71a154894 27
+LinuxApp/Cargo.lock
+  s_426e01ebb88f59::t_f89401a3f483ca 1-2008
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "07d3e1ec8d9a58005c91c45aff3602bfdd23a0b2",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
