@@ -1512,6 +1512,27 @@ uppdaterad status ovan i "Scaffolda ny WindowsApp/"-avsnittet. Nästa steg
 för Windows-sidan är nu funktionsutveckling, inte längre toolchain-
 verifiering.
 
-Kvar: koppla in HostList/HostStore/SSH.NET i `WindowsApp`, synk-UI,
-krypterade molntransporter i Rust, chmod/chown/komprimera/packa upp i
-SFTP-vyn (se task-listan i motsvarande Claude Code-session).
+**Klart samma dag, elfte pass: `WindowsApp` HostStore/HostList** — ny
+`Bastion.Core` (plain net8.0-bibliotek, ingen WinUI-koppling): port av
+`Host.swift`/`HostStore.swift`/`SyncEngine.swift`/`SyncProvider.swift` till
+C#, samma wire-format som redan verifierat i `LinuxApp/src/host.rs`
+(ReferenceDate-epok, HostAuth-kodning, platt tombstones-array). 11 xUnit-
+tester körs DIREKT på Linux-utvecklingsmaskinen (separat .NET SDK
+installerat lokalt) — ingen VM-omväg för denna del av verifieringen.
+En riktig bugg hittades och fixades under testning: `ReferenceDate`
+saknade `[JsonConverter(...)]`-attributet på själva typen. Cross-
+instans-synktestet (`FolderSyncProvider`) portades också — SAMMA test
+som Rust-sidan, nu i ett TREDJE språk, verifierar att synkprotokollet
+verkligen är klientoberoende.
+
+`MainWindow`: riktig HostList (`ListView` bunden mot `HostStore.All()`),
+"Lägg till värd" via en native `ContentDialog`. Verifierat VISUELLT
+end-to-end via samma xfreerdp+xdotool-teknik som render-verifieringen
+([[reference-windows-vm-interactive-render-verification]]): lade till en
+värd genom UI:t, den dök upp i listan, klick visade rätt platshållartext,
+och `~/.bastion/hosts.json` på VM:en innehöll exakt rätt wire-format —
+inte bara byggt, faktiskt kört och sett fungera.
+
+Kvar: SSH.NET-anslutning + terminal i `WindowsApp`, synk-UI, krypterade
+molntransporter i Rust, chmod/chown/komprimera/packa upp i SFTP-vyn (se
+task-listan i motsvarande Claude Code-session).
