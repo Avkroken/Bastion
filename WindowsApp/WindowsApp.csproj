@@ -29,4 +29,13 @@
     <ProjectReference Include="Bastion.Core\Bastion.Core.csproj" />
   </ItemGroup>
 
+  <!-- Bastion.Core och Bastion.Core.Tests är egna projekt med egna .csproj-filer,
+       men ligger under den här mappen — SDK-stilens standardglobbning
+       (**/*.cs) skulle annars kompilera in deras källfiler HÄR OCKSÅ,
+       vilket gav dubbletttypfel + saknad xunit-referens. -->
+  <ItemGroup>
+    <Compile Remove="Bastion.Core\**\*.cs" />
+    <Compile Remove="Bastion.Core.Tests\**\*.cs" />
+  </ItemGroup>
+
 </Project>
