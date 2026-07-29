@@ -1365,6 +1365,22 @@ utan att behöva jonglera flera olika leverantörers klienter för samma syfte.
 Ett delat cross-platform UI-ramverk (SwiftCrossUI) släpar efter varje enskild
 plattforms verkliga förmågor (Sheets-luckan var bara det senaste exemplet) —
 motsatsen till målet.
-**Status:** rivning klar. Scaffoldning av nya `WindowsApp/`/`LinuxApp/` samt
-design av synkprotokollet är näst på tur (se task-listan i motsvarande
-Claude Code-session).
+**Status (2026-07-30):** `LinuxApp/` har nu en riktig grund: Host-datamodell +
+HostStore wire-kompatibel med `Sources/SSHCore/Host.swift`/`HostStore.swift`
+(verifierat mot en faktisk Swift-genererad `hosts.json`, inte gissat), en
+GTK4/libadwaita HostList-UI (lägg till/redigera/ta bort), samt en riktig
+SSH-anslutning via `russh` kopplad till en VTE4-terminalwidget — verifierat
+end-to-end mot en levande lokal sshd.
+
+**Kända begränsningar i SSH-lagret (dokumenterade i `src/ssh.rs`), näst på tur:**
+- Ingen host-key-verifiering än (`check_server_key` accepterar allt) — måste
+  porteras från `Sources/SSHCore/KnownHosts.swift`/`HostKeyValidator.swift`
+  innan detta är produktionsklart.
+- Bara `HostAuth::KeyFile` (utan lösenfras), `AgentDefault` (ssh-agent) och
+  `AskPassword` stöds. `KeychainKey`/`CertificateFile`/`BitwardenItem` saknar
+  Linux-motsvarighet.
+- Ingen terminalstorlek-ombindning vid fönsterresize (fast 80x24).
+
+Kvar: flikar med touchscreen-swipe mellan sessioner, Funktioner-inställningar
+(Docker valfritt m.m.), `WindowsApp/`-scaffold, samt design av synkprotokollet
+(se task-listan i motsvarande Claude Code-session).

@@ -4,10 +4,13 @@ use gtk::glib::clone;
 use std::cell::RefCell;
 use std::rc::Rc;
 use uuid::Uuid;
+use vte::prelude::*;
 
 mod host;
+mod ssh;
 
 use host::{Host, HostStore};
+use ssh::SshEvent;
 
 const APP_ID: &str = "se.denied.bastion";
 
@@ -58,19 +61,30 @@ fn build_ui(app: &adw::Application) {
         .child(&sidebar_content)
         .build();
 
-    let placeholder = adw::StatusPage::builder()
-        .title("Ingen session öppen")
-        .description("Välj en värd i listan för att ansluta")
-        .icon_name("network-server-symbolic")
-        .build();
+    let content_body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    show_placeholder(&content_body);
+
     let content_header = adw::HeaderBar::new();
     let content_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content_box.append(&content_header);
-    content_box.append(&placeholder);
+    content_box.append(&content_body);
     let content_page = adw::NavigationPage::builder()
         .title("Bastion")
         .child(&content_box)
         .build();
+
+    list.connect_row_activated(clone!(
+        #[strong]
+        store,
+        #[strong]
+        content_body,
+        move |_, row| {
+            let index = row.index();
+            if let Some(host) = store.borrow().all().get(index as usize).map(|h| (*h).clone()) {
+                open_session(&content_body, host);
+            }
+        }
+    ));
 
     let split_view = adw::NavigationSplitView::builder()
         .sidebar(&sidebar_page)
@@ -254,4 +268,123 @@ fn show_host_dialog(
     ));
 
     win.present();
+}
+
+fn show_placeholder(content_body: &gtk::Box) {
+    while let Some(child) = content_body.first_child() {
+        content_body.remove(&child);
+    }
+    let placeholder = adw::StatusPage::builder()
+        .title("Ingen session öppen")
+        .description("Välj en värd i listan för att ansluta")
+        .icon_name("network-server-symbolic")
+        .vexpand(true)
+        .build();
+    content_body.append(&placeholder);
+}
+
+/// Öppnar en riktig SSH-session för `host` i VTE4-terminalen och byter ut
+/// platshållaren i content-området mot den. Exit/Ctrl+D i fjärrskalet
+/// stänger sessionen automatiskt (samma UX-mål som iOS, se commit 4e9270b).
+fn open_session(content_body: &gtk::Box, host: host::Host) {
+    if matches!(host.auth, host::HostAuth::AskPassword) {
+        prompt_password(content_body, host);
+    } else {
+        start_session(content_body, host, None);
+    }
+}
+
+fn prompt_password(content_body: &gtk::Box, host: host::Host) {
+    let entry = gtk::PasswordEntry::builder().show_peek_icon(true).hexpand(true).build();
+    let group = adw::PreferencesGroup::builder().title(format!("Lösenord för {}@{}", host.user, host.host_name)).build();
+    group.add(&entry);
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+
+    let connect_button = gtk::Button::with_label("Anslut");
+    connect_button.add_css_class("suggested-action");
+    let cancel_button = gtk::Button::with_label("Avbryt");
+    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    header.pack_start(&cancel_button);
+    header.pack_end(&connect_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&page);
+
+    let win = adw::Window::builder()
+        .transient_for(&content_body.root().and_downcast::<gtk::Window>().expect("inget fönster"))
+        .modal(true)
+        .default_width(360)
+        .default_height(180)
+        .content(&content)
+        .build();
+
+    cancel_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        move |_| win.close()
+    ));
+    connect_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        #[weak]
+        content_body,
+        #[strong]
+        host,
+        #[weak]
+        entry,
+        move |_| {
+            let password = entry.text().to_string();
+            win.close();
+            start_session(&content_body, host.clone(), Some(password));
+        }
+    ));
+
+    win.present();
+}
+
+fn start_session(content_body: &gtk::Box, host: host::Host, password: Option<String>) {
+    while let Some(child) = content_body.first_child() {
+        content_body.remove(&child);
+    }
+
+    let terminal = vte::Terminal::builder().vexpand(true).hexpand(true).build();
+    content_body.append(&terminal);
+
+    let cols = 80u32;
+    let rows = 24u32;
+    let session = ssh::spawn_shell(host, password, cols, rows);
+
+    terminal.connect_commit(clone!(
+        #[strong(rename_to = input)]
+        session.input,
+        move |_, text, _| {
+            let _ = input.try_send(text.as_bytes().to_vec());
+        }
+    ));
+
+    glib::spawn_future_local(clone!(
+        #[weak]
+        terminal,
+        #[strong(rename_to = content_body)]
+        content_body,
+        #[strong(rename_to = output)]
+        session.output,
+        async move {
+            while let Ok(event) = output.recv().await {
+                match event {
+                    SshEvent::Data(bytes) => terminal.feed(&bytes),
+                    SshEvent::Error(msg) => {
+                        terminal.feed(format!("\r\n\x1b[31m[bastion] fel: {msg}\x1b[0m\r\n").as_bytes());
+                    }
+                    SshEvent::Connected => {}
+                    SshEvent::Closed => {
+                        show_placeholder(&content_body);
+                        break;
+                    }
+                }
+            }
+        }
+    ));
 }
