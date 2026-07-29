@@ -1,0 +1,40 @@
+LinuxApp/src/main.rs
+  s_426e01ebb88f59::t_5f71a6cbb6d3e8 9
+  s_426e01ebb88f59::t_cb034089e48a9f 54-56
+  s_426e01ebb88f59::t_086159a0aa5d37 209
+  s_426e01ebb88f59::t_a2a7aaa13cdbbe 456
+  s_426e01ebb88f59::t_2ab7ee73fc2ed2 598,612,624,627
+  s_426e01ebb88f59::t_61a29a79b4a002 665-668,670,672
+  s_426e01ebb88f59::t_f9aaed3aa3d1eb 383-385
+  s_426e01ebb88f59::t_510ed28947383c 391-413
+  s_426e01ebb88f59::t_592e2891876379 517-579,581-597,599-611,613-623,625-626,628-664,669,671,673-738
+  s_426e01ebb88f59::t_a9f61ac0715d3b 115,144-145,151,163-164,169-184,189,199
+  s_426e01ebb88f59::t_4637c7a5050d51 580
+  s_426e01ebb88f59::t_ac62aeda641e7c 268-269,294
+  s_426e01ebb88f59::t_e6c017747d7954 40-41
+LinuxApp/src/ssh.rs
+  s_426e01ebb88f59::t_e584a4034e5664 110-113,116,126-128,130-185
+  s_426e01ebb88f59::t_89dfd7bba1c404 393-409
+  s_426e01ebb88f59::t_96742748c40e25 186
+  s_426e01ebb88f59::t_17caa05b1f9987 377-392
+ROADMAP.md
+  s_426e01ebb88f59::t_9585eb99d9c541 1435-1449,1451-1454
+LinuxApp/src/docker.rs
+  s_426e01ebb88f59::t_04b581c92c1aa7 1-136
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.17",
+  "base_commit_sha": "89f5a77abc28029dbb9244c175280f0779b95888",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
