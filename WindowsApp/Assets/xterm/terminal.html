@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="xterm.css" />
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #1e1e1e; }
+    #terminal { height: 100vh; }
+  </style>
+</head>
+<body>
+  <div id="terminal"></div>
+  <script src="xterm.js"></script>
+  <script src="xterm-addon-fit.js"></script>
+  <script>
+    const term = new Terminal({ cursorBlink: true, fontFamily: "Consolas, monospace", fontSize: 14 });
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(document.getElementById("terminal"));
+    fitAddon.fit();
+    window.addEventListener("resize", () => fitAddon.fit());
+
+    // Tangenttryck/inmatning -> C#-sidan (SshSession.Shell.Write).
+    term.onData(data => window.chrome.webview.postMessage(data));
+
+    // C#-sidan anropar detta via ExecuteScriptAsync när SSH-data kommer in.
+    window.feed = function (base64) {
+      const binary = atob(base64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      term.write(bytes);
+    };
+  </script>
+</body>
+</html>

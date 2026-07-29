@@ -21,12 +21,19 @@
     <!-- Windows App SDK / WinUI 3 -->
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.250108002" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.1742" />
-    <!-- SSH-implementationen för Windows, se ROADMAP.md — inte kopplad in i UI:t än -->
-    <PackageReference Include="SSH.NET" Version="2024.2.0" />
+    <!-- Terminalen renderas med xterm.js i en WebView2 — WinUI 3 har ingen
+         inbyggd VTE-motsvarighet (se Assets/xterm/, vendrat lokalt, ingen CDN). -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2957.106" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="Bastion.Core\Bastion.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\xterm\**">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
   <!-- Bastion.Core och Bastion.Core.Tests är egna projekt med egna .csproj-filer,
