@@ -1,0 +1,26 @@
+WindowsApp/Install-Bastion.ps1
+  s_426e01ebb88f59::t_63599311c72eb4 1-2,4-6,8,16,18,30,33-36,40,50
+WindowsApp/Build-Installer.ps1
+  s_426e01ebb88f59::t_2e6a5bede50a66 1-4,11,17,27
+WindowsApp/Installer.iss
+  s_426e01ebb88f59::t_53a99cb64e7d18 27-29
+  s_426e01ebb88f59::t_8ec409b4cf60cf 2-4,6
+  s_426e01ebb88f59::t_59471d2eade6e2 34-36
+  s_426e01ebb88f59::t_215f30a13720a7 44-45,48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "18b3b5e2c0dc20576684cb308f30184423c672d0",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
