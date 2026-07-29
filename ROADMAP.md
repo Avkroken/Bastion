@@ -300,14 +300,21 @@ delvis andra, av konkreta skäl:
    `ManipulationCompleted`) — kvarstår overifierad på riktig
    touchhårdvara, som redan dokumenterat.
 
-   Kvarstående, separat, ej blockerande paketeringslucka: installern
-   buntar fortfarande INTE Swift-runtime-DLL:erna (`swiftCore.dll` m.fl.)
-   — de finns bara på testVM:en för att Swift-toolchainen råkar vara
-   installerad där för byggen. En slutanvändare utan Swift installerat
-   skulle få ett "DLL saknas"-fel. Nästa steg: (1) bunta Swift-runtime-
-   DLL:erna i `Installer.iss`, (2) porta de riktiga vyerna från
-   `LinuxApp/Sources/bastion-gui/` hit (inte påbörjat, svep-bryggan väntar
-   på riktiga flikar att växla mellan).
+   **Swift-runtime-DLL:erna buntade och verifierade OCKSÅ 2026-07-29**
+   (`Build-Installer.ps1` hittar automatiskt Swift-runtimens bin-katalog
+   och kopierar `swiftCore.dll` m.fl. till `Redist/SwiftRuntime/` innan
+   Inno Setup-kompilering, commit `addc8f0`+`0d6bb34`). **Hårt verifierat
+   på riktig hårdvara**: bytte tillfälligt namn på hela
+   `...\Programs\Swift`-katalogen (så toolchainen INTE kunde hittas av
+   något fallback), installerade om `BastionSetup.exe`, körde
+   `bastion-gui.exe` från den nya installationen — fullt renderat
+   fönster, ingen "DLL saknas"-krasch. `BastionSetup.exe` är nu en
+   genuint fristående installer: kräver INGEN separat Swift- eller
+   Windows App Runtime-installation på målmaskinen.
+
+   **Nästa steg**: porta de riktiga vyerna från `LinuxApp/Sources/bastion-
+   gui/` hit (inte påbörjat, svep-bryggan väntar på riktiga flikar att
+   växla mellan) — enda återstående punkten för denna sektion.
 4. **`bastion-cli` som headless/skriptbar fallback** (användarförslag
    2026-07-28): "Den borde kunna integreras med Linux och Windows Shell
    också, bash osv, cmd, PowerShell, så att det går att köra den remote
