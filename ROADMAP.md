@@ -1432,7 +1432,23 @@ testa i"). Inte en kodbugg i sig, men olöst: nästa steg är att köra
 `bastion-gui.exe` INIFRÅN den redan aktiva RDP-sessionen (session 2), inte
 via en fristående WinRM-kommandokörning.
 
+**Klart samma dag, sjätte pass: `LinuxApp` Docker-vy** — port av
+`Sources/SSHCore/DockerService.swift` (`docker.rs`: validering mot
+shell-injektion, kommandobyggare, parsning — alla 5 Swift-testfallen
+portade rakt av och gröna). UI: en "Docker"-flik per värd (öppnas via
+menyn på värdraden) med containerlista, start/stopp/omstart/loggar/shell
+per rad. "Shell" återanvänder den befintliga terminal-infrastrukturen
+(`startup_command` skickar `docker exec -it ...` automatiskt in i en ny
+flik) — ingen ny SSH-kod behövdes.
+
+Ny `ssh::run_command` (engångs-exec utan pty, delar `connect()`-hjälpen
+med den interaktiva shell-sessionen). Verifierat mot RIKTIGA levande
+Docker-containrar på utvecklingsmaskinen (plex/maintainerr/fetcher/
+watchtower) — men ENDAST läsande (`docker ps`), aldrig start/stopp/
+omstart mot riktiga containrar i ett test.
+
 Kvar: koppla in HostList/HostStore/SSH.NET i `WindowsApp` (nästa steg efter
-render-verifiering), Docker/Snippets/SFTP-vyer i `LinuxApp` + därefter
-Funktioner-togglar, synk-UI, krypterade molntransporter i Rust (se
-task-listan i motsvarande Claude Code-session).
+render-verifiering), Snippets/SFTP-vyer i `LinuxApp` + därefter
+Funktioner-togglar (Docker-delen av togglen kan nu byggas — Docker-vyn
+finns), synk-UI, krypterade molntransporter i Rust (se task-listan i
+motsvarande Claude Code-session).

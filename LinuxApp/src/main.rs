@@ -6,6 +6,7 @@ use std::rc::Rc;
 use uuid::Uuid;
 use vte::prelude::*;
 
+mod docker;
 mod host;
 mod known_hosts;
 mod ssh;
@@ -36,7 +37,8 @@ fn build_ui(app: &adw::Application) {
         .margin_top(12)
         .margin_bottom(12)
         .build();
-    refresh_list(&list, &store, app);
+    let area = SessionArea::new();
+    refresh_list(&list, &store, app, &area);
 
     let scrolled = gtk::ScrolledWindow::builder().child(&list).vexpand(true).build();
 
@@ -49,7 +51,9 @@ fn build_ui(app: &adw::Application) {
         store,
         #[weak]
         list,
-        move |_| show_host_dialog(&app, &store, &list, None)
+        #[strong]
+        area,
+        move |_| show_host_dialog(&app, &store, &list, &area, None)
     ));
 
     let sidebar_header = adw::HeaderBar::new();
@@ -63,8 +67,6 @@ fn build_ui(app: &adw::Application) {
         .title("Värdar")
         .child(&sidebar_content)
         .build();
-
-    let area = SessionArea::new();
 
     let content_header = adw::HeaderBar::new();
     let content_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -110,7 +112,7 @@ fn build_ui(app: &adw::Application) {
 /// Bygger om värdlistan från HostStore. Långtryck på en rad öppnar
 /// redigera/ta-bort-menyn — touchscreen-vänligt (motsvarar iOS-menyn för
 /// samma gest, se b30bec8).
-fn refresh_list(list: &gtk::ListBox, store: &Rc<RefCell<HostStore>>, app: &adw::Application) {
+fn refresh_list(list: &gtk::ListBox, store: &Rc<RefCell<HostStore>>, app: &adw::Application, area: &Rc<SessionArea>) {
     while let Some(row) = list.row_at_index(0) {
         list.remove(&row);
     }
@@ -139,12 +141,14 @@ fn refresh_list(list: &gtk::ListBox, store: &Rc<RefCell<HostStore>>, app: &adw::
             store,
             #[weak]
             list,
+            #[strong]
+            area,
             #[strong(rename_to = host_id)]
             h.id,
             move |_, _| {
                 let host = store.borrow().all().iter().find(|x| x.id == host_id).map(|h| (*h).clone());
                 if let Some(host) = host {
-                    show_host_dialog(&app, &store, &list, Some(host));
+                    show_host_dialog(&app, &store, &list, &area, Some(host));
                 }
             }
         ));
@@ -156,15 +160,33 @@ fn refresh_list(list: &gtk::ListBox, store: &Rc<RefCell<HostStore>>, app: &adw::
             store,
             #[weak]
             list,
+            #[strong]
+            area,
             #[strong(rename_to = host_id)]
             h.id,
             move |_, _| {
                 store.borrow_mut().delete(host_id).expect("kunde inte ta bort värden");
-                refresh_list(&list, &store, &app);
+                refresh_list(&list, &store, &app, &area);
+            }
+        ));
+        let docker_action = gtk::gio::SimpleAction::new("docker", None);
+        docker_action.connect_activate(clone!(
+            #[strong]
+            store,
+            #[strong]
+            area,
+            #[strong(rename_to = host_id)]
+            h.id,
+            move |_, _| {
+                let host = store.borrow().all().iter().find(|x| x.id == host_id).map(|h| (*h).clone());
+                if let Some(host) = host {
+                    require_password(&area, host, open_docker_view);
+                }
             }
         ));
         action_group.add_action(&edit_action);
         action_group.add_action(&delete_action);
+        action_group.add_action(&docker_action);
         row.insert_action_group("host", Some(&action_group));
 
         list.append(&row);
@@ -174,6 +196,7 @@ fn refresh_list(list: &gtk::ListBox, store: &Rc<RefCell<HostStore>>, app: &adw::
 fn gio_menu_for(_host_id: Uuid) -> gtk::gio::Menu {
     let menu = gtk::gio::Menu::new();
     menu.append(Some("Redigera"), Some("host.edit"));
+    menu.append(Some("Docker"), Some("host.docker"));
     menu.append(Some("Ta bort"), Some("host.delete"));
     menu
 }
@@ -183,6 +206,7 @@ fn show_host_dialog(
     app: &adw::Application,
     store: &Rc<RefCell<HostStore>>,
     list: &gtk::ListBox,
+    area: &Rc<SessionArea>,
     existing: Option<Host>,
 ) {
     let is_edit = existing.is_some();
@@ -241,6 +265,8 @@ fn show_host_dialog(
         list,
         #[weak]
         app,
+        #[strong]
+        area,
         #[weak]
         win,
         #[strong]
@@ -265,7 +291,7 @@ fn show_host_dialog(
                 h
             };
             store.borrow_mut().upsert(host).expect("kunde inte spara värden");
-            refresh_list(&list, &store, &app);
+            refresh_list(&list, &store, &app, &area);
             win.close();
         }
     ));
@@ -354,13 +380,37 @@ impl SessionArea {
 /// commit 4e9270b).
 fn open_session(area: &Rc<SessionArea>, host: host::Host) {
     if matches!(host.auth, host::HostAuth::AskPassword) {
-        prompt_password(area, host);
+        prompt_password_then(area, host, |area, host, password| {
+            start_session(area, host, Some(password))
+        });
     } else {
         start_session(area, host, None);
     }
 }
 
-fn prompt_password(area: &Rc<SessionArea>, host: host::Host) {
+/// Ger `on_password` antingen direkt (`None`, ingen prompt behövs) eller
+/// efter att användaren skrivit in ett lösenord i en dialog — återanvänds av
+/// både terminalsessioner och Docker-vyn, båda kan hamna på en
+/// `AskPassword`-värd.
+fn require_password(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    on_password: impl Fn(&Rc<SessionArea>, host::Host, Option<String>) + 'static,
+) {
+    if matches!(host.auth, host::HostAuth::AskPassword) {
+        prompt_password_then(area, host, move |area, host, password| {
+            on_password(area, host, Some(password))
+        });
+    } else {
+        on_password(area, host, None);
+    }
+}
+
+fn prompt_password_then(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    on_password: impl Fn(&Rc<SessionArea>, host::Host, String) + 'static,
+) {
     let entry = gtk::PasswordEntry::builder().show_peek_icon(true).hexpand(true).build();
     let group = adw::PreferencesGroup::builder().title(format!("Lösenord för {}@{}", host.user, host.host_name)).build();
     group.add(&entry);
@@ -403,7 +453,7 @@ fn prompt_password(area: &Rc<SessionArea>, host: host::Host) {
         move |_| {
             let password = entry.text().to_string();
             win.close();
-            start_session(&area, host.clone(), Some(password));
+            on_password(&area, host.clone(), password);
         }
     ));
 
@@ -461,6 +511,228 @@ fn start_session(area: &Rc<SessionArea>, host: host::Host, password: Option<Stri
                     }
                 }
             }
+        }
+    ));
+}
+
+/// Öppnar Docker-vyn för `host` i en ny flik: en containerlista med
+/// start/stopp/omstart/loggar/shell per rad. Port av App/DockerView.swift
+/// till en fristående SSH-engångskörning per anrop (`ssh::run_command`).
+fn open_docker_view(area: &Rc<SessionArea>, host: host::Host, password: Option<String>) {
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(12)
+        .margin_bottom(12)
+        .build();
+    let scrolled = gtk::ScrolledWindow::builder().child(&list).vexpand(true).build();
+
+    let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
+    refresh_button.set_tooltip_text(Some("Uppdatera"));
+    let toolbar = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).margin_start(12).margin_end(12).margin_top(8).build();
+    toolbar.append(&gtk::Label::builder().label(format!("Docker: {}", host.alias)).hexpand(true).halign(gtk::Align::Start).build());
+    toolbar.append(&refresh_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&toolbar);
+    content.append(&scrolled);
+
+    let page = area.tab_view.append(&content);
+    page.set_title(&format!("Docker: {}", host.alias));
+    area.tab_view.set_selected_page(&page);
+    area.update_placeholder();
+
+    refresh_button.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        host,
+        #[strong]
+        password,
+        #[weak]
+        list,
+        move |_| refresh_docker_list(&area, host.clone(), password.clone(), &list)
+    ));
+
+    refresh_docker_list(area, host, password, &list);
+}
+
+fn refresh_docker_list(area: &Rc<SessionArea>, host: host::Host, password: Option<String>, list: &gtk::ListBox) {
+    let rx = ssh::run_command(host.clone(), password.clone(), docker::list_command(true));
+    glib::spawn_future_local(clone!(
+        #[weak]
+        list,
+        #[strong]
+        area,
+        #[strong]
+        host,
+        #[strong]
+        password,
+        async move {
+            while let Some(row) = list.row_at_index(0) {
+                list.remove(&row);
+            }
+            match rx.recv().await {
+                Ok(Ok(output)) => {
+                    for container in docker::parse_list(&output) {
+                        list.append(&build_container_row(&area, &host, &password, &list, container));
+                    }
+                }
+                Ok(Err(e)) => list.append(&error_row(&e)),
+                Err(_) => list.append(&error_row("SSH-anslutningen avbröts oväntat")),
+            }
+        }
+    ));
+}
+
+fn error_row(message: &str) -> adw::ActionRow {
+    adw::ActionRow::builder().title("Fel").subtitle(message).build()
+}
+
+fn build_container_row(
+    area: &Rc<SessionArea>,
+    host: &host::Host,
+    password: &Option<String>,
+    list: &gtk::ListBox,
+    container: docker::DockerContainer,
+) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
+        .title(&container.name)
+        .subtitle(format!("{} — {}", container.image, container.status))
+        .build();
+
+    let suffix = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(4).valign(gtk::Align::Center).build();
+
+    let run_docker_action = {
+        let area = area.clone();
+        let host = host.clone();
+        let password = password.clone();
+        let list = list.clone();
+        move |command: Result<String, String>| {
+            let Ok(command) = command else { return };
+            let rx = ssh::run_command(host.clone(), password.clone(), command);
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                host,
+                #[strong]
+                password,
+                #[strong]
+                list,
+                async move {
+                    let _ = rx.recv().await;
+                    refresh_docker_list(&area, host, password, &list);
+                }
+            ));
+        }
+    };
+
+    if container.is_running() {
+        let stop_btn = gtk::Button::from_icon_name("media-playback-stop-symbolic");
+        stop_btn.set_tooltip_text(Some("Stoppa"));
+        stop_btn.connect_clicked(clone!(
+            #[strong(rename_to = run)]
+            run_docker_action,
+            #[strong]
+            container,
+            move |_| run(docker::stop_command(&container.id))
+        ));
+        let restart_btn = gtk::Button::from_icon_name("view-refresh-symbolic");
+        restart_btn.set_tooltip_text(Some("Starta om"));
+        restart_btn.connect_clicked(clone!(
+            #[strong(rename_to = run)]
+            run_docker_action,
+            #[strong]
+            container,
+            move |_| run(docker::restart_command(&container.id))
+        ));
+        let shell_btn = gtk::Button::from_icon_name("utilities-terminal-symbolic");
+        shell_btn.set_tooltip_text(Some("Shell"));
+        shell_btn.connect_clicked(clone!(
+            #[strong]
+            area,
+            #[strong]
+            host,
+            #[strong]
+            password,
+            #[strong]
+            container,
+            move |_| {
+                if let Ok(cmd) = docker::exec_shell_command(&container.id) {
+                    // `startup_command` skickas automatiskt in i shellen direkt
+                    // efter att den öppnats (se ssh::run) — samma mekanism som
+                    // Host.startupCommand i Swift, bara återanvänd här för
+                    // `docker exec` istället för ett vanligt inloggningsskal.
+                    let mut shell_host = host.clone();
+                    shell_host.startup_command = Some(cmd);
+                    shell_host.alias = format!("{}: {}", host.alias, container.name);
+                    start_session(&area, shell_host, password.clone());
+                }
+            }
+        ));
+        suffix.append(&stop_btn);
+        suffix.append(&restart_btn);
+        suffix.append(&shell_btn);
+    } else {
+        let start_btn = gtk::Button::from_icon_name("media-playback-start-symbolic");
+        start_btn.set_tooltip_text(Some("Starta"));
+        start_btn.connect_clicked(clone!(
+            #[strong(rename_to = run)]
+            run_docker_action,
+            #[strong]
+            container,
+            move |_| run(docker::start_command(&container.id))
+        ));
+        suffix.append(&start_btn);
+    }
+
+    let logs_btn = gtk::Button::from_icon_name("text-x-generic-symbolic");
+    logs_btn.set_tooltip_text(Some("Loggar"));
+    logs_btn.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        host,
+        #[strong]
+        password,
+        #[strong]
+        container,
+        move |_| show_docker_logs(&area, &host, &password, &container)
+    ));
+    suffix.append(&logs_btn);
+
+    row.add_suffix(&suffix);
+    row
+}
+
+fn show_docker_logs(area: &Rc<SessionArea>, host: &host::Host, password: &Option<String>, container: &docker::DockerContainer) {
+    let Ok(cmd) = docker::logs_command(&container.id, 200) else { return };
+    let text_view = gtk::TextView::builder().editable(false).monospace(true).build();
+    let scrolled = gtk::ScrolledWindow::builder().child(&text_view).vexpand(true).build();
+    let win = adw::Window::builder()
+        .transient_for(&area.overlay.root().and_downcast::<gtk::Window>().expect("inget fönster"))
+        .modal(true)
+        .default_width(700)
+        .default_height(500)
+        .title(format!("Loggar: {}", container.name))
+        .content(&scrolled)
+        .build();
+    win.present();
+
+    let rx = ssh::run_command(host.clone(), password.clone(), cmd);
+    glib::spawn_future_local(clone!(
+        #[weak]
+        text_view,
+        async move {
+            let text = match rx.recv().await {
+                Ok(Ok(output)) => output,
+                Ok(Err(e)) => format!("Fel: {e}"),
+                Err(_) => "SSH-anslutningen avbröts oväntat".to_string(),
+            };
+            text_view.buffer().set_text(&text);
         }
     ));
 }

@@ -107,15 +107,13 @@ pub fn spawn_shell(host: Host, password: Option<String>, cols: u32, rows: u32) -
     SshSession { input: input_tx, output: output_rx }
 }
 
-async fn run(
-    host: Host,
+/// Ansluter och autentiserar — delad av den interaktiva shell-sessionen
+/// (`run`) och engångskommandon (`run_command_once`, t.ex. Docker-anrop).
+async fn connect(
+    host: &Host,
     password: Option<String>,
-    cols: u32,
-    rows: u32,
-    input_rx: async_channel::Receiver<Vec<u8>>,
-    output_tx: async_channel::Sender<SshEvent>,
     known_hosts_path_override: Option<std::path::PathBuf>,
-) -> Result<(), String> {
+) -> Result<Handle<ClientHandler>, String> {
     let known_hosts = Arc::new(KnownHosts::open(Some(
         known_hosts_path_override.unwrap_or_else(KnownHosts::default_path),
     )));
@@ -125,8 +123,67 @@ async fn run(
     let mut session: Handle<ClientHandler> = client::connect(config, addr, handler)
         .await
         .map_err(|e| format!("anslutning misslyckades: {e}"))?;
+    authenticate(&mut session, host, password).await?;
+    Ok(session)
+}
 
-    authenticate(&mut session, &host, password).await?;
+/// Kör ETT kommando över en fristående anslutning (ingen pty, ingen
+/// interaktiv shell) och returnerar stdout+stderr som text. Används för
+/// engångsanrop (Docker list/start/stopp/loggar) — en ny anslutning per
+/// anrop är enklare och korrekt, om än inte det mest effektiva; se
+/// ROADMAP.md om det senare visar sig behöva en delad uppkopplad session.
+pub fn run_command(host: Host, password: Option<String>, command: String) -> async_channel::Receiver<Result<String, String>> {
+    let (tx, rx) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("kunde inte starta tokio-runtimen för kommandotråden");
+        let result = rt.block_on(run_command_once(host, password, command, None));
+        let _ = tx.send_blocking(result);
+    });
+    rx
+}
+
+async fn run_command_once(
+    host: Host,
+    password: Option<String>,
+    command: String,
+    known_hosts_path_override: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    let session = connect(&host, password, known_hosts_path_override).await?;
+    let mut channel = session
+        .channel_open_session()
+        .await
+        .map_err(|e| format!("kunde inte öppna kanal: {e}"))?;
+    channel
+        .exec(true, command.as_bytes())
+        .await
+        .map_err(|e| format!("kommandot kunde inte köras: {e}"))?;
+
+    let mut output = Vec::new();
+    while let Some(msg) = channel.wait().await {
+        match msg {
+            ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
+                output.extend_from_slice(&data);
+            }
+            ChannelMsg::ExitStatus { .. } => break,
+            _ => {}
+        }
+    }
+    String::from_utf8(output).map_err(|e| format!("ogiltig UTF-8 i kommandots utdata: {e}"))
+}
+
+async fn run(
+    host: Host,
+    password: Option<String>,
+    cols: u32,
+    rows: u32,
+    input_rx: async_channel::Receiver<Vec<u8>>,
+    output_tx: async_channel::Sender<SshEvent>,
+    known_hosts_path_override: Option<std::path::PathBuf>,
+) -> Result<(), String> {
+    let session = connect(&host, password, known_hosts_path_override).await?;
 
     let mut channel = session
         .channel_open_session()
@@ -316,5 +373,38 @@ mod tests {
             ),
             Ok(()) => panic!("anslutningen borde ha avvisats p.g.a. ändrad värdnyckel, men lyckades"),
         }
+    }
+
+    /// Verifierar `run_command` (engångs-exec, ingen pty) mot en riktig
+    /// sshd — LÄSANDE kommando bara (`docker ps`), rör ALDRIG start/stopp
+    /// på riktiga containrar som kan köra på testmaskinen.
+    #[test]
+    #[ignore = "kräver en riktig localhost-sshd + en nyckel förberedd i authorized_keys, se ROADMAP.md"]
+    fn run_command_executes_a_real_readonly_command_over_ssh() {
+        let key_path = std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
+        let user = std::env::var("USER").expect("USER måste vara satt");
+        let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
+        host.auth = HostAuth::KeyFile(key_path);
+
+        let rx = run_command(host, None, "echo bastion-run-command-ok".to_string());
+        let result = rx.recv_blocking().expect("kanalen stängdes utan svar");
+        assert_eq!(result.unwrap().trim(), "bastion-run-command-ok");
+    }
+
+    /// Docker-vyns list-kommando mot en riktig `dockerd` med riktiga
+    /// containrar — LÄSANDE (`docker ps`) bara, rör aldrig start/stopp/
+    /// omstart av testmaskinens faktiska containrar.
+    #[test]
+    #[ignore = "kräver riktig localhost-sshd + docker + en nyckel i authorized_keys, se ROADMAP.md"]
+    fn docker_list_command_parses_real_dockerd_output() {
+        let key_path = std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
+        let user = std::env::var("USER").expect("USER måste vara satt");
+        let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
+        host.auth = HostAuth::KeyFile(key_path);
+
+        let rx = run_command(host, None, crate::docker::list_command(true));
+        let output = rx.recv_blocking().expect("kanalen stängdes utan svar").expect("docker ps misslyckades");
+        let containers = crate::docker::parse_list(&output);
+        assert!(!containers.is_empty(), "väntade minst en container på testmaskinen, fick ingen");
     }
 }
