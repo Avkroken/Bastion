@@ -248,20 +248,61 @@ delvis andra, av konkreta skäl:
    tillgänglig i den här miljön (bara en iPhone 16 Pro och en Samsung
    Q80D, ingen Windows-touchskärm), bekräftat av användaren själv
    (2026-07-28). Bara verifierat: kompilerar/länkar/startar utan krasch.
-   **Riktig installer tillagd** (`WindowsApp/Installer.iss` +
-   `Build-Installer.ps1`, Inno Setup 6): bygger `Output\BastionSetup.exe`
-   som buntar `bastion-gui.exe` + Windows App Runtime-installeraren i EN
-   fil — runtimen körs tyst som ett `[Run]`-steg innan appen startas,
-   ingen PowerShell/manuell paketjakt synlig för slutanvändaren. Direkt
-   svar på packningsklagomålet ("allt som bastion behöver måste följas
-   med"). **EJ verifierat med en riktig `iscc`-körning** — Inno Setup är
-   Windows-only, ingen körning gjordes på VM:en denna gång (den var
-   avstängd); .iss-syntaxen är handskriven mot Inno Setup-dokumentationen,
-   inte kompilerad/testad. Verifiera med `.\Build-Installer.ps1` på
-   riktig Windows-hårdvara innan detta räknas som klart.
-   **Nästa steg**: porta de riktiga vyerna från `LinuxApp/Sources/bastion-
-   gui/` hit (inte påbörjat, svep-bryggan väntar på riktiga flikar att
-   växla mellan).
+   **Riktig installer tillagd och VERIFIERAD på riktig hårdvara 2026-07-29**
+   (`WindowsApp/Installer.iss` + `Build-Installer.ps1`, Inno Setup 6):
+   bygger `Output\BastionSetup.exe` som buntar `bastion-gui.exe` + Windows
+   App Runtime-installeraren i EN fil — runtimen körs tyst som ett
+   `[Run]`-steg innan appen startas, ingen PowerShell/manuell paketjakt
+   synlig för slutanvändaren. Direkt svar på packningsklagomålet ("allt
+   som bastion behöver måste följas med"). Två riktiga buggar hittades
+   och fixades under verifieringen (inte antaganden — hittade via faktisk
+   `iscc`-körning på `bastion-winserver`-VM:en):
+   - Icke-ASCII-tecken (å/ä/ö/em-dash) i `Build-Installer.ps1`/
+     `Installer.iss`/`Install-Bastion.ps1` korrumperades vid git-checkout
+     på Windows och gav "missing string terminator" i PowerShell-parsern
+     — fixat genom att skriva om alla tre filer i ren ASCII (commit
+     `18b3b5e`).
+   - `Installer.iss` saknade obligatoriskt `AppVersion`-direktiv — ISCC
+     vägrade kompilera ("[Setup] section must include an AppVersion or
+     AppVerName directive") — fixat (commit `76911ad`).
+   Efter fixarna: `iscc Installer.iss` gav "Successful compile (63.281
+   sec)", `BastionSetup.exe` (89MB) kördes interaktivt via RDP, hela
+   guiden (Select Destination → Ready to Install → Installing → Finish)
+   fungerade felfritt, skrivbordsikon skapades korrekt.
+
+   **NY BLOCKERANDE BUGG hittad vid samma verifiering**: `bastion-gui.exe`
+   startar men kraschar omedelbart (både vid autostart efter installation
+   och vid manuell start från skrivbordsikonen). Windows händelselogg
+   (Application) visar ett konsekvent, upprepat fel:
+   `Exception code: 0xc000001d` (STATUS_ILLEGAL_INSTRUCTION), faulting
+   module `swiftCore.dll` (från den separat installerade Swift 6.1-
+   toolchainen, `...\Programs\Swift\Runtimes\6.1.0\usr\bin\swiftCore.dll`),
+   fault offset `0x17bf6`. VM:en kör med `cpu mode='host-passthrough'`
+   (inga instruktioner maskeras av libvirt/QEMU) mot en AMD Ryzen 5 7430U
+   (Zen 3, `avx`+`avx2` men INGEN `avx512*`) — en trolig men EJ verifierad
+   hypotes är att den officiella Swift-for-Windows-toolchainens
+   `swiftCore.dll` innehåller en instruktion (t.ex. AVX-512-baserad
+   memcpy/hash-rutin) som denna CPU saknar. Inte root-orsakad denna
+   session — kräver antingen disassemblering av kraschadressen eller
+   test på en CPU med bredare instruktionsstöd (eller Intel med AVX-512)
+   för att bekräfta/avfärda hypotesen.
+
+   Detta är separat från och blockerar INTE installer-paketeringsarbetet
+   ovan (installern fungerar mekaniskt perfekt — problemet är att den
+   installerade appen kraschar på just denna testmaskins CPU). Notera
+   också: installern buntar INTE Swift-runtime-DLL:erna
+   (`swiftCore.dll` m.fl.) — de finns bara på VM:en för att Swift-
+   toolchainen råkar vara installerad där för byggen. En riktig
+   slutanvändare utan Swift installerat skulle få ett "DLL saknas"-fel
+   direkt, oavsett CPU-buggen ovan. Det är en känd, ej ännu löst,
+   paketeringslucka.
+
+   **Nästa steg**: (1) root-orsaka CPU-instruktionskraschen (annan
+   testmaskin/CPU, eller disassemblera runt offset 0x17bf6 i swiftCore.dll),
+   (2) bunta Swift-runtime-DLL:erna i `Installer.iss` så appen inte kräver
+   en separat Swift-installation, (3) porta de riktiga vyerna från
+   `LinuxApp/Sources/bastion-gui/` hit (inte påbörjat, svep-bryggan väntar
+   på riktiga flikar att växla mellan).
 4. **`bastion-cli` som headless/skriptbar fallback** (användarförslag
    2026-07-28): "Den borde kunna integreras med Linux och Windows Shell
    också, bash osv, cmd, PowerShell, så att det går att köra den remote
