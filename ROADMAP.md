@@ -1610,5 +1610,35 @@ test som bevisar att filINNEHÅLLET faktiskt överlever hela resan.
 37 enhetstester (7 nya: 6 archive.rs + chmod/chown + arkiv-roundtrip),
 cargo build/test rent, headless xvfb-run-körning utan krasch.
 
-Kvar: krypterade molntransporter i Rust (se task-listan i motsvarande
-Claude Code-session).
+**Klart 2026-07-30, sextonde pass: krypterade molntransporter (AES-256-GCM)
+i alla TRE klienter, cross-språksverifierade byte-för-byte.**
+`sync_crypto.rs` (LinuxApp) och `SyncCrypto.cs` (`WindowsApp/Bastion.Core`,
+med .NETs inbyggda `Rfc2898DeriveBytes`/`AesGcm` — inga nya paket) portar
+`Sources/SSHCore/SyncCrypto.swift`: PBKDF2-HMAC-SHA256 + AES-256-GCM,
+samma "BSYNC1"-kuvert (magic + iterationer + salt + nonce||chiffertext||
+tagg). `EncryptedFolderSyncProvider` i alla tre språk.
+
+UI: både LinuxApp (`adw::SwitchRow` + `PasswordEntryRow` i synk-dialogen)
+och WindowsApp (`ToggleSwitch` + `PasswordBox`) fick en "Kryptera"-växel
+som byter `sync_now`-anropet mellan `FolderSyncProvider` (hosts.json,
+klartext) och `EncryptedFolderSyncProvider` (hosts.enc, krypterad) —
+rätt för en molnmapp (Dropbox/Drive/OneDrive) man inte litar på blint.
+
+Cross-språksverifiering: körde RIKTIGA test mot varandras faktiska
+kuvert i alla tre riktningar (Swift↔Rust, Rust↔C#) — genererade en
+sealed blob med ett språks verkliga testkörning och läste den med ett
+annat språks verkliga kod, inte bara "formatet ser rätt ut". Alla
+tillfälliga cross-språk-testmetoder borttagna igen efter körning.
+26 C#-tester (7 nya i `SyncCryptoTests.cs`), 44 Rust-tester (cargo
+build/test rent), 283 Swift-tester (oförändrat, `swift test` rent).
+
+Ärlig begränsning: WindowsApp-sidans UI-ändring (`MainWindow.xaml.cs`)
+är INTE visuellt verifierad denna gång — ingen Windows-VM tillgänglig i
+den här sessionen. `Bastion.Core`/`SyncCrypto.cs` är fullt byggd och
+testad (net8.0, `dotnet build`/`dotnet test` rent på Linux), men
+`ToggleSwitch`/`PasswordBox`-kopplingen i WinUI3-lagret bör
+xfreerdp+xdotool-verifieras (se
+`reference-windows-vm-interactive-render-verification.md`) innan den
+räknas som lika bekräftad som LinuxApp-sidan.
+
+Detta var den sista punkten på den ursprungliga "kvarstående"-listan.

@@ -121,14 +121,35 @@ public sealed partial class MainWindow : Window
             TextWrapping = TextWrapping.Wrap,
         };
         var chooseButton = new Button { Content = "Välj mapp…" };
+        var encryptedToggle = new ToggleSwitch
+        {
+            Header = "Kryptera (för molnmappar du inte litar på blint)",
+            OnContent = "Dropbox/Drive/OneDrive — AES-256-GCM",
+            OffContent = "Okrypterad lokal mapp",
+            IsOn = _syncConfig.Encrypted,
+        };
+        var passphraseBox = new PasswordBox
+        {
+            PlaceholderText = "Lösenfras",
+            Visibility = _syncConfig.Encrypted ? Visibility.Visible : Visibility.Collapsed,
+        };
         var syncButton = new Button { Content = "Synka nu", IsEnabled = _syncConfig.FolderPath is not null };
         var statusLabel = new TextBlock { Opacity = 0.7 };
 
         var panel = new StackPanel { Spacing = 8 };
         panel.Children.Add(pathLabel);
         panel.Children.Add(chooseButton);
+        panel.Children.Add(encryptedToggle);
+        panel.Children.Add(passphraseBox);
         panel.Children.Add(syncButton);
         panel.Children.Add(statusLabel);
+
+        encryptedToggle.Toggled += (_, _) =>
+        {
+            _syncConfig.Encrypted = encryptedToggle.IsOn;
+            _syncConfig.Save(SyncConfig.DefaultPath);
+            passphraseBox.Visibility = encryptedToggle.IsOn ? Visibility.Visible : Visibility.Collapsed;
+        };
 
         var dialog = new ContentDialog
         {
@@ -158,7 +179,21 @@ public sealed partial class MainWindow : Window
             if (_syncConfig.FolderPath is null) return;
             try
             {
-                var provider = new FolderSyncProvider(Path.Combine(_syncConfig.FolderPath, "hosts.json"));
+                ISyncProvider provider;
+                if (_syncConfig.Encrypted)
+                {
+                    if (string.IsNullOrEmpty(passphraseBox.Password))
+                    {
+                        statusLabel.Text = "Ange en lösenfras först";
+                        return;
+                    }
+                    provider = new EncryptedFolderSyncProvider(
+                        Path.Combine(_syncConfig.FolderPath, "hosts.enc"), passphraseBox.Password);
+                }
+                else
+                {
+                    provider = new FolderSyncProvider(Path.Combine(_syncConfig.FolderPath, "hosts.json"));
+                }
                 _store.Sync(provider);
                 statusLabel.Text = "Synkad";
                 Refresh();

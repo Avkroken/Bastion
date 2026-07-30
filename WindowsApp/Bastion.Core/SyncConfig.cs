@@ -12,6 +12,15 @@ public sealed class SyncConfig
 {
     public string? FolderPath { get; set; }
 
+    /// <summary>
+    /// Om synkfilen ska krypteras (EncryptedFolderSyncProvider) — rätt för en
+    /// tredjeparts molnmapp (Dropbox/Drive/OneDrive) man inte litar på
+    /// blint. Lösenfrasen sparas ALDRIG här — bara att kryptering önskas,
+    /// frasen matas in på nytt varje "Synka nu". Samma design som
+    /// LinuxApp/src/sync.rs::SyncConfig.
+    /// </summary>
+    public bool Encrypted { get; set; }
+
     public static string DefaultPath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".bastion", "sync-config.json");
 
