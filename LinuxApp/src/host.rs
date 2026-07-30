@@ -298,7 +298,6 @@ impl HostStore {
     /// Full synkrunda mot en transport: hämta fjärrtillstånd, slå ihop
     /// lokalt, skriv tillbaka det sammanslagna — motsvarar
     /// `HostStore.sync(with:)` i Swift. Se `crate::sync`.
-    #[allow(dead_code)] // synk-UI är inte byggt än, se crate::sync-modulnoten
     pub fn sync(&mut self, provider: &impl crate::sync::SyncProvider) -> std::io::Result<()> {
         let remote = provider.pull()?.unwrap_or_default();
         let local = std::mem::take(&mut self.state);

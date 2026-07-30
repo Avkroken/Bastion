@@ -114,6 +114,32 @@ impl SyncProvider for FolderSyncProvider {
     }
 }
 
+/// Klientlokal inställning — VILKEN mapp den här installationen synkar
+/// mot. Medvetet INTE en del av det delade `SyncState`/protokollet: varje
+/// klient/enhet kan (och bör kunna) peka mot en annan lokal
+/// synk-mapp/monteringspunkt, det är inte data att slå ihop mellan enheter.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct SyncConfig {
+    pub folder_path: Option<String>,
+}
+
+impl SyncConfig {
+    pub fn default_path() -> std::path::PathBuf {
+        dirs::home_dir().expect("kunde inte hitta hemkatalogen").join(".bastion/sync-config.json")
+    }
+
+    pub fn load(path: &std::path::Path) -> Self {
+        std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    }
+
+    pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(path, serde_json::to_string_pretty(self)?)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,6 +231,18 @@ mod tests {
         assert!(aliases_a.contains(&"från-a".to_string()));
         assert!(aliases_a.contains(&"från-b".to_string()), "A såg aldrig B:s värd efter synk");
 
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn sync_config_round_trips_through_disk() {
+        let dir = std::env::temp_dir().join(format!("bastion-syncconfig-test-{}", Uuid::new_v4()));
+        let path = dir.join("sync-config.json");
+        let config = SyncConfig { folder_path: Some("/mnt/syncthing/bastion".into()) };
+        config.save(&path).unwrap();
+
+        let reloaded = SyncConfig::load(&path);
+        assert_eq!(reloaded.folder_path.as_deref(), Some("/mnt/syncthing/bastion"));
         std::fs::remove_dir_all(dir).ok();
     }
 }

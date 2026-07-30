@@ -13,7 +13,6 @@ mod settings;
 mod sftp;
 mod snippet;
 mod ssh;
-#[allow(dead_code)] // synk-UI (välja/konfigurera en SyncProvider) är inte byggt än
 mod sync;
 
 use host::{Host, HostStore};
@@ -35,6 +34,7 @@ fn build_ui(app: &adw::Application) {
         settings::AppSettingsStore::default_path(),
     )));
     let snippet_store = Rc::new(RefCell::new(snippet::SnippetStore::open(snippet::SnippetStore::default_path())));
+    let sync_config = Rc::new(RefCell::new(sync::SyncConfig::load(&sync::SyncConfig::default_path())));
 
     let list = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
@@ -82,7 +82,9 @@ fn build_ui(app: &adw::Application) {
         area,
         #[strong]
         snippet_store,
-        move |_| show_settings_dialog(&app, &settings_store, &store, &list, &area, &snippet_store)
+        #[strong]
+        sync_config,
+        move |_| show_settings_dialog(&app, &settings_store, &store, &list, &area, &snippet_store, &sync_config)
     ));
 
     let sidebar_header = adw::HeaderBar::new();
@@ -408,6 +410,7 @@ fn show_settings_dialog(
     list: &gtk::ListBox,
     area: &Rc<SessionArea>,
     snippet_store: &Rc<RefCell<snippet::SnippetStore>>,
+    sync_config: &Rc<RefCell<sync::SyncConfig>>,
 ) {
     let current = settings_store.borrow().current();
 
@@ -427,8 +430,26 @@ fn show_settings_dialog(
     group.add(&docker_row);
     group.add(&commands_row);
     group.add(&sftp_row);
+
+    let sync_folder_row = adw::ActionRow::builder()
+        .title("Synkmapp")
+        .subtitle(sync_config.borrow().folder_path.clone().unwrap_or_else(|| "Ingen vald".to_string()))
+        .build();
+    let choose_folder_button = gtk::Button::with_label("Välj mapp…");
+    choose_folder_button.set_valign(gtk::Align::Center);
+    sync_folder_row.add_suffix(&choose_folder_button);
+
+    let sync_now_row = adw::ActionRow::builder().title("Synka nu").activatable(true).build();
+    let sync_status_label = gtk::Label::builder().opacity(0.7).build();
+    sync_now_row.add_suffix(&sync_status_label);
+
+    let sync_group = adw::PreferencesGroup::builder().title("Synk").description("Delar host-databasen mellan enheter via en mapp som redan synkas av något annat (Syncthing, en klonad Git-mapp, en krypterad disk). Se SYNC_PROTOCOL.md.").build();
+    sync_group.add(&sync_folder_row);
+    sync_group.add(&sync_now_row);
+
     let page = adw::PreferencesPage::new();
     page.add(&group);
+    page.add(&sync_group);
 
     let close_button = gtk::Button::with_label("Klar");
     close_button.add_css_class("suggested-action");
@@ -517,6 +538,72 @@ fn show_settings_dialog(
                 .update(toggles)
                 .expect("kunde inte spara inställningarna");
             refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store);
+        }
+    ));
+
+    choose_folder_button.connect_clicked(clone!(
+        #[strong]
+        win,
+        #[strong]
+        sync_config,
+        #[weak]
+        sync_folder_row,
+        move |_| {
+            let dialog = gtk::FileDialog::builder().title("Välj synkmapp").build();
+            dialog.select_folder(
+                Some(&win),
+                None::<&gtk::gio::Cancellable>,
+                clone!(
+                    #[strong]
+                    sync_config,
+                    #[weak]
+                    sync_folder_row,
+                    move |result| {
+                        if let Ok(folder) = result {
+                            if let Some(path) = folder.path() {
+                                let path_str = path.to_string_lossy().to_string();
+                                let mut cfg = sync_config.borrow_mut();
+                                cfg.folder_path = Some(path_str.clone());
+                                cfg.save(&sync::SyncConfig::default_path()).expect("kunde inte spara synkinställningen");
+                                sync_folder_row.set_subtitle(&path_str);
+                            }
+                        }
+                    }
+                ),
+            );
+        }
+    ));
+
+    sync_now_row.connect_activated(clone!(
+        #[strong]
+        store,
+        #[strong]
+        sync_config,
+        #[weak]
+        sync_status_label,
+        #[weak]
+        list,
+        #[strong]
+        app,
+        #[strong]
+        area,
+        #[strong]
+        settings_store,
+        #[strong]
+        snippet_store,
+        move |_| {
+            let Some(folder) = sync_config.borrow().folder_path.clone() else {
+                sync_status_label.set_text("Välj en mapp först");
+                return;
+            };
+            let provider = sync::FolderSyncProvider::new(std::path::PathBuf::from(folder).join("hosts.json"));
+            match store.borrow_mut().sync(&provider) {
+                Ok(()) => {
+                    sync_status_label.set_text("Synkad");
+                    refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store);
+                }
+                Err(e) => sync_status_label.set_text(&format!("Fel: {e}")),
+            }
         }
     ));
 

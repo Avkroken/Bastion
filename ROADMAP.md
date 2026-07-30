@@ -1559,6 +1559,22 @@ HostAuth.AgentDefault är inte porterat till WindowsApp. UI:t har heller
 ingen auth-typväljare än (alla nya värdar skapas med AgentDefault, som
 alltså inte fungerar i WindowsApp ännu — nästa steg).
 
-Kvar: auth-typväljare i "Lägg till värd"-dialogen, synk-UI, krypterade
-molntransporter i Rust, chmod/chown/komprimera/packa upp i SFTP-vyn (se
-task-listan i motsvarande Claude Code-session).
+**Klart samma dag, trettonde pass:** `WindowsApp` fick en auth-typväljare
+i "Lägg till värd" (ComboBox: Nyckelfil/Lösenord — de enda två som
+faktiskt fungerar, AgentDefault döljs medvetet eftersom SSH.NET saknar
+agent-protokollstöd). Utan denna fix skapades nya värdar tyst med en
+obrukbar auth-typ.
+
+`LinuxApp` fick synk-UI: en ny `SyncConfig` (klientlokal — `~/.bastion/
+sync-config.json`, medvetet SKILD från det delade `SyncState`-protokollet
+eftersom vilken mapp man synkar mot är en per-enhet-inställning, inte
+data att slå ihop). Inställningsdialogen har nu en "Synk"-sektion: "Välj
+mapp…" (nativ `GtkFileDialog`) + "Synka nu" som kör `HostStore::sync` mot
+en `FolderSyncProvider` i den valda mappen. Biblioteket var redan
+verifierat (cross-instans-konvergenstestet); detta kopplar bara in ytan.
+6 enhetstester (1 ny: `sync_config_round_trips_through_disk`), cargo
+build/test rent, headless xvfb-run-körning utan krasch.
+
+Kvar: motsvarande synk-UI i `WindowsApp`, krypterade molntransporter i
+Rust, chmod/chown/komprimera/packa upp i SFTP-vyn (se task-listan i
+motsvarande Claude Code-session).
