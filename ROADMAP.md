@@ -220,9 +220,28 @@ delvis andra, av konkreta skäl:
    Clang än Swift 6.1 (Clang 19.1.4) bundlar. Löst genom att uppgradera
    till Swift 6.3.3-RELEASE (bundlar Clang 21.1.6) — inte en riktig
    Bastion-relaterad bugg, bara toolchain-miljödrift på testmaskinen.
-   **Nästa steg nu när bygget faktiskt går grönt**: porta de riktiga
-   vyerna från `LinuxApp/Sources/bastion-gui/` hit och testa på riktigt
-   (VPS eller motsvarande) — inte påbörjat än.
+   **Riktiga vyerna porterade** (2026-07-30, PR #217): hela UI-lagret
+   (host-lista/`ContentView`, dashboard, Docker, SFTP, S3, WireGuard,
+   Tailscale, portvidarebefordran, snippets, command library,
+   terminalflikar m.fl. — 28 filer) kopierat rakt av från
+   `LinuxApp/Sources/bastion-gui/` — ren SwiftCrossUI-kod skriven mot
+   standard `View`/`Scene`-API:t, ingen GTK-koppling i själva vyerna.
+   Verifierat FÖRST genom att läsa `WinUIBackend`-källan (klonad lokalt
+   från `moreSwift/swift-cross-ui`): alla widgets vyerna använder (List,
+   TextEditor, Picker, ScrollView, ProgressView, Toggle, SecureField,
+   NavigationSplitView) har en implementation där. `windowsapp-build`
+   grönt på riktigt med hela vyträdet inkopplat (inte bara placeholder-
+   vyn längre), PR #217 mergad.
+   Två filer portades medvetet INTE: `BastionGUIApp.swift` (Windows
+   behåller sitt eget `@main`, nu kopplat till den riktiga `ContentView()`)
+   och `GestureSwipeBridge.swift` (rå GLib/GTK4-signalkoppling för
+   touchscreen-svep mellan terminalflikar — ingen WinUIBackend-
+   motsvarighet finns, ingen egen pekar-/manipulationshändelse-API
+   exponerad i `.inspect()` ännu; dokumenterat i `TerminalTabsView.swift`,
+   flikbyte via knapptryck fungerar oförändrat).
+   **Kvar**: testa på riktigt mot en riktig Windows-maskin (VPS eller
+   motsvarande) — bara CI-verifierat (kompilerar) hittills, ingen har
+   faktiskt klickat runt i appen på riktig Windows-hårdvara än.
 4. Riktig rå tangentbordsinmatning i Linux-terminalen (kräver att gå under
    SwiftCrossUI mot GTK:s event-controllers direkt — se "Uppskjutet med avsikt").
 
