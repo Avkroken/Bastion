@@ -1632,13 +1632,19 @@ tillfälliga cross-språk-testmetoder borttagna igen efter körning.
 26 C#-tester (7 nya i `SyncCryptoTests.cs`), 44 Rust-tester (cargo
 build/test rent), 283 Swift-tester (oförändrat, `swift test` rent).
 
-Ärlig begränsning: WindowsApp-sidans UI-ändring (`MainWindow.xaml.cs`)
-är INTE visuellt verifierad denna gång — ingen Windows-VM tillgänglig i
-den här sessionen. `Bastion.Core`/`SyncCrypto.cs` är fullt byggd och
-testad (net8.0, `dotnet build`/`dotnet test` rent på Linux), men
-`ToggleSwitch`/`PasswordBox`-kopplingen i WinUI3-lagret bör
-xfreerdp+xdotool-verifieras (se
-`reference-windows-vm-interactive-render-verification.md`) innan den
-räknas som lika bekräftad som LinuxApp-sidan.
+WindowsApp-sidan VISUELLT verifierad också: `bastion-winserver`-VM:en
+(mp100, 192.168.122.42) var faktiskt igång, koden synkades dit (WinRM +
+base64-filöverföring, ingen git-klon där), `dotnet build
+WindowsApp.csproj -r win-x64` byggde rent (kräver explicit RID för
+`WindowsAppSDKSelfContained`, annars `error: requires a supported
+Windows architecture` — miljöbegränsning, inte en kodbugg), och via
+xfreerdp3+Xvfb+xdotool mot VM:ens redan aktiva RDP-session klickades
+Synk-knappen, "Kryptera"-växeln slogs på LIVE och lösenfrasfältet dök
+upp med texten "Dropbox/Drive/OneDrive — AES-256-GCM" — identiskt
+beteende med LinuxApp:s `SwitchRow`/`PasswordEntryRow`. Processen
+stoppades och VM-tillståndet återställdes efteråt.
 
-Detta var den sista punkten på den ursprungliga "kvarstående"-listan.
+Detta var den sista punkten på den ursprungliga "kvarstående"-listan —
+krypterade molntransporter är nu en riktig, visuellt verifierad
+användarfunktion i alla tre klienter (Swift/App, Rust/LinuxApp,
+C#/WindowsApp).
