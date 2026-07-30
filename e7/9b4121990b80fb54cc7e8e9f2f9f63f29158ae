@@ -1,0 +1,27 @@
+WindowsApp/MainWindow.xaml
+  s_426e01ebb88f59::t_198afc70a7682e 20
+WindowsApp/Bastion.Core/SyncConfig.cs
+  s_426e01ebb88f59::t_539aeb3a5842ae 1-37
+WindowsApp/MainWindow.xaml.cs
+  s_426e01ebb88f59::t_1e14d7f69da489 107-174
+  s_426e01ebb88f59::t_361072b221c2eb 7-8
+  s_426e01ebb88f59::t_6ebb5e2fc27387 26
+WindowsApp/Bastion.Core.Tests/SyncConfigTests.cs
+  s_426e01ebb88f59::t_bb43f360fa36d6 1-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.17",
+  "base_commit_sha": "e79b4121990b80fb54cc7e8e9f2f9f63f29158ae",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
