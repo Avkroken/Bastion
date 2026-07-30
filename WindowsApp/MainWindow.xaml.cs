@@ -4,6 +4,8 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Renci.SshNet.Common;
+using Windows.Storage.Pickers;
+using WinRT.Interop;
 
 namespace Bastion;
 
@@ -21,6 +23,7 @@ public sealed partial class MainWindow : Window
     private readonly ObservableCollection<HostRow> _rows = new();
     private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
     private SshSession? _activeSession;
+    private SyncConfig _syncConfig = SyncConfig.Load(SyncConfig.DefaultPath);
 
     public MainWindow()
     {
@@ -99,6 +102,74 @@ public sealed partial class MainWindow : Window
 
         _store.Upsert(host);
         Refresh();
+    }
+
+    /// <summary>
+    /// Port av samma synk-UI som LinuxApp: välj en mapp (synkad av något
+    /// annat, t.ex. Syncthing/en klonad Git-mapp) + kör HostStore.Sync mot
+    /// en FolderSyncProvider där. Biblioteksnivån (Bastion.Core.SyncEngine/
+    /// FolderSyncProvider) är redan verifierad (cross-instans-
+    /// konvergenstestet, delat med LinuxApp/src/sync.rs) — detta kopplar
+    /// bara in ytan.
+    /// </summary>
+    private async void OnSyncClicked(object sender, RoutedEventArgs e)
+    {
+        var pathLabel = new TextBlock
+        {
+            Text = _syncConfig.FolderPath ?? "Ingen mapp vald",
+            Opacity = 0.7,
+            TextWrapping = TextWrapping.Wrap,
+        };
+        var chooseButton = new Button { Content = "Välj mapp…" };
+        var syncButton = new Button { Content = "Synka nu", IsEnabled = _syncConfig.FolderPath is not null };
+        var statusLabel = new TextBlock { Opacity = 0.7 };
+
+        var panel = new StackPanel { Spacing = 8 };
+        panel.Children.Add(pathLabel);
+        panel.Children.Add(chooseButton);
+        panel.Children.Add(syncButton);
+        panel.Children.Add(statusLabel);
+
+        var dialog = new ContentDialog
+        {
+            Title = "Synk",
+            Content = panel,
+            CloseButtonText = "Klar",
+            XamlRoot = Content.XamlRoot,
+        };
+
+        chooseButton.Click += async (_, _) =>
+        {
+            var picker = new FolderPicker { SuggestedStartLocation = PickerLocationId.Desktop };
+            picker.FileTypeFilter.Add("*");
+            InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
+
+            var folder = await picker.PickSingleFolderAsync();
+            if (folder is null) return;
+
+            _syncConfig.FolderPath = folder.Path;
+            _syncConfig.Save(SyncConfig.DefaultPath);
+            pathLabel.Text = folder.Path;
+            syncButton.IsEnabled = true;
+        };
+
+        syncButton.Click += (_, _) =>
+        {
+            if (_syncConfig.FolderPath is null) return;
+            try
+            {
+                var provider = new FolderSyncProvider(Path.Combine(_syncConfig.FolderPath, "hosts.json"));
+                _store.Sync(provider);
+                statusLabel.Text = "Synkad";
+                Refresh();
+            }
+            catch (Exception ex)
+            {
+                statusLabel.Text = $"Fel: {ex.Message}";
+            }
+        };
+
+        await dialog.ShowAsync();
     }
 
     private async void OnHostItemClicked(object sender, ItemClickEventArgs e)

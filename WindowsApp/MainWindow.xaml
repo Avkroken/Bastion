@@ -17,6 +17,7 @@
 
             <StackPanel Grid.Row="0" Orientation="Horizontal" Padding="12,8" Spacing="8">
                 <TextBlock Text="Värdar" FontSize="18" VerticalAlignment="Center" HorizontalAlignment="Stretch" />
+                <Button x:Name="SyncButton" Content="&#xE895;" FontFamily="Segoe MDL2 Assets" Click="OnSyncClicked" ToolTipService.ToolTip="Synk" />
                 <Button x:Name="AddHostButton" Content="+" Click="OnAddHostClicked" HorizontalAlignment="Right" />
             </StackPanel>
 
