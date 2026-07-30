@@ -15,6 +15,7 @@ mod sftp;
 mod snippet;
 mod ssh;
 mod sync;
+mod sync_crypto;
 
 use host::{Host, HostStore};
 use ssh::SshEvent;
@@ -440,12 +441,33 @@ fn show_settings_dialog(
     choose_folder_button.set_valign(gtk::Align::Center);
     sync_folder_row.add_suffix(&choose_folder_button);
 
+    let encrypted_row = adw::SwitchRow::builder()
+        .title("Kryptera (för molnmappar du inte litar på blint)")
+        .subtitle("Dropbox/Google Drive/OneDrive — AES-256-GCM, lösenfras krävs vid varje synk")
+        .active(sync_config.borrow().encrypted)
+        .build();
+    let passphrase_row = adw::PasswordEntryRow::builder().title("Lösenfras").visible(sync_config.borrow().encrypted).build();
+    encrypted_row.connect_active_notify(clone!(
+        #[weak]
+        passphrase_row,
+        #[strong]
+        sync_config,
+        move |row| {
+            passphrase_row.set_visible(row.is_active());
+            let mut cfg = sync_config.borrow_mut();
+            cfg.encrypted = row.is_active();
+            cfg.save(&sync::SyncConfig::default_path()).expect("kunde inte spara synkinställningen");
+        }
+    ));
+
     let sync_now_row = adw::ActionRow::builder().title("Synka nu").activatable(true).build();
     let sync_status_label = gtk::Label::builder().opacity(0.7).build();
     sync_now_row.add_suffix(&sync_status_label);
 
-    let sync_group = adw::PreferencesGroup::builder().title("Synk").description("Delar host-databasen mellan enheter via en mapp som redan synkas av något annat (Syncthing, en klonad Git-mapp, en krypterad disk). Se SYNC_PROTOCOL.md.").build();
+    let sync_group = adw::PreferencesGroup::builder().title("Synk").description("Delar host-databasen mellan enheter via en mapp som redan synkas av något annat (Syncthing, en klonad Git-mapp) — eller en krypterad fil i en molnmapp (Dropbox/Drive/OneDrive). Se SYNC_PROTOCOL.md.").build();
     sync_group.add(&sync_folder_row);
+    sync_group.add(&encrypted_row);
+    sync_group.add(&passphrase_row);
     sync_group.add(&sync_now_row);
 
     let page = adw::PreferencesPage::new();
@@ -583,6 +605,8 @@ fn show_settings_dialog(
         #[weak]
         sync_status_label,
         #[weak]
+        passphrase_row,
+        #[weak]
         list,
         #[strong]
         app,
@@ -597,8 +621,23 @@ fn show_settings_dialog(
                 sync_status_label.set_text("Välj en mapp först");
                 return;
             };
-            let provider = sync::FolderSyncProvider::new(std::path::PathBuf::from(folder).join("hosts.json"));
-            match store.borrow_mut().sync(&provider) {
+            let encrypted = sync_config.borrow().encrypted;
+            let result = if encrypted {
+                let passphrase = passphrase_row.text().to_string();
+                if passphrase.is_empty() {
+                    sync_status_label.set_text("Ange en lösenfras först");
+                    return;
+                }
+                let provider = sync_crypto::EncryptedFolderSyncProvider::new(
+                    std::path::PathBuf::from(folder).join("hosts.enc"),
+                    passphrase,
+                );
+                store.borrow_mut().sync(&provider)
+            } else {
+                let provider = sync::FolderSyncProvider::new(std::path::PathBuf::from(folder).join("hosts.json"));
+                store.borrow_mut().sync(&provider)
+            };
+            match result {
                 Ok(()) => {
                     sync_status_label.set_text("Synkad");
                     refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store);

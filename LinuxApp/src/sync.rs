@@ -121,6 +121,12 @@ impl SyncProvider for FolderSyncProvider {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SyncConfig {
     pub folder_path: Option<String>,
+    /// Om synkfilen ska krypteras (`sync_crypto::EncryptedFolderSyncProvider`)
+    /// — rätt för en tredjeparts molnmapp (Dropbox/Drive/OneDrive) man inte
+    /// litar på blint. Lösenfrasen SPARAS ALDRIG här — bara att kryptering
+    /// önskas, frasen matas in på nytt varje "Synka nu".
+    #[serde(default)]
+    pub encrypted: bool,
 }
 
 impl SyncConfig {
@@ -238,7 +244,7 @@ mod tests {
     fn sync_config_round_trips_through_disk() {
         let dir = std::env::temp_dir().join(format!("bastion-syncconfig-test-{}", Uuid::new_v4()));
         let path = dir.join("sync-config.json");
-        let config = SyncConfig { folder_path: Some("/mnt/syncthing/bastion".into()) };
+        let config = SyncConfig { folder_path: Some("/mnt/syncthing/bastion".into()), encrypted: false };
         config.save(&path).unwrap();
 
         let reloaded = SyncConfig::load(&path);

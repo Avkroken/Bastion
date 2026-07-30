@@ -16,3 +16,7 @@ async-channel = "2"
 async-trait = "0.1"
 vte = { version = "0.10", package = "vte4", features = ["gtk_v4_18"] }
 russh-sftp = "2.3.0"
+pbkdf2 = { version = "0.13.0", default-features = false, features = ["hmac"] }
+sha2 = "0.11.0"
+aes-gcm = "0.11.0"
+rand = "0.10.2"
