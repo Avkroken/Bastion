@@ -1,0 +1,30 @@
+WindowsApp/Bastion.Core/SyncCrypto.cs
+  s_426e01ebb88f59::t_77d8fcd5ed90d3 1-119
+WindowsApp/MainWindow.xaml.cs
+  s_426e01ebb88f59::t_7e20e767b2fb70 182-196
+  s_426e01ebb88f59::t_defda7c62932d0 124-135,142-143,147-152
+  s_426e01ebb88f59::t_50eb83aa439dff 153
+ROADMAP.md
+  s_426e01ebb88f59::t_4664bad036914c 1613-1644
+WindowsApp/Bastion.Core/SyncConfig.cs
+  s_426e01ebb88f59::t_2c1510cf4f6ae9 15-23
+WindowsApp/Bastion.Core.Tests/SyncCryptoTests.cs
+  s_426e01ebb88f59::t_cd9201c903c8b0 1-14,18-100
+  s_426e01ebb88f59::t_954531178a02ab 15-17
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.17",
+  "base_commit_sha": "ba008454e39210a2c2013b5fbc07cf0be9e3e995",
+  "prompts": {},
+  "sessions": {
+    "s_426e01ebb88f59": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6dd77756-daa3-430d-abbb-17ba1e69f6cd",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Anders Eriksson <36226327+blixten85@users.noreply.github.com>"
+    }
+  }
+}
