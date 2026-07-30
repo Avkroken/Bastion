@@ -1575,6 +1575,18 @@ verifierat (cross-instans-konvergenstestet); detta kopplar bara in ytan.
 6 enhetstester (1 ny: `sync_config_round_trips_through_disk`), cargo
 build/test rent, headless xvfb-run-körning utan krasch.
 
-Kvar: motsvarande synk-UI i `WindowsApp`, krypterade molntransporter i
-Rust, chmod/chown/komprimera/packa upp i SFTP-vyn (se task-listan i
-motsvarande Claude Code-session).
+**Klart samma dag, fjortonde pass: `WindowsApp` Synk-UI — VISUELLT
+end-to-end-verifierad.** `SyncConfig.cs` (Bastion.Core, 2 xUnit-tester) +
+en ny Synk-knapp i sidopanelen öppnar en dialog med "Välj mapp…" (riktig
+Windows `FolderPicker` via HWND-interop, `WinRT.Interop.WindowNative`) +
+"Synka nu" (`HostStore.Sync` mot en `FolderSyncProvider`).
+
+Verifierat via samma xfreerdp+xdotool-teknik: klickade Synk-knappen, en
+RIKTIG native Windows-mappväljare öppnades, valde en testmapp, sökvägen
+sparades och visades, "Synka nu" gav "Synkad", och den skrivna
+`hosts.json` i testmappen hade exakt rätt `SyncState`-wire-format
+(`{"hosts":[],"tombstones":[]}`) — samma protokoll som LinuxApp/Swift.
+Testmapp + sync-config.json städade efteråt.
+
+Kvar: krypterade molntransporter i Rust, chmod/chown/komprimera/packa upp
+i SFTP-vyn (se task-listan i motsvarande Claude Code-session).
