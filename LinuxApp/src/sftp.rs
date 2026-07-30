@@ -3,10 +3,10 @@
 //! och tar emot kommandon via en kanal — en enda SFTP-session återanvänds
 //! för hela bläddringen, precis som Swiftsidans `ensureClient()`-cache.
 //!
-//! KÄND BEGRÄNSNING (dokumenterad, inte dold): chmod/chown/komprimera/packa
-//! upp (Swiftsidans `chmod`/`chown`/`compress`/`extract`) är INTE porterade
-//! än — bara lista/navigera/ladda upp/ladda ner/ta bort/mkdir/döp om. Se
-//! ROADMAP.md.
+//! chmod/chown motsvarar Swiftsidans SFTPClient.setPermissions/chown.
+//! komprimera/packa upp shellar ut till tar/zip via `ssh::run_command`
+//! (se `archive.rs`) — SFTP version 3 har ingen egen arkivsemantik,
+//! samma mönster som Swiftsidans ArchiveOperations.swift.
 
 use crate::host::Host;
 use russh_sftp::client::SftpSession;
@@ -28,6 +28,8 @@ enum Command {
     RemoveFile { path: String, reply: async_channel::Sender<Result<(), String>> },
     RemoveDir { path: String, reply: async_channel::Sender<Result<(), String>> },
     Rename { from: String, to: String, reply: async_channel::Sender<Result<(), String>> },
+    Chmod { path: String, mode: u32, reply: async_channel::Sender<Result<(), String>> },
+    Chown { path: String, uid: u32, gid: u32, reply: async_channel::Sender<Result<(), String>> },
 }
 
 #[derive(Clone)]
@@ -69,6 +71,18 @@ impl SftpHandle {
     pub async fn rename(&self, from: String, to: String) -> Result<(), String> {
         let (reply, rx) = async_channel::bounded(1);
         self.send(Command::Rename { from, to, reply }, rx).await
+    }
+
+    /// `mode`: en oktal siffra som ett heltal, t.ex. 0o755 — samma notation
+    /// som `chmod` på kommandoraden.
+    pub async fn chmod(&self, path: String, mode: u32) -> Result<(), String> {
+        let (reply, rx) = async_channel::bounded(1);
+        self.send(Command::Chmod { path, mode, reply }, rx).await
+    }
+
+    pub async fn chown(&self, path: String, uid: u32, gid: u32) -> Result<(), String> {
+        let (reply, rx) = async_channel::bounded(1);
+        self.send(Command::Chown { path, uid, gid, reply }, rx).await
     }
 
     async fn send<T>(&self, cmd: Command, rx: async_channel::Receiver<Result<T, String>>) -> Result<T, String> {
@@ -151,6 +165,14 @@ async fn run(session: SftpSession, rx: async_channel::Receiver<Command>) {
                 let result = session.rename(from, to).await.map_err(|e| e.to_string());
                 let _ = reply.send(result).await;
             }
+            Command::Chmod { path, mode, reply } => {
+                let result = chmod(&session, &path, mode).await;
+                let _ = reply.send(result).await;
+            }
+            Command::Chown { path, uid, gid, reply } => {
+                let result = chown(&session, &path, uid, gid).await;
+                let _ = reply.send(result).await;
+            }
         }
     }
 }
@@ -166,6 +188,25 @@ async fn write_file(session: &SftpSession, path: String, data: &[u8]) -> Result<
         .map_err(|e| e.to_string())?;
     file.write_all(data).await.map_err(|e| e.to_string())?;
     file.shutdown().await.map_err(|e| e.to_string())
+}
+
+/// `mode`: oktala behörighetsbitar (t.ex. `0o755`) — motsvarar Swiftsidans
+/// `SFTPClient.setPermissions(mode:)`. Skickar bara `permissions`-fältet
+/// (SFTP setstat rör bara de fält som faktiskt sätts, resten lämnas orört).
+async fn chmod(session: &SftpSession, path: &str, mode: u32) -> Result<(), String> {
+    let mut attrs = russh_sftp::protocol::FileAttributes::empty();
+    attrs.permissions = Some(mode);
+    session.set_metadata(path, attrs).await.map_err(|e| e.to_string())
+}
+
+/// `uid`/`gid`: NUMERISKA ID:n, inte användarnamn — SFTP version 3 känner
+/// bara till UID/GID, aldrig namn (samma begränsning som Swiftsidans
+/// `SFTPClient.chown`).
+async fn chown(session: &SftpSession, path: &str, uid: u32, gid: u32) -> Result<(), String> {
+    let mut attrs = russh_sftp::protocol::FileAttributes::empty();
+    attrs.uid = Some(uid);
+    attrs.gid = Some(gid);
+    session.set_metadata(path, attrs).await.map_err(|e| e.to_string())
 }
 
 async fn list(session: &SftpSession, path: &str) -> Result<Vec<Entry>, String> {
@@ -192,7 +233,9 @@ fn reply_error(cmd: Command, message: &str) {
         | Command::Mkdir { reply, .. }
         | Command::RemoveFile { reply, .. }
         | Command::RemoveDir { reply, .. }
-        | Command::Rename { reply, .. } => {
+        | Command::Rename { reply, .. }
+        | Command::Chmod { reply, .. }
+        | Command::Chown { reply, .. } => {
             let _ = reply.send_blocking(Err(message.to_string()));
         }
     }
@@ -241,5 +284,73 @@ mod tests {
             handle.remove_file(renamed_path).await.expect("remove_file misslyckades");
             handle.remove_dir(dir).await.expect("remove_dir misslyckades");
         });
+    }
+
+    /// Verifierar chmod/chown mot en RIKTIG sshd — kollar det faktiska
+    /// resultatet via `stat` över den vanliga exec-kanalen (inte bara att
+    /// SFTP-anropet returnerade Ok), samma oberoende-verifieringsprincip
+    /// som `docker_list_command_parses_real_dockerd_output`.
+    #[test]
+    #[ignore = "kräver en riktig localhost-sshd + en nyckel förberedd i authorized_keys, se ROADMAP.md"]
+    fn chmod_and_chown_apply_on_a_real_sftp_server() {
+        let key_path = std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
+        let user = std::env::var("USER").expect("USER måste vara satt");
+        let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
+        host.auth = HostAuth::KeyFile(key_path);
+
+        let file_path = format!("/tmp/bastion-chmod-test-{}", uuid::Uuid::new_v4());
+        let handle = spawn(host.clone(), None);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            handle.write(file_path.clone(), b"x".to_vec()).await.expect("write misslyckades");
+            handle.chmod(file_path.clone(), 0o600).await.expect("chmod misslyckades");
+        });
+
+        let stat_rx = crate::ssh::run_command(host.clone(), None, format!("stat -c %a {file_path}"));
+        let mode = stat_rx.recv_blocking().expect("kanalen stängdes").expect("stat misslyckades");
+        assert_eq!(mode.trim(), "600", "chmod applicerades aldrig på riktiga servern");
+
+        let cleanup_rx = crate::ssh::run_command(host, None, format!("rm -f {file_path}"));
+        cleanup_rx.recv_blocking().ok();
+    }
+
+    /// Riktig komprimera→packa-upp-övning: skapar en fil, tar.gz:ar den,
+    /// tar bort originalet, packar upp, verifierar att INNEHÅLLET är
+    /// bevarat — via `ssh::run_command`, exakt samma väg som Docker-vyn
+    /// och SFTP-vyns Komprimera/Packa upp-knappar använder.
+    #[test]
+    #[ignore = "kräver en riktig localhost-sshd + en nyckel förberedd i authorized_keys, se ROADMAP.md"]
+    fn compress_then_extract_round_trips_real_file_content() {
+        let key_path = std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
+        let user = std::env::var("USER").expect("USER måste vara satt");
+        let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
+        host.auth = HostAuth::KeyFile(key_path);
+
+        let dir = format!("/tmp/bastion-archive-test-{}", uuid::Uuid::new_v4());
+        let setup_rx = crate::ssh::run_command(
+            host.clone(),
+            None,
+            format!("mkdir -p {dir} && echo hej-bastion > {dir}/a.txt"),
+        );
+        setup_rx.recv_blocking().unwrap().expect("setup misslyckades");
+
+        let compress_cmd = crate::archive::create_tar_gz_command(&["a.txt".to_string()], "out.tar.gz", &dir);
+        let compress_rx = crate::ssh::run_command(host.clone(), None, compress_cmd);
+        compress_rx.recv_blocking().unwrap().expect("komprimering misslyckades");
+
+        let remove_rx = crate::ssh::run_command(host.clone(), None, format!("rm {dir}/a.txt"));
+        remove_rx.recv_blocking().unwrap().expect("kunde inte ta bort originalet");
+
+        let extract_cmd = crate::archive::extract_tar_gz_command("out.tar.gz", &dir);
+        let extract_rx = crate::ssh::run_command(host.clone(), None, extract_cmd);
+        extract_rx.recv_blocking().unwrap().expect("uppackning misslyckades");
+
+        let read_rx = crate::ssh::run_command(host.clone(), None, format!("cat {dir}/a.txt"));
+        let content = read_rx.recv_blocking().unwrap().expect("kunde inte läsa uppackad fil");
+        assert_eq!(content.trim(), "hej-bastion", "innehållet överlevde inte komprimera→packa-upp");
+
+        let cleanup_rx = crate::ssh::run_command(host, None, format!("rm -rf {dir}"));
+        cleanup_rx.recv_blocking().ok();
     }
 }

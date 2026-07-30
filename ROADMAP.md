@@ -1588,5 +1588,27 @@ sparades och visades, "Synka nu" gav "Synkad", och den skrivna
 (`{"hosts":[],"tombstones":[]}`) — samma protokoll som LinuxApp/Swift.
 Testmapp + sync-config.json städade efteråt.
 
-Kvar: krypterade molntransporter i Rust, chmod/chown/komprimera/packa upp
-i SFTP-vyn (se task-listan i motsvarande Claude Code-session).
+**Klart samma dag, femtonde pass: `LinuxApp` SFTP-utökningar
+(chmod/chown/komprimera/packa upp)** — port av
+`Sources/SSHCore/ArchiveOperations.swift` (`archive.rs`: samma
+shell-citeringslogik, alla 6 Swift-testfallen portade rakt av inklusive
+den RIKTIGA shell-injektionsverifieringen via `/bin/sh -c`) + chmod/chown
+via `russh-sftp`s `FileAttributes`/`set_metadata` (`sftp.rs`).
+
+UI: varje SFTP-rad fick en "Rättigheter/ägare"-knapp (oktalt läge +
+UID/GID-fält), mappar fick en "Komprimera"-knapp (tar.gz), och
+`.tar.gz`/`.tgz`/`.zip`-filer fick en "Packa upp"-knapp. Komprimera/
+packa upp shellar ut till tar/zip via `ssh::run_command` (SFTP v3 har
+ingen egen arkivsemantik) — infrastrukturen krävde en refaktorering
+(`SftpContext`-struct som buntar handtag+host+lösenord) så
+engångskommandona kan köras vid sidan av den öppna SFTP-sessionen.
+
+Verifierat END-TO-END mot en levande sshd, inte bara byggt: chmod
+verifierat via ett OBEROENDE `stat`-anrop (inte bara att SFTP-anropet
+returnerade Ok), och ett komplett komprimera→ta-bort-original→packa-upp-
+test som bevisar att filINNEHÅLLET faktiskt överlever hela resan.
+37 enhetstester (7 nya: 6 archive.rs + chmod/chown + arkiv-roundtrip),
+cargo build/test rent, headless xvfb-run-körning utan krasch.
+
+Kvar: krypterade molntransporter i Rust (se task-listan i motsvarande
+Claude Code-session).

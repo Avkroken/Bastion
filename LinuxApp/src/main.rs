@@ -5,6 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use vte::prelude::*;
 
+mod archive;
 mod command_library;
 mod docker;
 mod host;
@@ -1405,8 +1406,20 @@ fn show_snippet_edit_dialog(
 /// Öppnar SFTP-bläddraren för `host` i en ny flik. Port av
 /// App/SFTPBrowserModel.swift (kärnfunktioner — se sftp.rs för vad som
 /// medvetet är uppskjutet: chmod/chown/komprimera/packa upp).
+/// Bunt av allt en SFTP-vy behöver för att köra en engångskommando över
+/// den vanliga exec-kanalen (`ssh::run_command`) — komprimera/packa upp
+/// har ingen egen SFTP-semantik (SFTP v3), så de shellar ut till tar/zip
+/// precis som Docker-vyn shellar ut till `docker`.
+#[derive(Clone)]
+struct SftpContext {
+    handle: sftp::SftpHandle,
+    host: host::Host,
+    password: Option<String>,
+}
+
 fn open_sftp_view(area: &Rc<SessionArea>, host: host::Host, password: Option<String>) {
-    let handle = sftp::spawn(host.clone(), password);
+    let handle = sftp::spawn(host.clone(), password.clone());
+    let ctx = SftpContext { handle, host, password };
     let current_path = Rc::new(RefCell::new(".".to_string()));
 
     let list = gtk::ListBox::builder()
@@ -1437,7 +1450,7 @@ fn open_sftp_view(area: &Rc<SessionArea>, host: host::Host, password: Option<Str
     content.append(&scrolled);
 
     let page = area.tab_view.append(&content);
-    page.set_title(&format!("Filer: {}", host.alias));
+    page.set_title(&format!("Filer: {}", ctx.host.alias));
     area.tab_view.set_selected_page(&page);
     area.update_placeholder();
 
@@ -1445,7 +1458,7 @@ fn open_sftp_view(area: &Rc<SessionArea>, host: host::Host, password: Option<Str
         #[strong]
         area,
         #[strong]
-        handle,
+        ctx,
         #[strong]
         current_path,
         #[weak]
@@ -1461,7 +1474,7 @@ fn open_sftp_view(area: &Rc<SessionArea>, host: host::Host, password: Option<Str
                 };
                 let new_path = path.clone();
                 drop(path);
-                refresh_sftp_list(&area, handle.clone(), current_path.clone(), new_path, &list, &path_label);
+                refresh_sftp_list(&area, ctx.clone(), current_path.clone(), new_path, &list, &path_label);
             }
         }
     ));
@@ -1470,21 +1483,21 @@ fn open_sftp_view(area: &Rc<SessionArea>, host: host::Host, password: Option<Str
         #[strong]
         area,
         #[strong]
-        handle,
+        ctx,
         #[strong]
         current_path,
         #[weak]
         list,
         #[weak]
         path_label,
-        move |_| prompt_new_folder_name(&area, handle.clone(), current_path.clone(), &list, &path_label)
+        move |_| prompt_new_folder_name(&area, ctx.clone(), current_path.clone(), &list, &path_label)
     ));
 
     refresh_button.connect_clicked(clone!(
         #[strong]
         area,
         #[strong]
-        handle,
+        ctx,
         #[strong]
         current_path,
         #[weak]
@@ -1493,17 +1506,17 @@ fn open_sftp_view(area: &Rc<SessionArea>, host: host::Host, password: Option<Str
         path_label,
         move |_| {
             let path = current_path.borrow().clone();
-            refresh_sftp_list(&area, handle.clone(), current_path.clone(), path, &list, &path_label);
+            refresh_sftp_list(&area, ctx.clone(), current_path.clone(), path, &list, &path_label);
         }
     ));
 
     let initial_path = current_path.borrow().clone();
-    refresh_sftp_list(area, handle, current_path, initial_path, &list, &path_label);
+    refresh_sftp_list(area, ctx, current_path, initial_path, &list, &path_label);
 }
 
 fn refresh_sftp_list(
     area: &Rc<SessionArea>,
-    handle: sftp::SftpHandle,
+    ctx: SftpContext,
     current_path: Rc<RefCell<String>>,
     path: String,
     list: &gtk::ListBox,
@@ -1521,10 +1534,10 @@ fn refresh_sftp_list(
             while let Some(row) = list.row_at_index(0) {
                 list.remove(&row);
             }
-            match handle.list(path.clone()).await {
+            match ctx.handle.list(path.clone()).await {
                 Ok(entries) => {
                     for entry in entries {
-                        list.append(&build_sftp_entry_row(&area, handle.clone(), current_path.clone(), path.clone(), entry, &list, &path_label));
+                        list.append(&build_sftp_entry_row(&area, ctx.clone(), current_path.clone(), path.clone(), entry, &list, &path_label));
                     }
                 }
                 Err(e) => list.append(&error_row(&e)),
@@ -1543,7 +1556,7 @@ fn joined_path(base: &str, name: &str) -> String {
 
 fn build_sftp_entry_row(
     area: &Rc<SessionArea>,
-    handle: sftp::SftpHandle,
+    ctx: SftpContext,
     current_path: Rc<RefCell<String>>,
     path: String,
     entry: sftp::Entry,
@@ -1559,7 +1572,7 @@ fn build_sftp_entry_row(
         #[strong]
         area,
         #[strong]
-        handle,
+        ctx,
         #[strong]
         current_path,
         #[weak]
@@ -1574,9 +1587,9 @@ fn build_sftp_entry_row(
             let full_path = joined_path(&path, &entry.name);
             if entry.is_dir {
                 *current_path.borrow_mut() = full_path.clone();
-                refresh_sftp_list(&area, handle.clone(), current_path.clone(), full_path, &list, &path_label);
+                refresh_sftp_list(&area, ctx.clone(), current_path.clone(), full_path, &list, &path_label);
             } else {
-                open_sftp_file_editor(&area, handle.clone(), full_path);
+                open_sftp_file_editor(&area, ctx.handle.clone(), full_path);
             }
         }
     ));
@@ -1587,7 +1600,7 @@ fn build_sftp_entry_row(
         #[strong]
         area,
         #[strong]
-        handle,
+        ctx,
         #[strong]
         current_path,
         #[weak]
@@ -1605,7 +1618,7 @@ fn build_sftp_entry_row(
                 #[strong]
                 area,
                 #[strong]
-                handle,
+                ctx,
                 #[strong]
                 current_path,
                 #[weak]
@@ -1615,12 +1628,12 @@ fn build_sftp_entry_row(
                 #[strong]
                 path,
                 async move {
-                    let result = if is_dir { handle.remove_dir(full_path).await } else { handle.remove_file(full_path).await };
+                    let result = if is_dir { ctx.handle.remove_dir(full_path).await } else { ctx.handle.remove_file(full_path).await };
                     if let Err(e) = result {
                         list.append(&error_row(&e));
                         return;
                     }
-                    refresh_sftp_list(&area, handle.clone(), current_path, path, &list, &path_label);
+                    refresh_sftp_list(&area, ctx.clone(), current_path, path, &list, &path_label);
                 }
             ));
         }
@@ -1632,7 +1645,7 @@ fn build_sftp_entry_row(
         #[strong]
         area,
         #[strong]
-        handle,
+        ctx,
         #[strong]
         current_path,
         #[weak]
@@ -1643,15 +1656,115 @@ fn build_sftp_entry_row(
         entry,
         #[strong]
         path,
-        move |_| prompt_rename(&area, handle.clone(), current_path.clone(), path.clone(), entry.clone(), &list, &path_label)
+        move |_| prompt_rename(&area, ctx.clone(), current_path.clone(), path.clone(), entry.clone(), &list, &path_label)
     ));
 
+    let permissions_button = gtk::Button::from_icon_name("changes-allow-symbolic");
+    permissions_button.set_tooltip_text(Some("Rättigheter/ägare"));
+    permissions_button.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        ctx,
+        #[strong]
+        current_path,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        #[strong]
+        entry,
+        #[strong]
+        path,
+        move |_| prompt_permissions(&area, ctx.clone(), current_path.clone(), path.clone(), entry.clone(), &list, &path_label)
+    ));
+
+    row.add_suffix(&permissions_button);
     row.add_suffix(&rename_button);
     row.add_suffix(&delete_button);
+
+    if entry.is_dir {
+        let compress_button = gtk::Button::from_icon_name("package-x-generic-symbolic");
+        compress_button.set_tooltip_text(Some("Komprimera (tar.gz)"));
+        compress_button.connect_clicked(clone!(
+            #[strong]
+            ctx,
+            #[weak]
+            list,
+            #[strong]
+            entry,
+            #[strong]
+            path,
+            move |_| {
+                // Komprimerar mappens INNEHÅLL (`.` inifrån mappen själv),
+                // arkivet hamnar bredvid mappen (i `path`, inte inuti den).
+                let full_dir = joined_path(&path, &entry.name);
+                let archive_name = format!("../{}.tar.gz", entry.name);
+                let command = archive::create_tar_gz_command(&[".".to_string()], &archive_name, &full_dir);
+                let rx = ssh::run_command(ctx.host.clone(), ctx.password.clone(), command);
+                glib::spawn_future_local(async move {
+                    if let Ok(Err(e)) = rx.recv().await {
+                        list.append(&error_row(&e));
+                    }
+                });
+            }
+        ));
+        row.add_suffix(&compress_button);
+    } else if entry.name.ends_with(".tar.gz") || entry.name.ends_with(".tgz") || entry.name.ends_with(".zip") {
+        let extract_button = gtk::Button::from_icon_name("package-x-generic-symbolic");
+        extract_button.set_tooltip_text(Some("Packa upp"));
+        extract_button.connect_clicked(clone!(
+            #[strong]
+            area,
+            #[strong]
+            ctx,
+            #[strong]
+            current_path,
+            #[weak]
+            list,
+            #[weak]
+            path_label,
+            #[strong]
+            entry,
+            #[strong]
+            path,
+            move |_| {
+                let command = if entry.name.ends_with(".zip") {
+                    archive::extract_zip_command(&entry.name, &path)
+                } else {
+                    archive::extract_tar_gz_command(&entry.name, &path)
+                };
+                let rx = ssh::run_command(ctx.host.clone(), ctx.password.clone(), command);
+                glib::spawn_future_local(clone!(
+                    #[strong]
+                    area,
+                    #[strong]
+                    ctx,
+                    #[strong]
+                    current_path,
+                    #[weak]
+                    list,
+                    #[weak]
+                    path_label,
+                    #[strong]
+                    path,
+                    async move {
+                        if let Ok(Err(e)) = rx.recv().await {
+                            list.append(&error_row(&e));
+                            return;
+                        }
+                        refresh_sftp_list(&area, ctx, current_path, path, &list, &path_label);
+                    }
+                ));
+            }
+        ));
+        row.add_suffix(&extract_button);
+    }
+
     row
 }
 
-fn prompt_new_folder_name(area: &Rc<SessionArea>, handle: sftp::SftpHandle, current_path: Rc<RefCell<String>>, list: &gtk::ListBox, path_label: &gtk::Label) {
+fn prompt_new_folder_name(area: &Rc<SessionArea>, ctx: SftpContext, current_path: Rc<RefCell<String>>, list: &gtk::ListBox, path_label: &gtk::Label) {
     let name_row = adw::EntryRow::builder().title("Mappnamn").build();
     let group = adw::PreferencesGroup::new();
     group.add(&name_row);
@@ -1689,7 +1802,7 @@ fn prompt_new_folder_name(area: &Rc<SessionArea>, handle: sftp::SftpHandle, curr
         #[strong]
         area,
         #[strong]
-        handle,
+        ctx,
         #[strong]
         current_path,
         #[weak]
@@ -1708,7 +1821,7 @@ fn prompt_new_folder_name(area: &Rc<SessionArea>, handle: sftp::SftpHandle, curr
                 #[strong]
                 area,
                 #[strong]
-                handle,
+                ctx,
                 #[strong]
                 current_path,
                 #[weak]
@@ -1716,12 +1829,12 @@ fn prompt_new_folder_name(area: &Rc<SessionArea>, handle: sftp::SftpHandle, curr
                 #[weak]
                 path_label,
                 async move {
-                    if let Err(e) = handle.mkdir(full_path).await {
+                    if let Err(e) = ctx.handle.mkdir(full_path).await {
                         list.append(&error_row(&e));
                         return;
                     }
                     let path = current_path.borrow().clone();
-                    refresh_sftp_list(&area, handle.clone(), current_path, path, &list, &path_label);
+                    refresh_sftp_list(&area, ctx.clone(), current_path, path, &list, &path_label);
                 }
             ));
         }
@@ -1732,7 +1845,7 @@ fn prompt_new_folder_name(area: &Rc<SessionArea>, handle: sftp::SftpHandle, curr
 
 fn prompt_rename(
     area: &Rc<SessionArea>,
-    handle: sftp::SftpHandle,
+    ctx: SftpContext,
     current_path: Rc<RefCell<String>>,
     path: String,
     entry: sftp::Entry,
@@ -1776,7 +1889,7 @@ fn prompt_rename(
         #[strong]
         area,
         #[strong]
-        handle,
+        ctx,
         #[strong]
         current_path,
         #[weak]
@@ -1795,7 +1908,7 @@ fn prompt_rename(
                 #[strong]
                 area,
                 #[strong]
-                handle,
+                ctx,
                 #[strong]
                 current_path,
                 #[weak]
@@ -1803,12 +1916,119 @@ fn prompt_rename(
                 #[weak]
                 path_label,
                 async move {
-                    if let Err(e) = handle.rename(from, to).await {
+                    if let Err(e) = ctx.handle.rename(from, to).await {
                         list.append(&error_row(&e));
                         return;
                     }
                     let path = current_path.borrow().clone();
-                    refresh_sftp_list(&area, handle.clone(), current_path, path, &list, &path_label);
+                    refresh_sftp_list(&area, ctx.clone(), current_path, path, &list, &path_label);
+                }
+            ));
+        }
+    ));
+
+    win.present();
+}
+
+/// Rättigheter (oktalt läge, t.ex. 755) + ägare (numeriskt UID/GID) — port
+/// av Swiftsidans SFTPClient.setPermissions/chown, samma dialogmönster
+/// som döp om/ny mapp.
+fn prompt_permissions(
+    area: &Rc<SessionArea>,
+    ctx: SftpContext,
+    current_path: Rc<RefCell<String>>,
+    path: String,
+    entry: sftp::Entry,
+    list: &gtk::ListBox,
+    path_label: &gtk::Label,
+) {
+    let mode_row = adw::EntryRow::builder().title("Rättigheter (oktalt, t.ex. 755)").build();
+    let uid_row = adw::EntryRow::builder().title("UID (lämna tomt för att inte ändra)").build();
+    let gid_row = adw::EntryRow::builder().title("GID (lämna tomt för att inte ändra)").build();
+
+    let group = adw::PreferencesGroup::builder().title(&entry.name).build();
+    group.add(&mode_row);
+    group.add(&uid_row);
+    group.add(&gid_row);
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+
+    let apply_button = gtk::Button::with_label("Verkställ");
+    apply_button.add_css_class("suggested-action");
+    let cancel_button = gtk::Button::with_label("Avbryt");
+    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    header.pack_start(&cancel_button);
+    header.pack_end(&apply_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&page);
+
+    let win = adw::Window::builder()
+        .transient_for(&area.overlay.root().and_downcast::<gtk::Window>().expect("inget fönster"))
+        .modal(true)
+        .default_width(420)
+        .default_height(280)
+        .title("Rättigheter/ägare")
+        .content(&content)
+        .build();
+
+    cancel_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        move |_| win.close()
+    ));
+    apply_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        #[strong]
+        area,
+        #[strong]
+        ctx,
+        #[strong]
+        current_path,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        #[strong]
+        entry,
+        #[strong]
+        path,
+        move |_| {
+            win.close();
+            let full_path = joined_path(&path, &entry.name);
+            let mode = u32::from_str_radix(mode_row.text().trim(), 8).ok();
+            let uid: Option<u32> = uid_row.text().trim().parse().ok();
+            let gid: Option<u32> = gid_row.text().trim().parse().ok();
+
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                ctx,
+                #[strong]
+                current_path,
+                #[weak]
+                list,
+                #[weak]
+                path_label,
+                #[strong]
+                path,
+                async move {
+                    if let Some(mode) = mode {
+                        if let Err(e) = ctx.handle.chmod(full_path.clone(), mode).await {
+                            list.append(&error_row(&e));
+                            return;
+                        }
+                    }
+                    if let (Some(uid), Some(gid)) = (uid, gid) {
+                        if let Err(e) = ctx.handle.chown(full_path, uid, gid).await {
+                            list.append(&error_row(&e));
+                            return;
+                        }
+                    }
+                    refresh_sftp_list(&area, ctx, current_path, path, &list, &path_label);
                 }
             ));
         }
