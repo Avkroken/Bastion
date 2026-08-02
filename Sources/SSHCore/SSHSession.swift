@@ -455,7 +455,7 @@ public final class SSHSession {
                         case .failure(let e):
                             resultPromise.fail(SSHError.channelFailed(String(describing: e)))
                         case .success(let child):
-                            resultPromise.succeed(SSHShell(channel: child, output: stream))
+                            resultPromise.succeed(SSHShell(channel: child, output: stream, cols: cols, rows: rows))
                         }
                     }
                 }

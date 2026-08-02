@@ -63,6 +63,10 @@ final class SSHTerminalController {
                 let shell = try await chain.target.openShell(cols: cols, rows: rows)
                 guard !isStopped else { shell.close(); return }
                 self.shell = shell
+                // Håller anslutningen vaken genom NAT/brandväggars idle-timeout
+                // (se SSHShell.startKeepAlive) — stoppas automatiskt av
+                // shell.close() i stop().
+                shell.startKeepAlive()
                 if let cmd = initialCommand { shell.send(cmd + "\n") }
                 for try await chunk in shell.output {
                     guard !isStopped else { break }

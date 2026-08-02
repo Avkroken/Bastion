@@ -51,6 +51,10 @@ final class TerminalController: ObservableObject {
             let shell = try await chain.target.openShell(cols: buffer.cols, rows: buffer.rowCount)
             guard !isStopped else { shell.close(); return }
             self.shell = shell
+            // Håller anslutningen vaken genom NAT/brandväggars idle-timeout
+            // (se SSHShell.startKeepAlive) — stoppas automatiskt av
+            // shell.close() nedan/i stop().
+            shell.startKeepAlive()
             statusMessage = nil
             if let initialCommand { shell.send(initialCommand + "\r") }
             for try await chunk in shell.output {
