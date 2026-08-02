@@ -40,6 +40,16 @@ jobs:
       - name: Visa Swift-version
         run: swift --version
 
+      # ArchiveOperationsTests kör riktiga tar/zip/unzip-underprocesser (se
+      # ROADMAP.md "Zip/Tar") — swift:6.1-noble-avbildningen har tar men
+      # inte zip/unzip förinstallerat (minimal image). Utan detta misslyckas
+      # testerna med "remoteExit(status: 127)" (command not found) — upptäckt
+      # genom att faktiskt köra jobbet första gången, inte gissat.
+      - name: Installera zip/unzip (för ArchiveOperationsTests)
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq zip unzip
+
       - name: swift build (SSHCore + bastion-cli)
         run: swift build
 
