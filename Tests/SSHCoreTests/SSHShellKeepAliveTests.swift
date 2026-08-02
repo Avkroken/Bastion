@@ -5,7 +5,25 @@ import XCTest
 /// av ROADMAP.md "Anslutnings-resiliens" (se kommentaren i SSHShell.swift
 /// för varför en fönsterändring, inte ett riktigt `keepalive@openssh.com`,
 /// är mekanismen: swift-nio-ssh exponerar ingen generisk global request).
+///
+/// Väntar via polling mot ett generöst timeout i stället för en fast
+/// `Task.sleep` + exakt förväntat antal ticks — en riktig CI-runner under
+/// last kan hinna ge scheduling-jitter i storleksordningen hundratals ms,
+/// vilket gjorde en tidigare version av det här testet flakigt (0 sedda
+/// fönsterändringar inom en 150ms-väntan med 20ms-intervall, på en riktig
+/// macOS-runner — inte gissat, sett i faktisk CI-körning).
 final class SSHShellKeepAliveTests: XCTestCase {
+    private func waitUntil(
+        timeout: Duration = .seconds(5), poll: Duration = .milliseconds(20),
+        _ condition: () -> Bool
+    ) async {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            if condition() { return }
+            try? await Task.sleep(for: poll)
+        }
+    }
+
     func testStartKeepAliveSendsPeriodicWindowChangeRequests() async throws {
         let server = try LoopbackServer.start(password: "hunter2", trackWindowChanges: true)
         defer { server.shutdown() }
@@ -17,7 +35,9 @@ final class SSHShellKeepAliveTests: XCTestCase {
         let shell = try await session.openShell(cols: 80, rows: 24)
 
         shell.startKeepAlive(interval: .milliseconds(20))
-        try await Task.sleep(for: .milliseconds(150))
+        await waitUntil {
+            (server.observedWindowChanges?.withLockedValue { $0.count } ?? 0) > 1
+        }
         shell.stopKeepAlive()
 
         shell.close()
@@ -39,13 +59,18 @@ final class SSHShellKeepAliveTests: XCTestCase {
         let shell = try await session.openShell(cols: 80, rows: 24)
 
         shell.startKeepAlive(interval: .milliseconds(20))
-        try await Task.sleep(for: .milliseconds(80))
+        // Vänta tills minst ett par sänts, så stopKeepAlive() faktiskt har
+        // något pågående att avbryta — inte bara ett race mot startup.
+        await waitUntil {
+            (server.observedWindowChanges?.withLockedValue { $0.count } ?? 0) >= 2
+        }
         shell.stopKeepAlive()
         let countAtStop = server.observedWindowChanges?.withLockedValue { $0.count } ?? 0
 
         // Om stopKeepAlive inte faktiskt avbryter Task:en skulle fler
-        // fönsterändringar dyka upp under den här väntan också.
-        try await Task.sleep(for: .milliseconds(100))
+        // fönsterändringar fortsätta dyka upp under den här väntan också —
+        // generöst tilltagen (500ms) för att inte själv bli flakig.
+        try? await Task.sleep(for: .milliseconds(500))
         let countAfterWait = server.observedWindowChanges?.withLockedValue { $0.count } ?? 0
 
         shell.close()
@@ -56,7 +81,7 @@ final class SSHShellKeepAliveTests: XCTestCase {
         // när Task:en just vaknat men innan den hunnit kolla isCancelled
         // (kooperativ cancellation, inte en avbruten pågående operation) —
         // om den periodiska sändningen INTE stoppat skulle differensen vara
-        // ~5 (100ms / 20ms), inte 0-1.
+        // stor (25 ticks under 500ms med 20ms-intervall), inte 0-1.
         XCTAssertLessThanOrEqual(
             countAfterWait - countAtStop, 1,
             "stopKeepAlive stoppade inte den periodiska sändningen (\(countAtStop) -> \(countAfterWait))")
@@ -74,7 +99,9 @@ final class SSHShellKeepAliveTests: XCTestCase {
 
         shell.resize(cols: 200, rows: 60)
         shell.startKeepAlive(interval: .milliseconds(20))
-        try await Task.sleep(for: .milliseconds(100))
+        await waitUntil {
+            (server.observedWindowChanges?.withLockedValue { $0.count } ?? 0) > 1
+        }
         shell.stopKeepAlive()
 
         shell.close()

@@ -73,6 +73,14 @@ final class SSHTerminalController {
                     let bytes = chunk.bytes
                     self.onData?(bytes[...])
                 }
+                // Strömmen tar slut normalt när fjärrshellen stänger (t.ex.
+                // `exit`) — måste städas här precis som i catch-grenen
+                // nedan, annars förblir keepAlive-Task:en och den underliggande
+                // anslutningen aktiva utan att någon någonsin river ner dem
+                // (CodeRabbit-fynd: den här grenen saknade helt städning,
+                // till skillnad från LinuxApp/WindowsApp-motsvarigheterna).
+                self.shell?.close()
+                await self.chain?.close()
             } catch {
                 // Om felet kom EFTER att chain redan var uppsatt (openShell()
                 // eller output-strömmen misslyckades, inte själva anslutningen)

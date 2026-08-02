@@ -812,14 +812,32 @@ Inget nytt att bygga, bara verifiera/lansera:
   (delas av alla plattformar), inte tre separata funktioner. Verifierat
   (2026-07-22) att inget av detta finns i koden idag — varken keep-alive,
   nätverksbytesdetektering eller reconnect-logik.
-  - **Keep-alive** — swift-nio-ssh 0.14.1 (den version SSHCore bygger på)
-    exponerar INTE godtyckliga globala SSH-förfrågningar publikt (cubic-
-    fynd på PR #199) — den enkla "skicka en global request periodiskt"-
-    planen går alltså inte att implementera som skriven idag. Kräver
-    antingen ett uppströmsbidrag/API-utökning i swift-nio-ssh, eller en
-    annan mekanism (t.ex. en no-op-kanalförfrågan om biblioteket
-    exponerar någon sådan) — måste utredas mot faktisk bibliotekskod
-    innan intervallet (25-60s, konfigurerbart) är mer än en idé.
+  - **Keep-alive**: ✅ klart (2026-08-02, `SSHShell.startKeepAlive()`/
+    `stopKeepAlive()`). Bekräftat på nytt mot både 0.14.0 OCH den senare
+    0.15.0-taggen (klonad käll­kod): fortfarande ingen publik generisk
+    global request (bara `sendTCPForwardingRequest`), och inget publikt
+    sätt att skicka en godtycklig KANALförfrågan heller (`SSHMessage.
+    ChannelRequestMessage.RequestType.unknown` är internal, inte
+    exponerad). Löst med den no-op-mekanism roadmapen redan pekade ut:
+    en periodisk fönsterändring till SAMMA storlek som senast känd —
+    ren no-op på Linux (kärnans `TIOCSWINSZ` skickar bara SIGWINCH vid
+    en FAKTISK ändring, `tty_ioctl.c`), håller ändå NAT/brandväggars
+    idle-timeout varm eftersom trafik faktiskt går över tråden.
+    Delat tillstånd (senaste storlek, aktiva Task:en) i en
+    `NIOLockedValueBox`, samma mönster som `PortForward.swift`/
+    `SOCKSProxy.swift`. Kopplad in i alla tre GUI:erna (App/LinuxApp/
+    WindowsApp) direkt efter att en shell öppnas, stoppas automatiskt av
+    `shell.close()` — en CodeRabbit-granskning hittade att den INTE
+    stoppades i normal-avslutnings-/catch-grenarna (keepAlive-Task:en
+    kunde då hinna köra `triggerUserOutboundEvent` medan
+    `chain.close()` rev ner event loop-gruppen under den, samma
+    race-klass som redan dokumenteras i `SSHSession.swift`) — fixat i
+    samma PR. 3 nya tester mot en riktig `LoopbackServer` (periodiska
+    sändningar sker, `stopKeepAlive` stoppar dem faktiskt, `resize()`
+    uppdaterar storleken keep-alive återanvänder).
+    **Täcker bara "håll NAT-mappningen varm"** — dead-connection-
+    detektering och återanslutning (nedan) är fortfarande inte
+    påbörjade.
   - **WiFi ↔ mobildata-byte** — TCP-anslutningen dör vid nätverksbyte
     (annat interface = ny anslutning krävs). Kräver `NWPathMonitor`
     (Apple) eller motsvarande för att upptäcka bytet.
