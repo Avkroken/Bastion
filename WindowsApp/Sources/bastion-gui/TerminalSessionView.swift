@@ -65,12 +65,20 @@ final class TerminalController: ObservableObject {
             // gren blev sessionen tyst död: ingen chain-stängning, ingen
             // statusMessage, indata gick fortfarande att skriva i men träffade
             // en stängd shell.
+            // shell.close() FÖRE self.shell = nil — stoppar keepAlive-Task:en
+            // innan chain.close() river ner event loop-gruppen under den
+            // (CodeRabbit-fynd): annars kan Task:en hinna köra
+            // channel.triggerUserOutboundEvent på en kanal vars grupp just
+            // stängts, samma race-klass som redan dokumenteras i
+            // SSHSession.swift.
+            shell.close()
             self.shell = nil
             await self.chain?.close()
             self.chain = nil
             guard !isStopped else { return }
             statusMessage = "Sessionen avslutades."
         } catch {
+            self.shell?.close()
             self.shell = nil
             await self.chain?.close()
             self.chain = nil

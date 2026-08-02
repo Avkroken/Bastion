@@ -80,6 +80,11 @@ final class SSHTerminalController {
                 // bara sina EGNA fel internt, inte fel som inträffar efter att
                 // den redan returnerat. Ofarligt no-op om chain fortfarande är
                 // nil (connect() self själv redan städat i den vägen).
+                // self.shell?.close() FÖRE chain?.close() — stoppar keepAlive-
+                // Task:en innan chain.close() river ner event loop-gruppen
+                // under den (CodeRabbit-fynd), samma race-klass som redan
+                // dokumenteras i SSHSession.swift.
+                self.shell?.close()
                 await self.chain?.close()
                 guard !isStopped else { return }
                 let msg = Array("\r\n[bastion] fel: \(error)\r\n".utf8)
