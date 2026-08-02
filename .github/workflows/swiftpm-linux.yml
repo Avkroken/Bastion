@@ -5,8 +5,14 @@ name: SwiftPM-Linux-bygge
 # macOS-runner (swiftpm-macos i xcode.yml). Rot-paketet beror inte på
 # SwiftCrossUI (det ligger i LinuxApp/, ett eget paket), så det drabbas
 # INTE av swift-mutex-kompilatorbuggen (swiftlang/swift#80759) som tvingar
-# LinuxApp/ till en dev-snapshot-toolchain (se linux-gui.yml) — Ubuntus egen
-# `apt install swiftlang` (stabil 6.1.3) räcker för rot-paketet.
+# LinuxApp/ till en dev-snapshot-toolchain (se linux-gui.yml) — en vanlig
+# stabil release räcker för rot-paketet.
+#
+# `apt install swiftlang` (som README påstod fungerar) finns INTE på en
+# vanlig ubuntu-24.04-runner ("swift" i Ubuntus repon är OpenStack Swift,
+# ett helt orelaterat paket) — upptäckt genom att faktiskt köra jobbet, inte
+# gissat. Officiella `swift`-Docker-avbildningen används i stället, samma
+# distro (`noble` = Ubuntu 24.04) som runnern annars kör på.
 on:
   push:
     branches: [main]
@@ -24,16 +30,12 @@ permissions:
 jobs:
   swiftpm-linux:
     runs-on: ubuntu-24.04
+    container: swift:6.1-noble
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
           persist-credentials: false
-
-      - name: Installera Swift (stabil, apt)
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq swiftlang
 
       - name: Visa Swift-version
         run: swift --version
