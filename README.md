@@ -191,11 +191,18 @@ Eget SwiftPM-paket, medvetet skilt från roten (`.package(path: "..")` för
 `SSHCore`) — annars skulle rotens `swift build`/`swift test` dra in hela
 SwiftCrossUI-grafen och krascha på stabil toolchain (se nästa stycke).
 
-**Kräver en Swift-toolchain nyare än 6.1.3.** Stabila Swift 6.1.3 (Ubuntus
-`apt install swiftlang`) kraschar med ett bekräftat, öppet kompilatorfel
+**Kräver en Swift-toolchain nyare än 6.1.3.** Stabila Swift 6.1.3 kraschar
+med ett bekräftat, öppet kompilatorfel
 ([swiftlang/swift#80759](https://github.com/swiftlang/swift/issues/80759)) när
 den bygger SwiftCrossUIs `swift-mutex`-beroende — inget fel i den här koden.
-Verifierat löst i en Swift 6.5-dev-snapshot (2026-07-02).
+Verifierat löst i en Swift 6.5-dev-snapshot (2026-07-02) — se
+`.github/workflows/linux-gui.yml` för hur den hämtas (`download.swift.org`).
+(`apt install swiftlang` finns INTE på en vanlig Ubuntu 24.04 — "swift" i
+Ubuntus repon är OpenStack Swift, ett helt orelaterat paket; detta upptäcktes
+när en tidigare version av `.github/workflows/swiftpm-linux.yml` försökte
+installera paketet. Rot-paketet — SSHCore/bastion-cli — är opåverkat av
+swift-mutex-buggen; den slutgiltiga workflowen använder i stället den
+officiella `swift:6.1-noble`-Docker-avbildningen.)
 
 ```sh
 apt-get install libgtk-4-dev pkg-config   # GTK4-headers, en gång

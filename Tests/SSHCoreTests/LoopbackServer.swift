@@ -42,6 +42,11 @@ final class ServerExecHandler: ChannelDuplexHandler, RemovableChannelHandler {
     private var shellMode = false
     private let sftpRoot: String
     private let realExec: Bool
+    /// Räknar mottagna fönsterändringsförfrågningar — bevisar att
+    /// `SSHShell.startKeepAlive` faktiskt skickar något över tråden, inte
+    /// bara att den anropar en lokal metod. `nil` (default) i alla test
+    /// som inte bryr sig, för att inte röra befintliga testers beteende.
+    private let observedWindowChanges: NIOLockedValueBox<[(cols: Int, rows: Int)]>?
 
     /// `realExec`: `false` (default) — den ursprungliga fejkade
     /// "ran: <kommando>\n"-ekot, vad de flesta exec-tester (`SSHCoreTests`,
@@ -51,9 +56,13 @@ final class ServerExecHandler: ChannelDuplexHandler, RemovableChannelHandler {
     /// sandlåda `ServerSFTPHandler` redan använder — krävs för att bevisa
     /// t.ex. `tar`/`zip`-arkivoperationer på RIKTIGA filer, inte bara att
     /// rätt kommandosträng skickades.
-    init(sftpRoot: String, realExec: Bool = false) {
+    init(
+        sftpRoot: String, realExec: Bool = false,
+        observedWindowChanges: NIOLockedValueBox<[(cols: Int, rows: Int)]>? = nil
+    ) {
         self.sftpRoot = sftpRoot
         self.realExec = realExec
+        self.observedWindowChanges = observedWindowChanges
     }
 
     func handlerAdded(context: ChannelHandlerContext) {
@@ -110,6 +119,10 @@ final class ServerExecHandler: ChannelDuplexHandler, RemovableChannelHandler {
             // (t.ex. HTTP -> WebSocket) i övriga NIO-ekosystemet.
             _ = context.pipeline.removeHandler(self)
             _ = context.pipeline.addHandler(ServerSFTPHandler(rootPath: sftpRoot))
+        } else if let windowChange = event as? SSHChannelRequestEvent.WindowChangeRequest {
+            observedWindowChanges?.withLockedValue {
+                $0.append((cols: windowChange.terminalCharacterWidth, rows: windowChange.terminalRowHeight))
+            }
         }
         // PseudoTerminalRequest ignoreras (accepteras implicit).
     }
@@ -574,6 +587,8 @@ struct LoopbackServer {
     /// sättet ett test kan bevisa att KLIENTEN (t.ex. `-D`/SOCKS) faktiskt
     /// begärde rätt targetHost/targetPort, oberoende av vad servern gör med det.
     let observedDirectTCPIPTargets: NIOLockedValueBox<[(host: String, port: Int)]>
+    /// `nil` om `start(...)` inte bad om det (default) — se `ServerExecHandler`.
+    let observedWindowChanges: NIOLockedValueBox<[(cols: Int, rows: Int)]>?
     var port: Int { channel.localAddress?.port ?? 0 }
 
     /// `realDirectTCPIPForwarding`: `false` (default) ekar bara tillbaka
@@ -581,14 +596,20 @@ struct LoopbackServer {
     /// tunneln). `true` öppnar en RIKTIG utgående anslutning till klientens
     /// begärda mål — krävs för att testa ProxyJump på riktigt (jump-servern
     /// måste faktiskt nå en separat målserver, inte bara eka).
+    /// `trackWindowChanges`: `false` (default) — sätt till `true` för att
+    /// låta `observedWindowChanges` faktiskt samla in fönsterändringar
+    /// (t.ex. `SSHShell.startKeepAlive`-tester).
     static func start(
-        password: String, realDirectTCPIPForwarding: Bool = false, realExec: Bool = false
+        password: String, realDirectTCPIPForwarding: Bool = false, realExec: Bool = false,
+        trackWindowChanges: Bool = false
     ) throws -> LoopbackServer {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         let hostKey = NIOSSHPrivateKey(ed25519Key: .init())
         let sftpRoot = NSTemporaryDirectory() + "bastion-sftp-test-\(UUID().uuidString)"
         try FileManager.default.createDirectory(atPath: sftpRoot, withIntermediateDirectories: true)
         let observedDirectTCPIPTargets = NIOLockedValueBox<[(host: String, port: Int)]>([])
+        let observedWindowChanges: NIOLockedValueBox<[(cols: Int, rows: Int)]>? =
+            trackWindowChanges ? NIOLockedValueBox([]) : nil
         let realForwarder = makeRealDirectTCPIPForwarder(group: group)
         let bootstrap = ServerBootstrap(group: group)
             .childChannelInitializer { channel in
@@ -611,14 +632,17 @@ struct LoopbackServer {
                                 return child.pipeline.addHandler(ServerDirectTCPIPEchoHandler())
                             default:
                                 return child.pipeline.addHandler(
-                                    ServerExecHandler(sftpRoot: sftpRoot, realExec: realExec))
+                                    ServerExecHandler(
+                                        sftpRoot: sftpRoot, realExec: realExec,
+                                        observedWindowChanges: observedWindowChanges))
                             }
                         }))
             }
         let channel = try bootstrap.bind(host: "127.0.0.1", port: 0).wait()
         return LoopbackServer(
             group: group, channel: channel, sftpRoot: sftpRoot,
-            observedDirectTCPIPTargets: observedDirectTCPIPTargets)
+            observedDirectTCPIPTargets: observedDirectTCPIPTargets,
+            observedWindowChanges: observedWindowChanges)
     }
 
     func shutdown() {
