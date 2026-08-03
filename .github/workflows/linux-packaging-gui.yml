@@ -59,8 +59,10 @@ jobs:
           if [ -z "$VERSION" ]; then VERSION="0.0.0"; fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Installera GTK4-dev + Xvfb (bygg- resp. smoke-test-beroende)
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libgtk-4-dev pkg-config xvfb
+      # Bara byggberoenden på VÄRDEN — xvfb installeras numera inuti den
+      # friska containern i smoke-test-steget (se det steget för varför).
+      - name: Installera GTK4-dev (byggberoende)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libgtk-4-dev pkg-config
 
       # Följande fyra steg är kopierade rakt av från linux-gui.yml — se den
       # filens kommentarer för varför en dev-snapshot krävs.
@@ -183,29 +185,45 @@ jobs:
       # riktig (headless) X-server — bevisar att Depends-listan är
       # TILLRÄCKLIG (appen faktiskt startar och lever några sekunder), inte
       # bara att den installeras utan fel.
-      - name: Installera och starta bastion-gui under Xvfb
+      #
+      # Körs i en HELT FRISK ubuntu:24.04-container, inte direkt på
+      # runner-värden — CodeRabbit-fynd: `libgtk-4-dev` (steget "Installera
+      # GTK4-dev + Xvfb" ovan) installerar redan GTK4-runtimebiblioteken på
+      # värden som ett byggberoende, så en `dpkg -i` + körning DÄR hade
+      # kunnat lyckas även om Depends-listan missat ett bibliotek — testet
+      # hade bevisat fel sak. `apt-get install ./paket.deb` (inte `dpkg -i`)
+      # löser dessutom Depends-raden på RIKTIGT via apt i den friska
+      # containern, i stället för att bara kontrollera mot en redan
+      # installerad paketdatabas.
+      - name: Installera och starta bastion-gui under Xvfb (frisk container)
         run: |
           set -euo pipefail
-          sudo dpkg -i dist-out/*.deb
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/dist-out:/pkg:ro" \
+            ubuntu:24.04 bash -ceu '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y -qq xvfb /pkg/*.deb
 
-          Xvfb :99 -screen 0 1280x1024x24 &
-          XVFB_PID=$!
-          sleep 1
-          export DISPLAY=:99
+              Xvfb :99 -screen 0 1280x1024x24 &
+              XVFB_PID=$!
+              sleep 1
+              export DISPLAY=:99
 
-          bastion-gui &
-          GUI_PID=$!
-          sleep 5
+              bastion-gui &
+              GUI_PID=$!
+              sleep 5
 
-          if ! kill -0 "$GUI_PID" 2>/dev/null; then
-            echo "::error::bastion-gui avslutade oväntat direkt efter start under Xvfb — troligen ett saknat delat bibliotek (kontrollera Depends-listan ovan)"
-            kill "$XVFB_PID" 2>/dev/null || true
-            exit 1
-          fi
+              if ! kill -0 "$GUI_PID" 2>/dev/null; then
+                echo "::error::bastion-gui avslutade oväntat direkt efter start under Xvfb i en frisk container — troligen ett saknat delat bibliotek (kontrollera Depends-listan ovan)"
+                kill "$XVFB_PID" 2>/dev/null || true
+                exit 1
+              fi
 
-          echo "bastion-gui körde fortfarande efter 5s under Xvfb — startar rent."
-          kill "$GUI_PID" 2>/dev/null || true
-          kill "$XVFB_PID" 2>/dev/null || true
+              echo "bastion-gui körde fortfarande efter 5s under Xvfb i en frisk container — startar rent."
+              kill "$GUI_PID" 2>/dev/null || true
+              kill "$XVFB_PID" 2>/dev/null || true
+            '
 
       - name: Ladda upp .deb-artefakt
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
