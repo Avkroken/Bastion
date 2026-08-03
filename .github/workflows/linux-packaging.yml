@@ -1,0 +1,122 @@
+name: Linux-paketering (.deb)
+
+# Paketerar bastion-cli som ett fristående .deb-paket — README:s första rad
+# lovar en "fristående" app, så bastion-cli byggs med --static-swift-stdlib
+# (Swifts egen lösning för att slippa kräva att slutanvändarens maskin har
+# Swift installerat: hela Swift-runtimen länkas statiskt in i binären i
+# stället för att bero på .so-filer som bara finns i byggavbildningen).
+#
+# Bara bastion-cli hittills — bastion-gui (LinuxApp/, GTK4-beroenden utöver
+# Swift-runtimen) är ett separat, större paketeringssteg, se ROADMAP.md.
+#
+# Statisk länkning verifieras på RIKTIGT (`ldd` mot binärens egna
+# dynamiska sektion, inte gissat) och paketet installeras + körs faktiskt
+# efter `dpkg-deb --build` — inte bara "det kompilerar".
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: linux-packaging-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-24.04
+    container: swift:6.1-noble
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Läs version (senaste v*-tagg från auto-release.yml, annars 0.0.0)
+        id: version
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          TAG=$(git tag -l 'v*' --sort=-v:refname | head -1)
+          VERSION="${TAG#v}"
+          if [ -z "$VERSION" ]; then VERSION="0.0.0"; fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Visa Swift-version
+        run: swift --version
+
+      - name: swift build (release, statisk Swift-runtime)
+        run: swift build -c release --product bastion-cli --static-swift-stdlib
+
+      # Kollas FÖRE paketering, inte efter — en binär som av misstag länkats
+      # dynamiskt mot Swift-runtimen skulle ändå köra fint HÄR (avbildningen
+      # har ju runtimen), men misslyckas tyst på en slutanvändares maskin
+      # utan Swift installerat. `ldd` läser binärens egen dynamiska sektion,
+      # inte vad som råkar finnas på disk i den här containern.
+      - name: Verifiera statisk länkning (inga Swift-runtime-.so-beroenden)
+        run: |
+          set -euo pipefail
+          if ldd .build/release/bastion-cli | grep -qi swift; then
+            echo "::error::bastion-cli beror fortfarande dynamiskt på Swift-runtimen — --static-swift-stdlib gav inte en fristående binär"
+            ldd .build/release/bastion-cli
+            exit 1
+          fi
+          ldd .build/release/bastion-cli
+
+      - name: Bygg .deb-paketträd
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          ROOT="dist/bastion-cli_${VERSION}_amd64"
+          mkdir -p "$ROOT/DEBIAN" "$ROOT/usr/bin"
+          cp .build/release/bastion-cli "$ROOT/usr/bin/bastion-cli"
+          chmod 755 "$ROOT/usr/bin/bastion-cli"
+          cat > "$ROOT/DEBIAN/control" <<EOF
+          Package: bastion-cli
+          Version: $VERSION
+          Section: net
+          Priority: optional
+          Architecture: amd64
+          Maintainer: blixten85 <noreply@github.com>
+          Homepage: https://github.com/blixten85/bastion
+          Description: Fri, öppen, fristående SSH-klient (kommandorad)
+           bastion-cli bevisar SSHCore-kärnan mot en riktig server — exec,
+           interaktiv shell, portvidarebefordran (-L/-R/-D), ProxyJump.
+           Statiskt länkad mot Swift-runtimen, inga körtidsberoenden utöver
+           glibc.
+          EOF
+          dpkg-deb --build --root-owner-group "$ROOT"
+          mkdir -p dist-out
+          mv "dist/bastion-cli_${VERSION}_amd64.deb" dist-out/
+
+      # Installerar det FAKTISKT byggda .deb-paketet (inte bara den råa
+      # binären) och kör det, i samma steg som resten av jobbet (containern
+      # har fortfarande hela Swift-runtimen närvarande på disk — poängen med
+      # ldd-kollen ovan är just att den INTE beror på det).
+      - name: Installera och kör paketet
+        run: |
+          set -euo pipefail
+          dpkg -i dist-out/*.deb
+          set +e
+          OUTPUT=$(bastion-cli 2>&1)
+          STATUS=$?
+          set -e
+          echo "$OUTPUT"
+          if [ "$STATUS" -ne 2 ]; then
+            echo "::error::väntade exitkod 2 (användningsfel utan argument), fick $STATUS"
+            exit 1
+          fi
+          if ! echo "$OUTPUT" | grep -q "Användning:"; then
+            echo "::error::väntade ett användningsmeddelande, fick: $OUTPUT"
+            exit 1
+          fi
+
+      - name: Ladda upp .deb-artefakt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: bastion-cli-deb
+          path: dist-out/*.deb
