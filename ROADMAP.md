@@ -1635,10 +1635,15 @@ porten kom tillbaka genom HELA kedjan (lokal socket → SSH-kanal → sshd →
 ekoserver → samma väg tillbaka), inte en kortsluten loopback-gissning.
 1/1 nytt test grönt, 45/45 totalt (8 ignorerade, kräver riktig localhost-
 sshd på port 22 specifikt — se `ssh.rs`/`sftp.rs`).
+**GTK4-vy tillagd samma dag**: ny "Tunnel"-menypost (`host.forward`,
+respekterar `show_port_forward`-togglen) öppnar en flik med fält för lokal
+port/målvärd/målport + Starta/Stoppa, kopplad direkt mot
+`spawn_local_forward`. Byggd och körd (Xvfb, riktig skärmdump) utan krasch
+— samma verifieringsnivå som Docker-/SFTP-/Kommandon-vyerna. Interaktiv
+klick-genom-menyn-verifiering (öppna tunnel-fliken på en riktig värd) INTE
+gjord än, bara app-start med den nya kodvägen länkad in.
 **Kvar**: fjärr- (`-R`) och dynamisk (`-D`, SOCKS5) vidarebefordran (inte
-byggda alls än), samt en `PortForwardView`-motsvarande GTK4-vy i `main.rs`
-som kopplar in `spawn_local_forward` (idag bara ett bibliotekslager, ingen
-knapp i UI:t) — matchar samma "bibliotek klart, ytnivå kvar"-mönster som
+byggda alls än, varken bibliotek eller UI) — matchar samma mönster som
 redan gäller synk-mappval.
 
 **Klart samma dag, fjärde pass: formellt synkprotokoll, dokumenterat OCH

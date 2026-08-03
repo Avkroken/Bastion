@@ -270,11 +270,27 @@ fn refresh_list(
                 }
             }
         ));
+        let forward_action = gtk::gio::SimpleAction::new("forward", None);
+        forward_action.connect_activate(clone!(
+            #[strong]
+            store,
+            #[strong]
+            area,
+            #[strong(rename_to = host_id)]
+            h.id,
+            move |_, _| {
+                let host = store.borrow().all().iter().find(|x| x.id == host_id).map(|h| (*h).clone());
+                if let Some(host) = host {
+                    require_password(&area, host, open_port_forward_view);
+                }
+            }
+        ));
         action_group.add_action(&edit_action);
         action_group.add_action(&delete_action);
         action_group.add_action(&docker_action);
         action_group.add_action(&commands_action);
         action_group.add_action(&sftp_action);
+        action_group.add_action(&forward_action);
         row.insert_action_group("host", Some(&action_group));
 
         list.append(&row);
@@ -292,6 +308,9 @@ fn gio_menu_for(toggles: &settings::FeatureToggles) -> gtk::gio::Menu {
     }
     if toggles.show_sftp_browser {
         menu.append(Some("Filer"), Some("host.sftp"));
+    }
+    if toggles.show_port_forward {
+        menu.append(Some("Tunnel"), Some("host.forward"));
     }
     menu.append(Some("Ta bort"), Some("host.delete"));
     menu
@@ -915,6 +934,151 @@ fn open_docker_view(area: &Rc<SessionArea>, host: host::Host, password: Option<S
     ));
 
     refresh_docker_list(area, host, password, &list);
+}
+
+/// Öppnar en "Tunnel"-flik för `host`: startar/stoppar en lokal
+/// portvidarebefordran (motsvarar `App/PortForwardView.swift`, bara lokal
+/// `-L` hittills — se `port_forward.rs`, fjärr/dynamisk kvarstår).
+fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Option<String>) {
+    let local_port_row = adw::EntryRow::builder().title("Lokal port (0 = valfri)").build();
+    let target_host_row = adw::EntryRow::builder().title("Målvärd").text("127.0.0.1").build();
+    let target_port_row = adw::EntryRow::builder().title("Målport").build();
+
+    let group = adw::PreferencesGroup::new();
+    group.add(&local_port_row);
+    group.add(&target_host_row);
+    group.add(&target_port_row);
+
+    let status_label = gtk::Label::builder()
+        .label("Inte startad")
+        .margin_start(12)
+        .margin_end(12)
+        .halign(gtk::Align::Start)
+        .build();
+    let start_button = gtk::Button::with_label("Starta");
+    let stop_button = gtk::Button::with_label("Stoppa");
+    stop_button.set_sensitive(false);
+
+    let button_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .margin_bottom(8)
+        .build();
+    button_box.append(&start_button);
+    button_box.append(&stop_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(
+        &gtk::Label::builder()
+            .label(format!("Tunnel: {}", host.alias))
+            .margin_top(12)
+            .margin_bottom(4)
+            .margin_start(12)
+            .halign(gtk::Align::Start)
+            .css_classes(["title-4"])
+            .build(),
+    );
+    content.append(&group);
+    content.append(&button_box);
+    content.append(&status_label);
+
+    let page = area.tab_view.append(&content);
+    page.set_title(&format!("Tunnel: {}", host.alias));
+    area.tab_view.set_selected_page(&page);
+    area.update_placeholder();
+
+    let forward_handle: Rc<RefCell<Option<port_forward::LocalPortForward>>> = Rc::new(RefCell::new(None));
+
+    start_button.connect_clicked(clone!(
+        #[strong]
+        host,
+        #[strong]
+        password,
+        #[strong]
+        local_port_row,
+        #[strong]
+        target_host_row,
+        #[strong]
+        target_port_row,
+        #[strong]
+        status_label,
+        #[strong]
+        start_button,
+        #[strong]
+        stop_button,
+        #[strong]
+        forward_handle,
+        move |_| {
+            let bind_port: u16 = local_port_row.text().parse().unwrap_or(0);
+            let target_host_value = target_host_row.text().to_string();
+            let target_port: u16 = match target_port_row.text().parse() {
+                Ok(p) => p,
+                Err(_) => {
+                    status_label.set_label("Ogiltig målport");
+                    return;
+                }
+            };
+            status_label.set_label("Startar…");
+            start_button.set_sensitive(false);
+            let rx = port_forward::spawn_local_forward(
+                host.clone(),
+                password.clone(),
+                "127.0.0.1".to_string(),
+                bind_port,
+                target_host_value,
+                target_port,
+            );
+            glib::spawn_future_local(clone!(
+                #[strong]
+                status_label,
+                #[strong]
+                start_button,
+                #[strong]
+                stop_button,
+                #[strong]
+                forward_handle,
+                async move {
+                    match rx.recv().await {
+                        Ok(Ok(forward)) => {
+                            status_label.set_label(&format!("Vidarebefordrar lokal port {}", forward.actual_bind_port));
+                            stop_button.set_sensitive(true);
+                            *forward_handle.borrow_mut() = Some(forward);
+                        }
+                        Ok(Err(e)) => {
+                            status_label.set_label(&format!("Fel: {e}"));
+                            start_button.set_sensitive(true);
+                        }
+                        Err(_) => {
+                            status_label.set_label("Fel: kanalen stängdes oväntat");
+                            start_button.set_sensitive(true);
+                        }
+                    }
+                }
+            ));
+        }
+    ));
+
+    stop_button.connect_clicked(clone!(
+        #[strong]
+        forward_handle,
+        #[strong]
+        status_label,
+        #[strong]
+        start_button,
+        #[strong]
+        stop_button,
+        move |_| {
+            if let Some(forward) = forward_handle.borrow_mut().take() {
+                forward.stop();
+            }
+            status_label.set_label("Stoppad");
+            start_button.set_sensitive(true);
+            stop_button.set_sensitive(false);
+        }
+    ));
 }
 
 fn refresh_docker_list(area: &Rc<SessionArea>, host: host::Host, password: Option<String>, list: &gtk::ListBox) {
