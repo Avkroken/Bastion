@@ -31,6 +31,11 @@ jobs:
     runs-on: ubuntu-24.04
     container: swift:6.1-noble
     timeout-minutes: 20
+    defaults:
+      run:
+        # Containerns standardskal är sh (dash), som saknar `set -o pipefail`
+        # (CI-fynd) — behövs av flera steg nedan.
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
@@ -41,7 +46,7 @@ jobs:
         id: version
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          TAG=$(git tag -l 'v*' --sort=-v:refname | head -1)
+          TAG=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
           VERSION="${TAG#v}"
           if [ -z "$VERSION" ]; then VERSION="0.0.0"; fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -60,17 +65,25 @@ jobs:
       - name: Verifiera statisk länkning (inga Swift-runtime-.so-beroenden)
         run: |
           set -euo pipefail
-          if ldd .build/release/bastion-cli | grep -qi swift; then
+          # `|| true` — en HELT statisk binär (inga delade bibliotek alls) gör
+          # att ldd avslutar med felkod, vilket annars skulle fälla `set -e`
+          # här trots att det egentligen är ett ÄNNU bättre utfall än det vi
+          # letar efter.
+          if ldd .build/release/bastion-cli 2>/dev/null | grep -qi libswift; then
             echo "::error::bastion-cli beror fortfarande dynamiskt på Swift-runtimen — --static-swift-stdlib gav inte en fristående binär"
-            ldd .build/release/bastion-cli
+            ldd .build/release/bastion-cli || true
             exit 1
           fi
-          ldd .build/release/bastion-cli
+          ldd .build/release/bastion-cli || true
 
       - name: Bygg .deb-paketträd
+        env:
+          # Undviker shell-injektion via en illvilligt utformad git-tagg —
+          # interpolerad rakt i run:-skriptet skulle taggens innehåll tolkas
+          # som skalsyntax (CodeRabbit-fynd, säkerhet).
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          VERSION="${{ steps.version.outputs.version }}"
           ROOT="dist/bastion-cli_${VERSION}_amd64"
           mkdir -p "$ROOT/DEBIAN" "$ROOT/usr/bin"
           cp .build/release/bastion-cli "$ROOT/usr/bin/bastion-cli"
@@ -83,6 +96,7 @@ jobs:
           Architecture: amd64
           Maintainer: blixten85 <noreply@github.com>
           Homepage: https://github.com/blixten85/bastion
+          Depends: libc6
           Description: Fri, öppen, fristående SSH-klient (kommandorad)
            bastion-cli bevisar SSHCore-kärnan mot en riktig server — exec,
            interaktiv shell, portvidarebefordran (-L/-R/-D), ProxyJump.
@@ -120,3 +134,4 @@ jobs:
         with:
           name: bastion-cli-deb
           path: dist-out/*.deb
+          if-no-files-found: error
