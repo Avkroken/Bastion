@@ -9,8 +9,8 @@ name: Linux-paketering (.deb)
 # Bara bastion-cli hittills — bastion-gui (LinuxApp/, GTK4-beroenden utöver
 # Swift-runtimen) är ett separat, större paketeringssteg, se ROADMAP.md.
 #
-# Statisk länkning verifieras på RIKTIGT (`ldd` mot binärens egna
-# dynamiska sektion, inte gissat) och paketet installeras + körs faktiskt
+# Statisk länkning verifieras på RIKTIGT (`readelf -d` mot binärens egen
+# DT_NEEDED-lista, inte gissat) och paketet installeras + körs faktiskt
 # efter `dpkg-deb --build` — inte bara "det kompilerar".
 on:
   push:
@@ -57,24 +57,71 @@ jobs:
       - name: swift build (release, statisk Swift-runtime)
         run: swift build -c release --product bastion-cli --static-swift-stdlib
 
+      - name: Installera binutils (readelf, om det saknas i basavbildningen)
+        run: |
+          command -v readelf >/dev/null 2>&1 && exit 0
+          apt-get update -qq
+          apt-get install -y -qq binutils
+
       # Kollas FÖRE paketering, inte efter — en binär som av misstag länkats
       # dynamiskt mot Swift-runtimen skulle ändå köra fint HÄR (avbildningen
       # har ju runtimen), men misslyckas tyst på en slutanvändares maskin
-      # utan Swift installerat. `ldd` läser binärens egen dynamiska sektion,
-      # inte vad som råkar finnas på disk i den här containern.
-      - name: Verifiera statisk länkning (inga Swift-runtime-.so-beroenden)
+      # utan Swift installerat. `readelf -d` läser binärens egen DT_NEEDED-
+      # lista (dess faktiska dynamiska beroenden), inte vad som råkar finnas
+      # på disk i den här containern.
+      #
+      # `--static-swift-stdlib` länkar BARA Swift-runtimen (stdlib/Foundation/
+      # Dispatch) statiskt — glibc och, via SSHCores S3Client.swift som drar
+      # in FoundationNetworking/FoundationXML på Linux, sannolikt libcurl/
+      # libxml2 förblir dynamiska beroenden (CodeRabbit-fynd: web-research
+      # bekräftar detta för Swift 6.1 på Linux). Att bara leta efter "libswift"
+      # och sedan hårdkoda `Depends: libc6` hade tyst missat de beroendena —
+      # paketet hade sett ut att installeras fint HÄR (bibliotekens redan på
+      # disk i den här avbildningen) men kunnat krascha vid körning på en
+      # maskin utan libcurl/libxml2. I stället: lista ALLA direkta delade
+      # bibliotek, slå upp vilket Debian-paket vart och ett kommer från
+      # (`dpkg -S`) och bygg `Depends` av DEN listan, inte en gissning.
+      - name: Bestäm faktiska körtidsberoenden (DT_NEEDED → Debian-paket)
+        id: deps
         run: |
           set -euo pipefail
-          # `|| true` — en HELT statisk binär (inga delade bibliotek alls) gör
-          # att ldd avslutar med felkod, vilket annars skulle fälla `set -e`
-          # här trots att det egentligen är ett ÄNNU bättre utfall än det vi
-          # letar efter.
-          if ldd .build/release/bastion-cli 2>/dev/null | grep -qi libswift; then
+          BIN=.build/release/bastion-cli
+          NEEDED=$(readelf -d "$BIN" | sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p')
+          echo "Direkta delade bibliotek (DT_NEEDED):"
+          echo "$NEEDED"
+
+          if echo "$NEEDED" | grep -qi libswift; then
             echo "::error::bastion-cli beror fortfarande dynamiskt på Swift-runtimen — --static-swift-stdlib gav inte en fristående binär"
-            ldd .build/release/bastion-cli || true
             exit 1
           fi
-          ldd .build/release/bastion-cli || true
+
+          PACKAGES=""
+          for LIB in $NEEDED; do
+            case "$LIB" in
+              # Grundläggande glibc-familjen (samma logiska beroende, täcks
+              # av `libc6` nedan) — utesluts bara från den HÄRLEDDA listan,
+              # inte från kontrollen ovan.
+              libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libutil.so*|ld-linux*|linux-vdso*)
+                continue
+                ;;
+            esac
+            LIBPATH=$(ldconfig -p | awk -v lib="$LIB" '$1 == lib { print $NF; exit }')
+            if [ -z "$LIBPATH" ]; then
+              echo "::error::hittar inte $LIB via ldconfig — kan inte slå upp vilket Debian-paket det tillhör"
+              exit 1
+            fi
+            PKG=$(dpkg -S "$LIBPATH" | head -1 | cut -d: -f1)
+            if [ -z "$PKG" ]; then
+              echo "::error::$LIBPATH (från $LIB) tillhör inget känt Debian-paket"
+              exit 1
+            fi
+            PACKAGES="$PACKAGES $PKG"
+          done
+
+          EXTRA=$(printf '%s\n' $PACKAGES | sort -u | grep -v '^$' | paste -sd, - | sed 's/,/, /g')
+          DEPENDS="libc6${EXTRA:+, $EXTRA}"
+          echo "Härledd Depends-rad: $DEPENDS"
+          echo "depends=$DEPENDS" >> "$GITHUB_OUTPUT"
 
       - name: Bygg .deb-paketträd
         env:
@@ -82,6 +129,7 @@ jobs:
           # interpolerad rakt i run:-skriptet skulle taggens innehåll tolkas
           # som skalsyntax (CodeRabbit-fynd, säkerhet).
           VERSION: ${{ steps.version.outputs.version }}
+          DEPENDS: ${{ steps.deps.outputs.depends }}
         run: |
           set -euo pipefail
           ROOT="dist/bastion-cli_${VERSION}_amd64"
@@ -96,21 +144,23 @@ jobs:
           Architecture: amd64
           Maintainer: blixten85 <noreply@github.com>
           Homepage: https://github.com/blixten85/bastion
-          Depends: libc6
+          Depends: $DEPENDS
           Description: Fri, öppen, fristående SSH-klient (kommandorad)
            bastion-cli bevisar SSHCore-kärnan mot en riktig server — exec,
            interaktiv shell, portvidarebefordran (-L/-R/-D), ProxyJump.
            Statiskt länkad mot Swift-runtimen, inga körtidsberoenden utöver
-           glibc.
+           de i Depends.
           EOF
           dpkg-deb --build --root-owner-group "$ROOT"
           mkdir -p dist-out
           mv "dist/bastion-cli_${VERSION}_amd64.deb" dist-out/
 
       # Installerar det FAKTISKT byggda .deb-paketet (inte bara den råa
-      # binären) och kör det, i samma steg som resten av jobbet (containern
-      # har fortfarande hela Swift-runtimen närvarande på disk — poängen med
-      # ldd-kollen ovan är just att den INTE beror på det).
+      # binären) och kör det, i samma steg som resten av jobbet. `dpkg -i`
+      # löser Depends mot paketdatabasen i containern (där libcurl/libxml2
+      # m.fl. redan är apt-installerade som byggberoenden för Swift/
+      # Foundation) — poängen med DT_NEEDED-kollen ovan är att den listar
+      # binärens VERKLIGA beroenden, inte vad som råkar ligga på disk.
       - name: Installera och kör paketet
         run: |
           set -euo pipefail
