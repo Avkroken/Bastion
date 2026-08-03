@@ -144,7 +144,18 @@ jobs:
       # (Swift är inte ett Ubuntu-apt-paket). Resten (GTK4/GLib/Pango/
       # Cairo/GdkPixbuf-familjen, riktiga systembibliotek) slås upp mot
       # Debian-paket precis som för bastion-cli.
-      - name: Bestäm faktiska körtidsberoenden (DT_NEEDED → buntat eller Debian-paket)
+      #
+      # CodeRabbit-fynd (Major): en enkel for-loop över bara bastion-guis
+      # EGEN DT_NEEDED-lista räcker INTE — de buntade Swift-biblioteken har
+      # SJÄLVA egna beroenden (t.ex. FoundationInternationalization →
+      # ICU-biblioteken) som aldrig syns i bastion-guis direkta lista.
+      # `DT_RUNPATH` är dessutom INTE transitivt till barn-bibliotek (bara
+      # till OBJEKTETS egna direkta beroenden, enligt ld.so(8)) — även om
+      # de transitiva biblioteken buntades skulle de inte hittas utan att
+      # VARJE buntat bibliotek har sin egen rpath. Löst med en riktig
+      # arbetskö (BFS): varje buntat biblioteks EGEN DT_NEEDED-lista läggs
+      # till i kön och genomsöks likadant, tills inga nya bibliotek hittas.
+      - name: Bestäm faktiska körtidsberoenden (DT_NEEDED → buntat eller Debian-paket, transitivt)
         id: deps
         run: |
           set -euo pipefail
@@ -153,36 +164,52 @@ jobs:
           BUNDLE_DIR="$PWD/bundled-swift-libs"
           mkdir -p "$BUNDLE_DIR"
 
-          NEEDED=$(readelf -d "$BIN" | sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p')
-          echo "Direkta delade bibliotek (DT_NEEDED):"
-          echo "$NEEDED"
-
           PACKAGES=""
-          for LIB in $NEEDED; do
-            case "$LIB" in
-              libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libutil.so*|ld-linux*|linux-vdso*)
+          SEEN=""
+          QUEUE=$(readelf -d "$BIN" | sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p')
+          echo "Direkta delade bibliotek (DT_NEEDED för bastion-gui):"
+          echo "$QUEUE"
+
+          while [ -n "$QUEUE" ]; do
+            NEXT_QUEUE=""
+            for LIB in $QUEUE; do
+              case "$LIB" in
+                libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libutil.so*|ld-linux*|linux-vdso*)
+                  continue
+                  ;;
+              esac
+              case " $SEEN " in
+                *" $LIB "*) continue ;;
+              esac
+              SEEN="$SEEN $LIB"
+
+              if [ -f "$SWIFT_LIB_DIR/$LIB" ]; then
+                cp "$SWIFT_LIB_DIR/$LIB" "$BUNDLE_DIR/"
+                # Detta biblioteks EGNA transitiva beroenden måste också
+                # granskas — läggs till i nästa varv av kön i stället för
+                # att antas vara redan täckta.
+                CHILD_NEEDED=$(readelf -d "$SWIFT_LIB_DIR/$LIB" | sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p')
+                NEXT_QUEUE="$NEXT_QUEUE $CHILD_NEEDED"
                 continue
-                ;;
-            esac
-            if [ -f "$SWIFT_LIB_DIR/$LIB" ]; then
-              cp "$SWIFT_LIB_DIR/$LIB" "$BUNDLE_DIR/"
-              continue
-            fi
-            LIBPATH=$(ldconfig -p | awk -v lib="$LIB" '$1 == lib { print $NF; exit }')
-            if [ -z "$LIBPATH" ]; then
-              echo "::error::hittar inte $LIB via ldconfig eller i Swift-toolchainen — kan inte slå upp vilket Debian-paket det tillhör"
-              exit 1
-            fi
-            LIBPATH=$(readlink -f "$LIBPATH")
-            PKG=$(dpkg -S "$LIBPATH" 2>/dev/null | head -1 | cut -d: -f1 | cut -d, -f1 | xargs)
-            if [ -z "$PKG" ]; then
-              echo "::error::$LIBPATH (från $LIB) tillhör inget känt Debian-paket"
-              exit 1
-            fi
-            PACKAGES="$PACKAGES $PKG"
+              fi
+
+              LIBPATH=$(ldconfig -p | awk -v lib="$LIB" '$1 == lib { print $NF; exit }')
+              if [ -z "$LIBPATH" ]; then
+                echo "::error::hittar inte $LIB via ldconfig eller i Swift-toolchainen — kan inte slå upp vilket Debian-paket det tillhör"
+                exit 1
+              fi
+              LIBPATH=$(readlink -f "$LIBPATH")
+              PKG=$(dpkg -S "$LIBPATH" 2>/dev/null | head -1 | cut -d: -f1 | cut -d, -f1 | xargs)
+              if [ -z "$PKG" ]; then
+                echo "::error::$LIBPATH (från $LIB) tillhör inget känt Debian-paket"
+                exit 1
+              fi
+              PACKAGES="$PACKAGES $PKG"
+            done
+            QUEUE="$NEXT_QUEUE"
           done
 
-          echo "Buntade Swift-runtime-bibliotek:"
+          echo "Buntade Swift-runtime-bibliotek (inklusive transitiva):"
           ls -1 "$BUNDLE_DIR"
 
           EXTRA=$(printf '%s\n' $PACKAGES | sort -u | grep -v '^$' | grep -v '^libc6$' | paste -sd, - | sed 's/,/, /g')
@@ -200,13 +227,28 @@ jobs:
           mkdir -p "$ROOT/DEBIAN" "$ROOT/usr/bin" "$ROOT/usr/lib/bastion-gui"
           cp LinuxApp/.build/release/bastion-gui "$ROOT/usr/bin/bastion-gui"
           chmod 755 "$ROOT/usr/bin/bastion-gui"
-          cp bundled-swift-libs/*.so "$ROOT/usr/lib/bastion-gui/" 2>/dev/null || true
+          # `bundled-swift-libs/*` (inte `*.so`) — CodeRabbit-fynd: ett `*.so`-
+          # glob missar versionerade filnamn som `libicui18n.so.72`, och `||
+          # true` hade tyst dolt att kopieringen misslyckats helt.
+          cp bundled-swift-libs/* "$ROOT/usr/lib/bastion-gui/"
 
           # $ORIGIN är en särskild ELF-loader-token (INTE en skalvariabel —
           # måste vara enkelfnuttad här så bash inte försöker expandera den)
-          # som pekar på binärens EGEN katalog vid körning — gör paketet
-          # flyttbart utan hårdkodad absolut sökväg.
+          # som pekar på det egna objektets katalog vid körning — gör
+          # paketet flyttbart utan hårdkodad absolut sökväg.
+          #
+          # CodeRabbit-fynd (Major): DT_RUNPATH är INTE transitivt (ld.so(8)
+          # — gäller bara objektets EGNA direkta beroenden, inte dess barns).
+          # Att bara sätta rpath på huvudbinären räcker alltså inte: när
+          # libswiftCore.so själv laddar libFoundationInternationalization.so
+          # som i sin tur laddar ICU-biblioteken, måste VARJE steg i den
+          # kedjan ha sin EGEN rpath. Alla buntade bibliotek ligger i samma
+          # katalog, så $ORIGIN (pekar på den egna filens katalog) räcker för
+          # dem alla.
           patchelf --set-rpath '$ORIGIN/../lib/bastion-gui' "$ROOT/usr/bin/bastion-gui"
+          for LIB in "$ROOT"/usr/lib/bastion-gui/*; do
+            patchelf --set-rpath '$ORIGIN' "$LIB"
+          done
 
           cat > "$ROOT/DEBIAN/control" <<EOF
           Package: bastion-gui
@@ -249,7 +291,20 @@ jobs:
             ubuntu:24.04 bash -ceu '
               export DEBIAN_FRONTEND=noninteractive
               apt-get update -qq
-              apt-get install -y -qq xvfb /pkg/*.deb
+              apt-get install -y -qq xvfb libc-bin /pkg/*.deb
+
+              # Precis, snabb kontroll INNAN Xvfb ens startas — CodeRabbit-
+              # fynd: ldd följer den fullständiga (transitiva) loader-kedjan
+              # rakt av, så den här kontrollen fångar exakt vilket bibliotek
+              # som saknas om rpath-buntningen är ofullständig, i stället
+              # för att bara se att processen dör inom 5s utan att veta
+              # varför.
+              if ldd /usr/bin/bastion-gui 2>&1 | grep -q "not found"; then
+                echo "::error::bastion-gui har olösta delade bibliotek efter installation (rpath-buntningen är ofullständig):"
+                ldd /usr/bin/bastion-gui | grep "not found"
+                exit 1
+              fi
+              echo "ldd: alla delade bibliotek löstes (inklusive transitiva, via rpath)."
 
               Xvfb :99 -screen 0 1280x1024x24 &
               XVFB_PID=$!
