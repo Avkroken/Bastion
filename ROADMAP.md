@@ -431,6 +431,30 @@ delvis andra, av konkreta skäl:
   Linux-specifika event loop-avstängningsordningen, se `SSHSession.swift`s
   omfattande kommentarer om samma raceklass) — flaggat för framtida arbete
   snarare än en blind gissning.
+- **`.deb`-paketering av `bastion-cli`** (2026-08-03, `linux-packaging.yml`):
+  ✅ klart. Bygger release-varianten med `--static-swift-stdlib` (länkar
+  Swift-runtimen — stdlib/Foundation/Dispatch — statiskt), paketerar
+  `usr/bin/bastion-cli` som ett riktigt `amd64`-`.deb` via `dpkg-deb --build`,
+  och installerar + kör det FAKTISKT byggda paketet (`dpkg -i` + ett
+  smoke-test som förväntar exitkod 2 och "Användning:"-meddelandet från
+  `main.swift`) — inte bara "det kompilerar".
+  `--static-swift-stdlib` ger INTE en fullständigt statisk binär (bekräftat
+  både via research och verkligt `readelf`-utfall i CI): glibc och,
+  eftersom `SSHCores S3Client.swift` drar in `FoundationNetworking`/
+  `FoundationXML` på Linux, även `libcurl`/`libxml2` förblir dynamiska
+  beroenden. `Depends`-raden i kontrollfilen härleds därför FAKTISKT ur
+  binärens egen `DT_NEEDED`-lista (`readelf -d`) — varje bibliotek slås upp
+  mot sitt Debian-paket via `dpkg -S` — i stället för att gissas/hårdkodas.
+  Två genuina buggar hittades och fixades under utvecklingen: containerns
+  standardskal (`sh`/dash) saknar `set -o pipefail` (löst med `shell: bash`),
+  och `ldconfig -p` svarar med den osolvade `/lib/...`-symlänken medan
+  Ubuntus sammanslagna `/usr` gör att `dpkg -S` bara känner igen den
+  kanoniska `/usr/lib/...`-vägen (löst med `readlink -f`). Version hämtas
+  från senaste `v[0-9]*`-taggen (annars `0.0.0`); versionssträngen skickas
+  via `env:` (inte direkt `${{ }}`-interpolering) för att inte vara sårbar
+  för skalinjektion via en illvillig taggnamn.
+  **Kvar**: bara `bastion-cli` — `bastion-gui` (GTK4-beroenden utöver
+  Swift-runtimen) är ett separat, större paketeringssteg. Inget `.rpm` än.
 - **Linux-Docker-hantering**: `DockerView` (i `HostDetailView` via en knapp/sheet)
   lista/start/stopp/omstart/logg/shell — samma `DockerService` som iOS-appen.
   Shell öppnar en `TerminalSessionView` med `docker exec` som initialt kommando
@@ -949,13 +973,19 @@ Inget nytt att bygga, bara verifiera/lansera:
   egen `TelnetSession`, inte en utökning av `SSHSession`. En egen
   protokollimplementation från grunden.
 - **Paketering + BSD-täckning** (nytt, 2026-07-07, se VISION.md
-  "Plattforms- och paketeringsmål, fullständigt") — inte påbörjat:
-  `.deb`-paket (Debian/Ubuntu), `.rpm`-paket (RHEL/Fedora), FreeBSD-bygge
-  (Swift har community-toolchains där), OpenBSD/NetBSD-undersökning
-  (oklart om Swift ens fungerar där än — måste verifieras mot en riktig
-  installation innan något annat antas). ARM64/Raspberry Pi täcks
-  naturligt av samma Linux-bygge + `.deb`-paketering, förutsatt att
-  toolchainen stödjer target-arkitekturen (gör den, för Linux ARM64).
+  "Plattforms- och paketeringsmål, fullständigt"):
+  `.deb`-paket för `bastion-cli` (Debian/Ubuntu) — ✅ klart (2026-08-03,
+  se "Klart" → "`.deb`-paketering av `bastion-cli`"). Kvar: `.deb` för
+  `bastion-gui` (GTK4-beroenden utöver Swift-runtimen, större steg),
+  `.rpm`-paket (RHEL/Fedora), FreeBSD-bygge (Swift har community-
+  toolchains där), OpenBSD/NetBSD-undersökning (oklart om Swift ens
+  fungerar där än — måste verifieras mot en riktig installation innan
+  något annat antas). `linux-packaging.yml` bygger idag bara `amd64`
+  (CodeRabbit-fynd: föregående skrivning antydde felaktigt att ARM64/
+  Raspberry Pi redan täcktes) — ARM64 kräver en egen körning på en
+  ARM64-runner/toolchain och ett faktiskt testat `.deb`-artefakt innan
+  det kan räknas som klart, inte bara att toolchainen i teorin stödjer
+  arkitekturen.
 - **Native filhanterare-integration + molnlagring som filkälla** (nytt,
   2026-07-07, se VISION.md "Native filhanterare-integration + molnlagring
   som filkälla") — inte påbörjat. Apple: `FileProvider`-ramverket
