@@ -940,12 +940,21 @@ fn open_docker_view(area: &Rc<SessionArea>, host: host::Host, password: Option<S
 /// portvidarebefordran (motsvarar `App/PortForwardView.swift`, bara lokal
 /// `-L` hittills — se `port_forward.rs`, fjärr/dynamisk kvarstår).
 fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Option<String>) {
-    let local_port_row = adw::EntryRow::builder().title("Lokal port (0 = valfri)").build();
+    // "Lokal" = `ssh -L` (vi lyssnar, servern kopplar mot målet). "Fjärr" =
+    // `ssh -R` (servern lyssnar åt oss, vi kopplar mot målet). Samma
+    // fältuppsättning för båda — bara vem som lyssnar skiljer, precis som
+    // `-L`/`-R`s symmetriska CLI-syntax.
+    let direction_row = adw::ComboRow::builder().title("Riktning").build();
+    let direction_model = gtk::StringList::new(&["Lokal (-L)", "Fjärr (-R)"]);
+    direction_row.set_model(Some(&direction_model));
+
+    let bind_port_row = adw::EntryRow::builder().title("Bindport (0 = valfri)").build();
     let target_host_row = adw::EntryRow::builder().title("Målvärd").text("127.0.0.1").build();
     let target_port_row = adw::EntryRow::builder().title("Målport").build();
 
     let group = adw::PreferencesGroup::new();
-    group.add(&local_port_row);
+    group.add(&direction_row);
+    group.add(&bind_port_row);
     group.add(&target_host_row);
     group.add(&target_port_row);
 
@@ -990,7 +999,7 @@ fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Op
     area.tab_view.set_selected_page(&page);
     area.update_placeholder();
 
-    let forward_handle: Rc<RefCell<Option<port_forward::LocalPortForward>>> = Rc::new(RefCell::new(None));
+    let forward_handle: Rc<RefCell<Option<port_forward::ActiveForward>>> = Rc::new(RefCell::new(None));
 
     start_button.connect_clicked(clone!(
         #[strong]
@@ -998,7 +1007,9 @@ fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Op
         #[strong]
         password,
         #[strong]
-        local_port_row,
+        direction_row,
+        #[strong]
+        bind_port_row,
         #[strong]
         target_host_row,
         #[strong]
@@ -1012,7 +1023,8 @@ fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Op
         #[strong]
         forward_handle,
         move |_| {
-            let bind_port: u16 = local_port_row.text().parse().unwrap_or(0);
+            let is_remote = direction_row.selected() == 1;
+            let bind_port: u16 = bind_port_row.text().parse().unwrap_or(0);
             let target_host_value = target_host_row.text().to_string();
             let target_port: u16 = match target_port_row.text().parse() {
                 Ok(p) => p,
@@ -1023,15 +1035,11 @@ fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Op
             };
             status_label.set_label("Startar…");
             start_button.set_sensitive(false);
-            let rx = port_forward::spawn_local_forward(
-                host.clone(),
-                password.clone(),
-                "127.0.0.1".to_string(),
-                bind_port,
-                target_host_value,
-                target_port,
-            );
             glib::spawn_future_local(clone!(
+                #[strong]
+                host,
+                #[strong]
+                password,
                 #[strong]
                 status_label,
                 #[strong]
@@ -1041,18 +1049,41 @@ fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Op
                 #[strong]
                 forward_handle,
                 async move {
-                    match rx.recv().await {
-                        Ok(Ok(forward)) => {
-                            status_label.set_label(&format!("Vidarebefordrar lokal port {}", forward.actual_bind_port));
+                    // Två olika kanaltyper (`LocalPortForward`/`RemotePortForward`)
+                    // kan inte bindas till samma `let rx = if ... else ...` — de
+                    // slås ihop till `ActiveForward` HÄR, inte innan, så att
+                    // resten av blocket kan hantera dem enhetligt.
+                    let result: Result<port_forward::ActiveForward, String> = if is_remote {
+                        let rx = port_forward::spawn_remote_forward(
+                            host, password, "0.0.0.0".to_string(), bind_port, target_host_value, target_port,
+                        );
+                        match rx.recv().await {
+                            Ok(r) => r.map(port_forward::ActiveForward::Remote),
+                            Err(_) => Err("kanalen stängdes oväntat".to_string()),
+                        }
+                    } else {
+                        let rx = port_forward::spawn_local_forward(
+                            host, password, "127.0.0.1".to_string(), bind_port, target_host_value, target_port,
+                        );
+                        match rx.recv().await {
+                            Ok(r) => r.map(port_forward::ActiveForward::Local),
+                            Err(_) => Err("kanalen stängdes oväntat".to_string()),
+                        }
+                    };
+                    match result {
+                        Ok(forward) => {
+                            let port = forward.actual_bind_port();
+                            let label = if is_remote {
+                                format!("Servern vidarebefordrar sin port {port} till oss")
+                            } else {
+                                format!("Vidarebefordrar lokal port {port}")
+                            };
+                            status_label.set_label(&label);
                             stop_button.set_sensitive(true);
                             *forward_handle.borrow_mut() = Some(forward);
                         }
-                        Ok(Err(e)) => {
+                        Err(e) => {
                             status_label.set_label(&format!("Fel: {e}"));
-                            start_button.set_sensitive(true);
-                        }
-                        Err(_) => {
-                            status_label.set_label("Fel: kanalen stängdes oväntat");
                             start_button.set_sensitive(true);
                         }
                     }

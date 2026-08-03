@@ -19,8 +19,11 @@ use russh::client::{self, Handle};
 use russh::keys::agent::client::AgentClient;
 use russh::keys::key::PublicKey;
 use russh::keys::{load_secret_key, PublicKeyBase64};
-use russh::ChannelMsg;
-use std::sync::Arc;
+use russh::client::Msg;
+use russh::{Channel, ChannelMsg};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use tokio::net::TcpStream;
 
 #[derive(Debug)]
 pub enum SshEvent {
@@ -60,10 +63,17 @@ impl std::fmt::Display for ConnectError {
     }
 }
 
+/// Delad karta port->mål för fjärr-portvidarebefordran (`-R`), motsvarande
+/// `SSHSession.remoteForwards` i SSHCore. Tom för anslutningar som inte
+/// använder `-R` (interaktiv shell, engångskommandon, `-L`) — bara
+/// `spawn_remote_forward` (`port_forward.rs`) fyller på den.
+pub(crate) type RemoteForwards = Arc<Mutex<HashMap<u32, (String, u16)>>>;
+
 pub(crate) struct ClientHandler {
     host: String,
     port: u16,
     known_hosts: Arc<KnownHosts>,
+    remote_forwards: RemoteForwards,
 }
 
 #[async_trait::async_trait]
@@ -82,6 +92,37 @@ impl client::Handler for ClientHandler {
                 self.host, self.port
             ))),
         }
+    }
+
+    /// Motsvarar `handleInboundForwardedChannel` i SSHCore/PortForward.swift:
+    /// servern öppnar den här kanalen när en klient ansluter mot en port vi
+    /// bad den lyssna på via `tcpip_forward` (`spawn_remote_forward`). Porten
+    /// slås upp i `remote_forwards` för att hitta den LOKALA
+    /// host:port-anslutningen som ska bryggas mot — allt annat (ingen aktiv
+    /// `-R` för den porten) släpps tyst, samma som SSHCore avvisar det.
+    async fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        _connected_address: &str,
+        connected_port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        let target = self.remote_forwards.lock().expect("remote_forwards-låset korrupt").get(&connected_port).cloned();
+        let Some((target_host, target_port)) = target else {
+            return Ok(());
+        };
+        tokio::spawn(async move {
+            let local = match TcpStream::connect((target_host.as_str(), target_port)).await {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            let mut local = local;
+            let mut remote = channel.into_stream();
+            let _ = tokio::io::copy_bidirectional(&mut local, &mut remote).await;
+        });
+        Ok(())
     }
 }
 
@@ -114,12 +155,25 @@ pub(crate) async fn connect(
     password: Option<String>,
     known_hosts_path_override: Option<std::path::PathBuf>,
 ) -> Result<Handle<ClientHandler>, String> {
+    connect_with_forwards(host, password, known_hosts_path_override, RemoteForwards::default()).await
+}
+
+/// Samma som `connect`, men tar en delad `RemoteForwards`-karta som
+/// `ClientHandler` slår upp mot när servern öppnar en `forwarded-tcpip`-kanal
+/// — `connect()` skickar bara med en tom (oanvänd) karta, bara
+/// `spawn_remote_forward` (`port_forward.rs`) behöver fylla på den efteråt.
+pub(crate) async fn connect_with_forwards(
+    host: &Host,
+    password: Option<String>,
+    known_hosts_path_override: Option<std::path::PathBuf>,
+    remote_forwards: RemoteForwards,
+) -> Result<Handle<ClientHandler>, String> {
     let known_hosts = Arc::new(KnownHosts::open(Some(
         known_hosts_path_override.unwrap_or_else(KnownHosts::default_path),
     )));
     let config = Arc::new(client::Config::default());
     let addr = (host.host_name.as_str(), host.port as u16);
-    let handler = ClientHandler { host: host.host_name.clone(), port: host.port as u16, known_hosts };
+    let handler = ClientHandler { host: host.host_name.clone(), port: host.port as u16, known_hosts, remote_forwards };
     let mut session: Handle<ClientHandler> = client::connect(config, addr, handler)
         .await
         .map_err(|e| format!("anslutning misslyckades: {e}"))?;

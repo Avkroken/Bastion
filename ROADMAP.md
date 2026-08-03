@@ -49,7 +49,7 @@ delvis andra, av konkreta skäl:
 | Linux-GUI (`bastion-gui`, SwiftCrossUI/GTK4) | 🗑️ RIVEN (2026-08-03) — ersatt av native Rust/GTK4-`LinuxApp`, se "Arkitekturbeslut" nedan. Raden bevaras som historik, inte aktuell status. |
 | Linux-terminal (VT100/ANSI-tolk, bestående PTY-shell) | ✅ 42 fristående parser-tester gröna (`LinuxApp/Tests/`), körd (Xvfb) — riktig tangentbordsinmatning (2026-08-02, `KeyEventBridge.swift`, se "Klart"), ingen interaktiv GUI-verifiering än; inget musstöd (ingen rå gest-position-API i SwiftCrossUI) |
 | Linux-Docker-hantering (`DockerView`) | ✅ lista/start/stopp/omstart/logg/shell — motsvarar `App/DockerView.swift` |
-| Portvidarebefordran (`PortForwardView`) | ✅ lokal/fjärr/dynamisk, starta/stoppa — LinuxApp (byggd+körd, Xvfb) OCH App/ (2026-07-08, Xcode-only) |
+| Portvidarebefordran (`PortForwardView`) | LinuxApp: ✅ lokal+fjärr (byggd+körd, Xvfb; interaktiv klick-genom-menyn ej gjord), 🕘 dynamisk (SOCKS5) ej byggd. App/: ✅ lokal/fjärr/dynamisk (2026-07-08, Xcode-only) |
 | ProxyJump (`ssh -J`) | ✅ `SSHSession.connect(via:)`, `bastion-cli` läser `ProxyJump` ur ssh-config automatiskt |
 | WireGuard-profiler | ✅ parsning/serialisering + lagring — LinuxApp OCH App/-UI (2026-07-08, Xcode-only) |
 | OpenSSH-certifikat | ✅ parsning + CA-signaturverifiering + `SSHUserAuth`/`HostAuth`-wiring (`.certificateFile`) — testad mot RIKTIGA `ssh-keygen -s`-certifikat, LinuxApp+App-UI klar |
@@ -1642,9 +1642,27 @@ port/målvärd/målport + Starta/Stoppa, kopplad direkt mot
 — samma verifieringsnivå som Docker-/SFTP-/Kommandon-vyerna. Interaktiv
 klick-genom-menyn-verifiering (öppna tunnel-fliken på en riktig värd) INTE
 gjord än, bara app-start med den nya kodvägen länkad in.
-**Kvar**: fjärr- (`-R`) och dynamisk (`-D`, SOCKS5) vidarebefordran (inte
-byggda alls än, varken bibliotek eller UI) — matchar samma mönster som
-redan gäller synk-mappval.
+**Fjärr-portvidarebefordran (`-R`), backend + UI klart** (2026-08-03,
+`LinuxApp/src/port_forward.rs`): ny `spawn_remote_forward` ber servern
+lyssna åt oss via russh `Handle::tcpip_forward` (motsvarar
+`SSHSession.openRemotePortForward` i SSHCore). Inkommande
+`forwarded-tcpip`-kanaler dirigeras av en ny `ClientHandler::
+server_channel_open_forwarded_tcpip` (`ssh.rs`) mot en delad
+`RemoteForwards`-karta (port → mål), som slår upp target och bryggar en ny
+lokal TCP-anslutning — samma princip som SSHCores `remoteForwards`-fält.
+Testat genuint end-to-end mot samma fristående test-`sshd` som `-L`-testet:
+en klient som ansluter mot porten SERVERN band åt oss (inte en lokal port vi
+själva öppnade) når en oberoende TCP-ekoserver genom hela kedjan. GTK4-vyn
+("Tunnel"-fliken) fick en "Riktning"-väljare (Lokal/`-L`, Fjärr/`-R`) som
+delar samma fält och kopplar mot rätt bakomliggande funktion via ett nytt
+`ActiveForward`-enum (håller `LocalPortForward`/`RemotePortForward` bakom
+ett gemensamt handtag). Byggd och körd under Xvfb utan krasch. Interaktiv
+klick-genom-menyn-verifiering av riktningsväljaren på en riktig värd INTE
+gjord än, bara app-start med den nya kodvägen länkad in — samma
+begränsning som redan gällde för `-L`-UI:t.
+**Kvar**: dynamisk (`-D`, SOCKS5) vidarebefordran (inte byggd alls än,
+varken bibliotek eller UI) — matchar samma mönster som redan gäller
+synk-mappval.
 
 **Klart samma dag, fjärde pass: formellt synkprotokoll, dokumenterat OCH
 implementerat** — se [SYNC_PROTOCOL.md](SYNC_PROTOCOL.md). `LinuxApp/src/
