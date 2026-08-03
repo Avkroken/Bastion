@@ -247,6 +247,32 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **`ExternalBinaryFetcher` — generisk hämta+verifiera+cacha-hjälpare för
+  externa binärer** (2026-08-03, `Sources/SSHCore/ExternalBinaryFetcher.swift`):
+  första byggstenen för "Native WireGuard/Tailscale — inget externt beroende"
+  (se det avsnittet nedan för den fulla motiveringen). Tar en URL + en känd
+  SHA256-checksumma, laddar ner, verifierar checksumman mot bytesen INNAN
+  något skrivs till disk (en fel/manipulerad nedladdning hamnar aldrig i
+  cachen ens tillfälligt), cachar under en given katalog med `chmod 755`,
+  och är idempotent (ett andra anrop med samma parametrar gör INGEN
+  nätverkstrafik, verifierat explicit i testerna genom att peka det andra
+  anropet mot en overkomlig URL som skulle kastat om cachen missades). En
+  korrupt cachad fil (fel checksumma) tas bort och laddas ner på nytt
+  istället för att litas på tyst.
+  Medvetet WireGuard/Tailscale-AGNOSTISK (bara URL+checksumma+katalog in) —
+  matchar roadmap-anteckningens egen slutsats att en sådan hjälpare "är värd
+  att bygga ÅTERANVÄNDBAR för både WireGuard och Tailscale". Hör hemma i
+  `SSHCore` eftersom mekaniken (nedladdning/SHA256/filcache) är genuint
+  plattformsneutral — det är bara det FRAMTIDA valet av URL per plattform/
+  arkitektur och själva tunneluppsättningen (wg-quick-motsvarighet,
+  NetworkExtension på iOS) som hör hemma i UI-lagren, oförändrat.
+  Testat mot en RIKTIG, taggpinnad (alltså oföränderlig) fil på
+  `raw.githubusercontent.com` — inte ett mockat HTTP-svar: genuin nedladdning
+  + checksumverifiering, cache-träff utan nätverksanrop (bevisat genom att
+  peka på en overkomlig URL), avvisning av fel checksumma (aldrig skriven
+  till disk), och återhämtning från en korrupt cache-post. 4/4 nya tester
+  gröna (`ExternalBinaryFetcherTests.swift`), 290/290 totalt. Nätverksberoende
+  — hoppar tydligt över (inte fel) om miljön saknar internetåtkomst.
 - **ProxyJump (`ssh -J`)** (2026-07-06, `SSHSession.swift`): `connect(via
   jump:)` — istället för en ny TCP-anslutning öppnas en `direct-tcpip`-kanal
   FRÅN en redan uppkopplad jump-session till målet, och en helt egen,
@@ -813,7 +839,8 @@ Inget nytt att bygga, bara verifiera/lansera:
 - **Native WireGuard/Tailscale — inget externt beroende** (nytt,
   2026-07-07, uttryckligt ägarönskemål — se VISION.md "En sak att
   prioritera högt": ska kännas komplett, inget proffs ska sakna något)
-  — INTE PÅBÖRJAT, ren designanteckning för framtida arbete. Dagens läge
+  — 🧩 hämta+verifiera-mekaniken PÅBÖRJAD (2026-08-03, se "Klart"), resten
+  ren designanteckning för framtida arbete. Dagens läge
   (ovan) kräver ATT `wg`/`wg-quick` respektive `tailscale`/`tailscaled`
   redan är installerade separat av användaren — motsatsen till "fristående
   app" -löftet i README:s första rad. Målet: appen kan självständigt
