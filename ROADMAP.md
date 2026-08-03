@@ -49,7 +49,7 @@ delvis andra, av konkreta skäl:
 | Linux-GUI (`bastion-gui`, SwiftCrossUI/GTK4) | 🗑️ RIVEN (2026-08-03) — ersatt av native Rust/GTK4-`LinuxApp`, se "Arkitekturbeslut" nedan. Raden bevaras som historik, inte aktuell status. |
 | Linux-terminal (VT100/ANSI-tolk, bestående PTY-shell) | ✅ 42 fristående parser-tester gröna (`LinuxApp/Tests/`), körd (Xvfb) — riktig tangentbordsinmatning (2026-08-02, `KeyEventBridge.swift`, se "Klart"), ingen interaktiv GUI-verifiering än; inget musstöd (ingen rå gest-position-API i SwiftCrossUI) |
 | Linux-Docker-hantering (`DockerView`) | ✅ lista/start/stopp/omstart/logg/shell — motsvarar `App/DockerView.swift` |
-| Portvidarebefordran (`PortForwardView`) | LinuxApp: ✅ lokal+fjärr (byggd+körd, Xvfb; interaktiv klick-genom-menyn ej gjord), 🕘 dynamisk (SOCKS5) ej byggd. App/: ✅ lokal/fjärr/dynamisk (2026-07-08, Xcode-only) |
+| Portvidarebefordran (`PortForwardView`) | ✅ lokal/fjärr/dynamisk — LinuxApp (byggd+körd, Xvfb; interaktiv klick-genom-menyn ej gjord) OCH App/ (2026-07-08, Xcode-only) |
 | ProxyJump (`ssh -J`) | ✅ `SSHSession.connect(via:)`, `bastion-cli` läser `ProxyJump` ur ssh-config automatiskt |
 | WireGuard-profiler | ✅ parsning/serialisering + lagring — LinuxApp OCH App/-UI (2026-07-08, Xcode-only) |
 | OpenSSH-certifikat | ✅ parsning + CA-signaturverifiering + `SSHUserAuth`/`HostAuth`-wiring (`.certificateFile`) — testad mot RIKTIGA `ssh-keygen -s`-certifikat, LinuxApp+App-UI klar |
@@ -1660,9 +1660,28 @@ ett gemensamt handtag). Byggd och körd under Xvfb utan krasch. Interaktiv
 klick-genom-menyn-verifiering av riktningsväljaren på en riktig värd INTE
 gjord än, bara app-start med den nya kodvägen länkad in — samma
 begränsning som redan gällde för `-L`-UI:t.
-**Kvar**: dynamisk (`-D`, SOCKS5) vidarebefordran (inte byggd alls än,
-varken bibliotek eller UI) — matchar samma mönster som redan gäller
-synk-mappval.
+**Dynamisk portvidarebefordran (`-D`, SOCKS5), backend + UI klart**
+(2026-08-03, `LinuxApp/src/socks_proxy.rs`): ny `spawn_dynamic_forward`
+startar en lokal SOCKS5-proxy (RFC 1928, bara CONNECT/0x01) — motsvarar
+`SSHSession.openDynamicPortForward`/`SOCKSProxy.swift`. Enklare än NIO-
+versionen: tokio-strömmars sekventiella `read_exact` behöver ingen egen
+pipeline-handler/buffertackumulator för fragmenterade TCP-läsningar.
+Testat genuint end-to-end: en riktig SOCKS5-klient (handrullad på byte-
+nivå, inte en biblioteksmock) förhandlar mot proxyn, väljer en oberoende
+ekoserver SOM MÅL I FARTEN (det som gör "dynamisk" dynamisk, till skillnad
+från `-L`/`-R`s fasta mål), och når den genom samma fristående test-`sshd`
+som `-L`/`-R`-testerna. GTK4-vyn ("Tunnel"-fliken) fick en tredje
+"Dynamisk (-D, SOCKS5)"-post i riktningsväljaren — Målvärd/Målport göms
+automatiskt (meningslösa fält när målet väljs per SOCKS-anslutning), kopplad
+via samma `ActiveForward`-enum (nu tre varianter: Local/Remote/Dynamic).
+Byggd och körd under Xvfb utan krasch. Interaktiv klick-genom-menyn-
+verifiering på en riktig värd INTE gjord än, samma begränsning som
+`-L`/`-R`-UI:t.
+
+**Portvidarebefordran (`-L`/`-R`/`-D`) i LinuxApp är nu funktionsmässigt
+komplett** (bibliotek+UI, 2026-08-03) — matchar SSHCores tre lägen. Kvar
+är bara interaktiv verifiering mot en riktig fjärrvärd (inte bara Xvfb-
+uppstart) för alla tre.
 
 **Klart samma dag, fjärde pass: formellt synkprotokoll, dokumenterat OCH
 implementerat** — se [SYNC_PROTOCOL.md](SYNC_PROTOCOL.md). `LinuxApp/src/

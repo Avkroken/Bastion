@@ -222,6 +222,7 @@ pub fn spawn_remote_forward(
 pub enum ActiveForward {
     Local(LocalPortForward),
     Remote(RemotePortForward),
+    Dynamic(crate::socks_proxy::DynamicPortForward),
 }
 
 impl ActiveForward {
@@ -229,6 +230,7 @@ impl ActiveForward {
         match self {
             ActiveForward::Local(f) => f.actual_bind_port,
             ActiveForward::Remote(f) => f.actual_bind_port,
+            ActiveForward::Dynamic(f) => f.actual_bind_port,
         }
     }
 
@@ -236,6 +238,7 @@ impl ActiveForward {
         match self {
             ActiveForward::Local(f) => f.stop(),
             ActiveForward::Remote(f) => f.stop(),
+            ActiveForward::Dynamic(f) => f.stop(),
         }
     }
 }

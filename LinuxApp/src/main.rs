@@ -14,6 +14,7 @@ mod port_forward;
 mod settings;
 mod sftp;
 mod snippet;
+mod socks_proxy;
 mod ssh;
 mod sync;
 mod sync_crypto;
@@ -941,11 +942,12 @@ fn open_docker_view(area: &Rc<SessionArea>, host: host::Host, password: Option<S
 /// `-L` hittills — se `port_forward.rs`, fjärr/dynamisk kvarstår).
 fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Option<String>) {
     // "Lokal" = `ssh -L` (vi lyssnar, servern kopplar mot målet). "Fjärr" =
-    // `ssh -R` (servern lyssnar åt oss, vi kopplar mot målet). Samma
-    // fältuppsättning för båda — bara vem som lyssnar skiljer, precis som
-    // `-L`/`-R`s symmetriska CLI-syntax.
+    // `ssh -R` (servern lyssnar åt oss, vi kopplar mot målet) — samma
+    // fältuppsättning som Lokal, bara vem som lyssnar skiljer. "Dynamisk" =
+    // `ssh -D` (lokal SOCKS5-proxy) — målet väljs av SOCKS-klienten per
+    // anslutning, så Målvärd/Målport är meningslösa och göms.
     let direction_row = adw::ComboRow::builder().title("Riktning").build();
-    let direction_model = gtk::StringList::new(&["Lokal (-L)", "Fjärr (-R)"]);
+    let direction_model = gtk::StringList::new(&["Lokal (-L)", "Fjärr (-R)", "Dynamisk (-D, SOCKS5)"]);
     direction_row.set_model(Some(&direction_model));
 
     let bind_port_row = adw::EntryRow::builder().title("Bindport (0 = valfri)").build();
@@ -957,6 +959,18 @@ fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Op
     group.add(&bind_port_row);
     group.add(&target_host_row);
     group.add(&target_port_row);
+
+    direction_row.connect_selected_notify(clone!(
+        #[strong]
+        target_host_row,
+        #[strong]
+        target_port_row,
+        move |row| {
+            let is_dynamic = row.selected() == 2;
+            target_host_row.set_visible(!is_dynamic);
+            target_port_row.set_visible(!is_dynamic);
+        }
+    ));
 
     let status_label = gtk::Label::builder()
         .label("Inte startad")
@@ -1023,14 +1037,21 @@ fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Op
         #[strong]
         forward_handle,
         move |_| {
-            let is_remote = direction_row.selected() == 1;
+            let direction = direction_row.selected();
+            let is_dynamic = direction == 2;
             let bind_port: u16 = bind_port_row.text().parse().unwrap_or(0);
             let target_host_value = target_host_row.text().to_string();
-            let target_port: u16 = match target_port_row.text().parse() {
-                Ok(p) => p,
-                Err(_) => {
-                    status_label.set_label("Ogiltig målport");
-                    return;
+            // Dynamisk (-D) behöver inget mål — SOCKS-klienten väljer det
+            // per anslutning — så målporten valideras bara för -L/-R.
+            let target_port: u16 = if is_dynamic {
+                0
+            } else {
+                match target_port_row.text().parse() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        status_label.set_label("Ogiltig målport");
+                        return;
+                    }
                 }
             };
             status_label.set_label("Startar…");
@@ -1049,34 +1070,45 @@ fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Op
                 #[strong]
                 forward_handle,
                 async move {
-                    // Två olika kanaltyper (`LocalPortForward`/`RemotePortForward`)
-                    // kan inte bindas till samma `let rx = if ... else ...` — de
-                    // slås ihop till `ActiveForward` HÄR, inte innan, så att
+                    // Tre olika kanaltyper (`LocalPortForward`/
+                    // `RemotePortForward`/`DynamicPortForward`) kan inte
+                    // bindas till samma `let rx = ... else ...` — de slås
+                    // ihop till `ActiveForward` HÄR, inte innan, så att
                     // resten av blocket kan hantera dem enhetligt.
-                    let result: Result<port_forward::ActiveForward, String> = if is_remote {
-                        let rx = port_forward::spawn_remote_forward(
-                            host, password, "0.0.0.0".to_string(), bind_port, target_host_value, target_port,
-                        );
-                        match rx.recv().await {
-                            Ok(r) => r.map(port_forward::ActiveForward::Remote),
-                            Err(_) => Err("kanalen stängdes oväntat".to_string()),
+                    let result: Result<port_forward::ActiveForward, String> = match direction {
+                        1 => {
+                            let rx = port_forward::spawn_remote_forward(
+                                host, password, "0.0.0.0".to_string(), bind_port, target_host_value, target_port,
+                            );
+                            match rx.recv().await {
+                                Ok(r) => r.map(port_forward::ActiveForward::Remote),
+                                Err(_) => Err("kanalen stängdes oväntat".to_string()),
+                            }
                         }
-                    } else {
-                        let rx = port_forward::spawn_local_forward(
-                            host, password, "127.0.0.1".to_string(), bind_port, target_host_value, target_port,
-                        );
-                        match rx.recv().await {
-                            Ok(r) => r.map(port_forward::ActiveForward::Local),
-                            Err(_) => Err("kanalen stängdes oväntat".to_string()),
+                        2 => {
+                            let rx = socks_proxy::spawn_dynamic_forward(host, password, "127.0.0.1".to_string(), bind_port);
+                            match rx.recv().await {
+                                Ok(r) => r.map(port_forward::ActiveForward::Dynamic),
+                                Err(_) => Err("kanalen stängdes oväntat".to_string()),
+                            }
+                        }
+                        _ => {
+                            let rx = port_forward::spawn_local_forward(
+                                host, password, "127.0.0.1".to_string(), bind_port, target_host_value, target_port,
+                            );
+                            match rx.recv().await {
+                                Ok(r) => r.map(port_forward::ActiveForward::Local),
+                                Err(_) => Err("kanalen stängdes oväntat".to_string()),
+                            }
                         }
                     };
                     match result {
                         Ok(forward) => {
                             let port = forward.actual_bind_port();
-                            let label = if is_remote {
-                                format!("Servern vidarebefordrar sin port {port} till oss")
-                            } else {
-                                format!("Vidarebefordrar lokal port {port}")
+                            let label = match direction {
+                                1 => format!("Servern vidarebefordrar sin port {port} till oss"),
+                                2 => format!("SOCKS5-proxy lyssnar på port {port}"),
+                                _ => format!("Vidarebefordrar lokal port {port}"),
                             };
                             status_label.set_label(&label);
                             stop_button.set_sensitive(true);
