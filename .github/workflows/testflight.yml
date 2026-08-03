@@ -28,7 +28,6 @@ name: TestFlight-uppladdning
 #   MATCH_PASSWORD                  Lösenfras som krypterar bastion-certificates
 #   MATCH_DEPLOY_KEY                Privat SSH-nyckel, skrivbehörig deploy key
 #                                   på blixten85/bastion-certificates
-#   SENTRY_AUTH_TOKEN               Auth token för Sentry debug files upload
 on:
   workflow_dispatch:
     inputs:
@@ -58,7 +57,7 @@ jobs:
   testflight:
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -74,7 +73,7 @@ jobs:
       - name: Generera Xcode-projekt
         run: cd App && xcodegen generate
 
-      - uses: ruby/setup-ruby@003a5c4d8d6321bd302e38f6f0ec593f77f06600 # v1.319.0
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
           ruby-version: "4.0.6"
           bundler-cache: true
@@ -100,7 +99,6 @@ jobs:
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           APP_STORE_CONNECT_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_KEY_CONTENT }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           GIT_SSH_COMMAND: "ssh -i ~/.ssh/match_deploy_key -o IdentitiesOnly=yes"
         # `fastlane ios beta`/`fastlane tvos beta` — INTE bara `fastlane beta`
         # (som alltid kör default_platform, :ios) — annars hade tvOS-valet i

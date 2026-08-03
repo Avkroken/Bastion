@@ -15,6 +15,22 @@ let package = Package(
         .package(url: "https://github.com/moreSwift/swift-cross-ui.git", from: "0.8.0"),
     ],
     targets: [
+        // swift-cross-uis eget "CGtk" (systemLibrary, pkgConfig "gtk4") är
+        // INTE exponerat som en produkt utåt — bara "Gtk"/"GtkBackend" är
+        // det. GtkGestureSwipe (svep-gesten) saknar en Swift-wrapper i deras
+        // Sources/Gtk/Generated (bara Click/LongPress är kodgenererade), så
+        // svep måste kopplas via rå GLib-signaler. Denna lokala kopia pekar
+        // på SAMMA systeminstallerade gtk4-headers (samma pkg-config-modul)
+        // — en helt egen Swift-importerad modul, men identisk C-ABI, så
+        // OpaquePointer-värden går fritt mellan den och swift-cross-uis Gtk-
+        // paket (se GestureSwipeBridge.swift för varför det är säkert).
+        .systemLibrary(
+            name: "CGtk4Raw",
+            pkgConfig: "gtk4",
+            providers: [
+                .apt(["libgtk-4-dev"]),
+            ]
+        ),
         .executableTarget(
             name: "bastion-gui",
             dependencies: [
@@ -26,6 +42,8 @@ let package = Package(
                 // saknas på Linux. GtkBackend beror bara på SwiftCrossUI +
                 // Gtk + CGtk, inga sådana problem.
                 .product(name: "GtkBackend", package: "swift-cross-ui"),
+                .product(name: "Gtk", package: "swift-cross-ui"),
+                "CGtk4Raw",
             ]
         ),
         // Ett `.testTarget` kan `@testable import` ett `.executableTarget`

@@ -16,9 +16,6 @@ packages:
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
     from: "1.14.0"
-  Sentry:
-    url: https://github.com/getsentry/sentry-cocoa
-    from: "9.0.0"
   # Kärnan (SSHCore) ligger i repo-roten en nivå upp.
   Bastion:
     path: ..
@@ -36,12 +33,15 @@ targets:
           # Egen tv-target (Bastion-tvOS, sources: TVApp/) — utan denna
           # exkludering plockade `path: .` upp App/TVApp/*.swift i BÅDE
           # iOS- och macOS-targeten också (rekursiv sources-sökväg), vilket
-          # gav en andra @main-App-struct (TVBastionApp) i samma modul och
-          # bröt paketupplösningen av Sentry helt ("Unable to resolve
-          # module dependency: 'Sentry'", PR #191 — verifierat genom att
-          # isolera orsaken lokalt: felet kvarstod även med Bastion-tvOS-
-          # targeten helt borttagen, men försvann inte förrän TVApp/
-          # exkluderades från de andra targetens sources).
+          # gav en andra @main-App-struct (TVBastionApp) i samma modul.
+          # Exkluderingen behövs alltså oavsett vilka paket projektet drar
+          # in. Historik: symptomet visade sig ursprungligen som en trasig
+          # paketupplösning ("Unable to resolve module dependency:
+          # 'Sentry'", PR #191) — verifierat genom att isolera orsaken
+          # lokalt: felet kvarstod även med Bastion-tvOS-targeten helt
+          # borttagen, men försvann inte förrän TVApp/ exkluderades från de
+          # andra targetens sources. Sentry är sedermera borttaget; den
+          # dubbla @main-strukten var alltid den faktiska orsaken.
           - "TVApp/*"
           # macOS-målets Info.plist saknades här (macOS-målet exkluderar
           # omvänt redan iOS "Info.plist" nedan) — utan den här bäddades
@@ -150,8 +150,6 @@ targets:
       - package: SwiftTerm
       - package: Bastion
         product: SSHCore
-      - package: Sentry
-        product: Sentry
 
   Bastion-macOS:
     type: application
@@ -205,8 +203,6 @@ targets:
       - package: SwiftTerm
       - package: Bastion
         product: SSHCore
-      - package: Sentry
-        product: Sentry
 
   Bastion-tvOS:
     # Egen, minimal tv-app — INTE samma target som iOS/macOS. Siri Remote

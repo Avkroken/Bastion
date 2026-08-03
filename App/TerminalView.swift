@@ -5,7 +5,6 @@ import SSHCore
 import Foundation
 #if os(iOS)
 import UIKit
-import Sentry
 #else
 import AppKit
 #endif
@@ -64,18 +63,24 @@ final class SSHTerminalController {
                 let shell = try await chain.target.openShell(cols: cols, rows: rows)
                 guard !isStopped else { shell.close(); return }
                 self.shell = shell
+                // Håller anslutningen vaken genom NAT/brandväggars idle-timeout
+                // (se SSHShell.startKeepAlive) — stoppas automatiskt av
+                // shell.close() i stop().
+                shell.startKeepAlive()
                 if let cmd = initialCommand { shell.send(cmd + "\n") }
-                #if os(iOS)
-                // Bara händelsekategorin, aldrig host/user/kommando-innehåll
-                // - samma integritetsprincip som session replay redan följer
-                // (se init() i BastionApp.swift).
-                SentrySDK.logger.info("ssh.session.started")
-                #endif
                 for try await chunk in shell.output {
                     guard !isStopped else { break }
                     let bytes = chunk.bytes
                     self.onData?(bytes[...])
                 }
+                // Strömmen tar slut normalt när fjärrshellen stänger (t.ex.
+                // `exit`) — måste städas här precis som i catch-grenen
+                // nedan, annars förblir keepAlive-Task:en och den underliggande
+                // anslutningen aktiva utan att någon någonsin river ner dem
+                // (CodeRabbit-fynd: den här grenen saknade helt städning,
+                // till skillnad från LinuxApp/WindowsApp-motsvarigheterna).
+                self.shell?.close()
+                await self.chain?.close()
             } catch {
                 // Om felet kom EFTER att chain redan var uppsatt (openShell()
                 // eller output-strömmen misslyckades, inte själva anslutningen)
@@ -83,11 +88,13 @@ final class SSHTerminalController {
                 // bara sina EGNA fel internt, inte fel som inträffar efter att
                 // den redan returnerat. Ofarligt no-op om chain fortfarande är
                 // nil (connect() self själv redan städat i den vägen).
+                // self.shell?.close() FÖRE chain?.close() — stoppar keepAlive-
+                // Task:en innan chain.close() river ner event loop-gruppen
+                // under den (CodeRabbit-fynd), samma race-klass som redan
+                // dokumenteras i SSHSession.swift.
+                self.shell?.close()
                 await self.chain?.close()
                 guard !isStopped else { return }
-                #if os(iOS)
-                SentrySDK.logger.warn("ssh.session.failed", attributes: ["category": String(describing: type(of: error))])
-                #endif
                 let msg = Array("\r\n[bastion] fel: \(error)\r\n".utf8)
                 self.onData?(msg[...])
             }

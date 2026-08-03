@@ -46,7 +46,7 @@ delvis andra, av konkreta skäl:
 | Auto-poll av dashboard | 🧩 `DashboardModel.startPolling()`, 15 s intervall, behåller data vid övergående fel |
 | App-ikon + launch screen | ✅ `App/Assets.xcassets` |
 | Linux-GUI (`bastion-gui`, SwiftCrossUI/GTK4) | ✅ byggd och körd (Xvfb) + egen CI-lane (`linux-gui.yml`, required check) |
-| Linux-terminal (VT100/ANSI-tolk, bestående PTY-shell) | ✅ 42 fristående parser-tester gröna (`LinuxApp/Tests/`), körd (Xvfb) — radvis input, inget musstöd (ingen rå key-/gest-position-API i SwiftCrossUI) |
+| Linux-terminal (VT100/ANSI-tolk, bestående PTY-shell) | ✅ 42 fristående parser-tester gröna (`LinuxApp/Tests/`), körd (Xvfb) — riktig tangentbordsinmatning (2026-08-02, `KeyEventBridge.swift`, se "Klart"), ingen interaktiv GUI-verifiering än; inget musstöd (ingen rå gest-position-API i SwiftCrossUI) |
 | Linux-Docker-hantering (`DockerView`) | ✅ lista/start/stopp/omstart/logg/shell — motsvarar `App/DockerView.swift` |
 | Portvidarebefordran (`PortForwardView`) | ✅ lokal/fjärr/dynamisk, starta/stoppa — LinuxApp (byggd+körd, Xvfb) OCH App/ (2026-07-08, Xcode-only) |
 | ProxyJump (`ssh -J`) | ✅ `SSHSession.connect(via:)`, `bastion-cli` läser `ProxyJump` ur ssh-config automatiskt |
@@ -220,11 +220,30 @@ delvis andra, av konkreta skäl:
    Clang än Swift 6.1 (Clang 19.1.4) bundlar. Löst genom att uppgradera
    till Swift 6.3.3-RELEASE (bundlar Clang 21.1.6) — inte en riktig
    Bastion-relaterad bugg, bara toolchain-miljödrift på testmaskinen.
-   **Nästa steg nu när bygget faktiskt går grönt**: porta de riktiga
-   vyerna från `LinuxApp/Sources/bastion-gui/` hit och testa på riktigt
-   (VPS eller motsvarande) — inte påbörjat än.
-4. Riktig rå tangentbordsinmatning i Linux-terminalen (kräver att gå under
-   SwiftCrossUI mot GTK:s event-controllers direkt — se "Uppskjutet med avsikt").
+   **Riktiga vyerna porterade** (2026-07-30, PR #217): hela UI-lagret
+   (host-lista/`ContentView`, dashboard, Docker, SFTP, S3, WireGuard,
+   Tailscale, portvidarebefordran, snippets, command library,
+   terminalflikar m.fl. — 28 filer) kopierat rakt av från
+   `LinuxApp/Sources/bastion-gui/` — ren SwiftCrossUI-kod skriven mot
+   standard `View`/`Scene`-API:t, ingen GTK-koppling i själva vyerna.
+   Verifierat FÖRST genom att läsa `WinUIBackend`-källan (klonad lokalt
+   från `moreSwift/swift-cross-ui`): alla widgets vyerna använder (List,
+   TextEditor, Picker, ScrollView, ProgressView, Toggle, SecureField,
+   NavigationSplitView) har en implementation där. `windowsapp-build`
+   grönt på riktigt med hela vyträdet inkopplat (inte bara placeholder-
+   vyn längre), PR #217 mergad.
+   Två filer portades medvetet INTE: `BastionGUIApp.swift` (Windows
+   behåller sitt eget `@main`, nu kopplat till den riktiga `ContentView()`)
+   och `GestureSwipeBridge.swift` (rå GLib/GTK4-signalkoppling för
+   touchscreen-svep mellan terminalflikar — ingen WinUIBackend-
+   motsvarighet finns, ingen egen pekar-/manipulationshändelse-API
+   exponerad i `.inspect()` ännu; dokumenterat i `TerminalTabsView.swift`,
+   flikbyte via knapptryck fungerar oförändrat).
+   **Kvar**: testa på riktigt mot en riktig Windows-maskin (VPS eller
+   motsvarande) — bara CI-verifierat (kompilerar) hittills, ingen har
+   faktiskt klickat runt i appen på riktig Windows-hårdvara än.
+4. ~~Riktig rå tangentbordsinmatning i Linux-terminalen~~ — ✅ klart
+   (2026-08-02), se "Klart" → "Linux-terminal".
 
 ## Klart
 
@@ -360,11 +379,143 @@ delvis andra, av konkreta skäl:
   parsern, inklusive en verklig bugg som hittades under verifieringen: Swift
   grupperar `"\r\n"` till EN grafemkluster-`Character`, så tolkning måste ske
   per `Unicode.Scalar`, inte per `Character` — annars matchar CR/LF aldrig.
-  SwiftCrossUI saknar rå tangentbords-API, så inmatning är radvis via
-  `TextField` + Enter; piltangenter/Home/End/PgUp/PgDn/Tab/Esc/Ctrl+C/Ctrl+D
-  finns som knappar och skickas som rå bytes direkt (navigering i t.ex.
-  `htop`/`less` fungerar, löpande texttangenttryckning gör det inte). Fast
-  100×30 storlek — ingen fönsterstorleks-driven `resize()` mot PTY:n än.
+  **Riktig tangentbordsinmatning** (2026-08-02, `KeyEventBridge.swift`): ✅
+  klart — löser punkten som tidigare stod under "Uppskjutet med avsikt".
+  Antagandet där (kräver att gå under SwiftCrossUI direkt mot GTK:s
+  event-controllers) stämde bara delvis: swift-cross-uis EGET `Gtk`-paket
+  har redan en publik, kodgenererad `GtkEventControllerKey`-wrapper (samma
+  mönster deras egen `Window.setEscapeKeyPressedHandler` redan använder) —
+  men den wrapperns C-trampolin returnerar `Void` trots att `key-pressed`
+  faktiskt är en `gboolean`-returnerande signal (`TRUE` stoppar vidare
+  spridning, `_gtk_boolean_handled_accumulator` i GTK:s egen källkod) — en
+  ABI-diskrepans som hittades under kodgranskning (CodeRabbit) och löstes
+  genom att koppla signalen direkt via `g_signal_connect_data` med en EGEN,
+  korrekt `gboolean`-returnerande trampolin, samma rå-signal-mönster som
+  `GestureSwipeBridge.swift` redan använder för `GtkGestureSwipe` (som
+  saknar en wrapper helt). Fokushantering (`gtk_widget_set_can_focus`/
+  `set_focusable`/`grab_focus`) saknar publika Swift-wrappers, löst via
+  samma `CGtk4Raw`-brygga.
+  **Avsiktligt avgränsat**: text + navigeringstangenter (piltangenter/Tab/
+  Esc/Backspace/Delete/Enter, `gdk_keyval_to_unicode` för allt skrivbart)
+  — INTE Ctrl-kombinationer, som filtreras bort explicit (en `GdkModifier
+  Type`-bitmask, CodeRabbit-fynd: annars hade fysisk Ctrl+C skickat en
+  bokstavlig "c" till PTY:n) och även fortsatt täcks av de befintliga
+  kontrollknapparna (Ctrl+C/Ctrl+D m.fl.).
+  Kontrollknapparna (piltangenter/Home/End/PgUp/PgDn/Tab/Esc/Ctrl+C/Ctrl+D)
+  och textfältet finns kvar som alternativ inmatningsväg. Fast 100×30
+  storlek — ingen fönsterstorleks-driven `resize()` mot PTY:n än.
+  **Ej verifierat interaktivt** (ingen riktig GUI-session eller
+  testinfrastruktur för simulerade tangenttryck i det här repot) — bara
+  `linuxapp-build` (kompilering + `TerminalBuffer`-parsertesterna) grönt.
+- **SSHCore verifierat mot en riktig Linux-runner** (2026-08-02,
+  `swiftpm-linux.yml`): ✅ klart. Påståendet "kärnan bygger på Linux och
+  Apple" (CLAUDE.md/README) verifierades tidigare bara på en macOS-runner
+  (`swiftpm-macos`) — ingen faktisk `swift build`/`swift test` av
+  rot-paketet kördes någonsin på Linux i CI. Kör i den officiella
+  `swift:6.1-noble`-Docker-avbildningen (rot-paketet beror inte på
+  SwiftCrossUI, drabbas alltså inte av swift-mutex-kompilatorbuggen som
+  tvingar `LinuxApp/` till en dev-snapshot). Hittade och fixade en riktig
+  miljöbugg direkt: `ArchiveOperationsTests` (zip-rundresa) misslyckades
+  med "remoteExit(status: 127)" — den minimala Docker-avbildningen saknade
+  `zip`/`unzip`.
+  **Kvarstående, dokumenterad flakighet** (upptäckt 2026-08-02, PR #223):
+  `TerminalTeardownRaceTests.testConcurrentOpenShellAndCloseNeverCrashes`
+  kraschade en gång på `swiftpm-linux` ("Cannot schedule tasks on an
+  EventLoop that has already shut down" → "leaking promise"-fatal error i
+  `EventLoopFuture.deinit`) — samma race-klass filen redan dokumenterar
+  utförligt för macOS, men uppenbarligen med ett annat timingfönster på
+  Linux (epoll) än macOS (kqueue), där samma test konsekvent gått grönt.
+  En omkörning av EXAKT samma commit gick grönt utan ändringar — bekräftat
+  intermittent, inte deterministiskt reproducerbart här och nu. Inte
+  utrett vidare denna omgång (kräver djupare undersökning av den
+  Linux-specifika event loop-avstängningsordningen, se `SSHSession.swift`s
+  omfattande kommentarer om samma raceklass) — flaggat för framtida arbete
+  snarare än en blind gissning.
+- **`.deb`-paketering av `bastion-cli`** (2026-08-03, `linux-packaging.yml`):
+  ✅ klart. Bygger release-varianten med `--static-swift-stdlib` (länkar
+  Swift-runtimen — stdlib/Foundation/Dispatch — statiskt), paketerar
+  `usr/bin/bastion-cli` som ett riktigt `amd64`-`.deb` via `dpkg-deb --build`,
+  och installerar + kör det FAKTISKT byggda paketet (`dpkg -i` + ett
+  smoke-test som förväntar exitkod 2 och "Användning:"-meddelandet från
+  `main.swift`) — inte bara "det kompilerar".
+  `--static-swift-stdlib` ger INTE en fullständigt statisk binär (bekräftat
+  både via research och verkligt `readelf`-utfall i CI): glibc och,
+  eftersom `SSHCores S3Client.swift` drar in `FoundationNetworking`/
+  `FoundationXML` på Linux, även `libcurl`/`libxml2` förblir dynamiska
+  beroenden. `Depends`-raden i kontrollfilen härleds därför FAKTISKT ur
+  binärens egen `DT_NEEDED`-lista (`readelf -d`) — varje bibliotek slås upp
+  mot sitt Debian-paket via `dpkg -S` — i stället för att gissas/hårdkodas.
+  Två genuina buggar hittades och fixades under utvecklingen: containerns
+  standardskal (`sh`/dash) saknar `set -o pipefail` (löst med `shell: bash`),
+  och `ldconfig -p` svarar med den osolvade `/lib/...`-symlänken medan
+  Ubuntus sammanslagna `/usr` gör att `dpkg -S` bara känner igen den
+  kanoniska `/usr/lib/...`-vägen (löst med `readlink -f`). Version hämtas
+  från senaste `v[0-9]*`-taggen (annars `0.0.0`); versionssträngen skickas
+  via `env:` (inte direkt `${{ }}`-interpolering) för att inte vara sårbar
+  för skalinjektion via en illvillig taggnamn.
+  **Kvar**: bara `bastion-cli` — `bastion-gui` (GTK4-beroenden utöver
+  Swift-runtimen) är ett separat, större paketeringssteg.
+- **`.rpm`-paketering av `bastion-cli`** (2026-08-03,
+  `linux-packaging-rpm.yml`): ✅ klart — RHEL/Fedora-halvan av samma
+  backloggpunkt. Samma härledda-beroende-strategi som `.deb`-jobbet
+  (binärens egna `DT_NEEDED`-lista via `readelf -d`, uppslaget mot
+  RPM-paket via `rpm -qf` i stället för `dpkg -S`, `Requires`-raden byggd
+  av DEN listan) — bara paketeringsverktyget bytt, ingen ny gissning.
+  Bygger i den officiella `swift:6.1-rhel-ubi9`-containern (giltig
+  image-tagg bekräftad direkt i CI, ingen omväg behövdes till skillnad
+  från `.deb`-jobbets `sh`/dash- och symlänk-fällor). Spec-filen skrivs
+  inline i workflowet (`%install` kopierar bara den redan byggda binären,
+  inget `%build`-steg) med `%global debug_package %{nil}` för att slippa
+  att `find-debuginfo.sh` letar efter debug-sektioner i en Swift-länkad
+  binär. Installeras + körs på riktigt (`rpm -i` + samma smoke-test som
+  `.deb`-jobbet) — inte bara "det kompilerar". Grönt på första försöket,
+  inga CodeRabbit-fynd.
+- **`.deb`-paketering av `bastion-gui`** (2026-08-03,
+  `linux-packaging-gui.yml`): ✅ klart — GUI-halvan av backloggpunkten.
+  Byggs INTE i `swift:6.1-noble`-containern som CLI-paketen — bastion-gui
+  drar in SwiftCrossUI, vars kärnmodul kraschar stabila Swift 6.1.3
+  (swift-mutex-buggen), så samma Swift dev-snapshot-hämtning som
+  `linux-gui.yml` redan använder återanvänds rakt av. Samma härledda-
+  beroende-teknik som `.deb`-jobbet för `bastion-cli` (`readelf -d` →
+  `dpkg -S`) — bara en mycket LÄNGRE lista (hela GTK4/GLib/Pango/Cairo/
+  GdkPixbuf-familjen i stället för bara libcurl/libxml2), eftersom
+  tekniken är generisk och inte bryr sig om hur många delade bibliotek
+  binären råkar länka mot.
+  **CodeRabbit-fynd (Major)**: det första smoke-test-utkastet körde
+  `dpkg -i` + start direkt på byggvärden — men samma värd hade precis
+  installerat `libgtk-4-dev` som byggberoende, vilket redan lägger GTK4-
+  runtimebiblioteken på disk. Ett ofullständigt/felaktigt `Depends` hade
+  alltså kunnat passera testet ändå (fel sak bevisad). Löst genom att
+  flytta install+körning till en HELT FRISK `ubuntu:24.04`-container
+  (`docker run`) och byta `dpkg -i` mot `apt-get install ./paket.deb`,
+  som faktiskt löser `Depends`-raden via apt i en miljö som aldrig haft
+  `-dev`-paketen installerade — Xvfb-smoke-testet (starta binären, vänta
+  5s, kontrollera att processen fortfarande lever) körs sedan INUTI den
+  containern.
+  **Uppföljande CI-fynd (upptäckt EFTER merge, ny PR samma dag)**: den
+  ursprungliga `--static-swift-stdlib`-strategin (samma som `bastion-cli`)
+  visade sig krascha på RIKTIGT i CI — `undefined reference to
+  'swift_uloc_toLegacyKey'` m.fl. ICU-symboler när SwiftCrossUIs
+  makro-/kompilatorplugin (`SwiftCrossUIMacrosPlugin`, körs på
+  byggvärden, inte i den slutgiltiga binären) länkas mot dev-snapshotens
+  `swift_static/`-bibliotek. Bekräftat (websökning) vara en känd
+  buggkategori specifik för tarball-installerade Swift dev-snapshots —
+  Docker-baserade toolchains (som `bastion-clis swift:6.1-noble`) har
+  aldrig haft problemet. Löst genom att gå tillbaka till DYNAMISK länkning
+  av Swift-runtimen och i stället BUNTA IHOP toolchainens egna `.so`-filer
+  i paketet (`usr/lib/bastion-gui/`) med en RPATH satt via `patchelf`.
+  **Ytterligare CodeRabbit-fynd (Major) på den lösningen**: en enkel
+  genomsökning av bara bastion-guis EGNA direkta `DT_NEEDED`-lista räcker
+  inte — de buntade Swift-biblioteken har SJÄLVA transitiva beroenden
+  (t.ex. FoundationInternationalization → ICU) som aldrig syns där, och
+  `DT_RUNPATH` är dessutom INTE transitivt till barn-bibliotek (ld.so(8):
+  gäller bara objektets egna direkta beroenden). Löst med en riktig
+  arbetskö (BFS) som även genomsöker varje buntat biblioteks egna
+  `DT_NEEDED`, och `patchelf` på VARJE buntat bibliotek (inte bara
+  huvudbinären) — alla ligger i samma katalog så `$ORIGIN` räcker för dem
+  alla. Smoke-testet kompletterades med en precis `ldd`-baserad kontroll
+  (pekar ut exakt vilket bibliotek som saknas) INNAN Xvfb ens startas.
+  **Kvar**: `.rpm` för `bastion-gui` inte påbörjat. Bara `amd64`.
 - **Linux-Docker-hantering**: `DockerView` (i `HostDetailView` via en knapp/sheet)
   lista/start/stopp/omstart/logg/shell — samma `DockerService` som iOS-appen.
   Shell öppnar en `TerminalSessionView` med `docker exec` som initialt kommando
@@ -400,14 +551,6 @@ delvis andra, av konkreta skäl:
   av Blowfish + bcrypt_pbkdf + AES-CTR — säkerhetskritisk kod som förtjänar en
   egen genomgång med testvektorer, inte en snabb iteration. Parsern kastar
   `SSHKeyError.encrypted` tydligt tills dess.
-- **Rå tangentbordsinmatning i Linux-terminalen.** SwiftCrossUI har ingen
-  key-event-API alls. En riktigt interaktiv terminal (piltangenter/Ctrl+C
-  live, som SwiftTerm) skulle kräva en egen Cairo-ritad GTK-widget med GTK:s
-  event-controllers direkt, utanför SwiftCrossUIs `View`-träd — större jobb,
-  och kräver en osäker generisk-till-konkret cast (`GtkBackend.Widget` är
-  faktiskt `Gtk.Widget`, så det är tekniskt möjligt men inte en ren, stödd
-  API-väg). Radvis input + kontrollknappar täcker det mesta (se "Klart" ovan)
-  tills vidare.
 - **Ssh-agent-forwarding till fjärrserver** (`auth-agent@openssh.com`-
   kanaltypen, klassisk `ssh -A`) — **arkitektoriskt blockerad i
   swift-nio-ssh, inte något i Bastions egen kod** (verifierat 2026-07-07
@@ -793,14 +936,32 @@ Inget nytt att bygga, bara verifiera/lansera:
   (delas av alla plattformar), inte tre separata funktioner. Verifierat
   (2026-07-22) att inget av detta finns i koden idag — varken keep-alive,
   nätverksbytesdetektering eller reconnect-logik.
-  - **Keep-alive** — swift-nio-ssh 0.14.1 (den version SSHCore bygger på)
-    exponerar INTE godtyckliga globala SSH-förfrågningar publikt (cubic-
-    fynd på PR #199) — den enkla "skicka en global request periodiskt"-
-    planen går alltså inte att implementera som skriven idag. Kräver
-    antingen ett uppströmsbidrag/API-utökning i swift-nio-ssh, eller en
-    annan mekanism (t.ex. en no-op-kanalförfrågan om biblioteket
-    exponerar någon sådan) — måste utredas mot faktisk bibliotekskod
-    innan intervallet (25-60s, konfigurerbart) är mer än en idé.
+  - **Keep-alive**: ✅ klart (2026-08-02, `SSHShell.startKeepAlive()`/
+    `stopKeepAlive()`). Bekräftat på nytt mot både 0.14.0 OCH den senare
+    0.15.0-taggen (klonad käll­kod): fortfarande ingen publik generisk
+    global request (bara `sendTCPForwardingRequest`), och inget publikt
+    sätt att skicka en godtycklig KANALförfrågan heller (`SSHMessage.
+    ChannelRequestMessage.RequestType.unknown` är internal, inte
+    exponerad). Löst med den no-op-mekanism roadmapen redan pekade ut:
+    en periodisk fönsterändring till SAMMA storlek som senast känd —
+    ren no-op på Linux (kärnans `TIOCSWINSZ` skickar bara SIGWINCH vid
+    en FAKTISK ändring, `tty_ioctl.c`), håller ändå NAT/brandväggars
+    idle-timeout varm eftersom trafik faktiskt går över tråden.
+    Delat tillstånd (senaste storlek, aktiva Task:en) i en
+    `NIOLockedValueBox`, samma mönster som `PortForward.swift`/
+    `SOCKSProxy.swift`. Kopplad in i alla tre GUI:erna (App/LinuxApp/
+    WindowsApp) direkt efter att en shell öppnas, stoppas automatiskt av
+    `shell.close()` — en CodeRabbit-granskning hittade att den INTE
+    stoppades i normal-avslutnings-/catch-grenarna (keepAlive-Task:en
+    kunde då hinna köra `triggerUserOutboundEvent` medan
+    `chain.close()` rev ner event loop-gruppen under den, samma
+    race-klass som redan dokumenteras i `SSHSession.swift`) — fixat i
+    samma PR. 3 nya tester mot en riktig `LoopbackServer` (periodiska
+    sändningar sker, `stopKeepAlive` stoppar dem faktiskt, `resize()`
+    uppdaterar storleken keep-alive återanvänder).
+    **Täcker bara "håll NAT-mappningen varm"** — dead-connection-
+    detektering och återanslutning (nedan) är fortfarande inte
+    påbörjade.
   - **WiFi ↔ mobildata-byte** — TCP-anslutningen dör vid nätverksbyte
     (annat interface = ny anslutning krävs). Kräver `NWPathMonitor`
     (Apple) eller motsvarande för att upptäcka bytet.
@@ -873,13 +1034,21 @@ Inget nytt att bygga, bara verifiera/lansera:
   egen `TelnetSession`, inte en utökning av `SSHSession`. En egen
   protokollimplementation från grunden.
 - **Paketering + BSD-täckning** (nytt, 2026-07-07, se VISION.md
-  "Plattforms- och paketeringsmål, fullständigt") — inte påbörjat:
-  `.deb`-paket (Debian/Ubuntu), `.rpm`-paket (RHEL/Fedora), FreeBSD-bygge
-  (Swift har community-toolchains där), OpenBSD/NetBSD-undersökning
-  (oklart om Swift ens fungerar där än — måste verifieras mot en riktig
-  installation innan något annat antas). ARM64/Raspberry Pi täcks
-  naturligt av samma Linux-bygge + `.deb`-paketering, förutsatt att
-  toolchainen stödjer target-arkitekturen (gör den, för Linux ARM64).
+  "Plattforms- och paketeringsmål, fullständigt"):
+  `.deb`-paket för `bastion-cli` (Debian/Ubuntu) — ✅ klart (2026-08-03,
+  se "Klart" → "`.deb`-paketering av `bastion-cli`"). `.rpm`-paket för
+  `bastion-cli` (RHEL/Fedora) — ✅ klart (2026-08-03, se "Klart" →
+  "`.rpm`-paketering av `bastion-cli`"). `.deb`-paket för `bastion-gui`
+  — ✅ klart (2026-08-03, se "Klart" → "`.deb`-paketering av
+  `bastion-gui`"). Kvar: `.rpm` för `bastion-gui`, FreeBSD-bygge (Swift
+  har community-toolchains där), OpenBSD/NetBSD-undersökning (oklart om
+  Swift ens fungerar där än — måste verifieras mot en riktig installation
+  innan något annat antas). Alla tre paketeringsworkflows bygger idag
+  bara `amd64` (CodeRabbit-fynd på `.deb`-jobbet för `bastion-cli`:
+  föregående skrivning antydde felaktigt att ARM64/Raspberry Pi redan
+  täcktes) — ARM64 kräver en egen körning på en ARM64-runner/toolchain
+  och ett faktiskt testat artefakt innan det kan räknas som klart, inte
+  bara att toolchainen i teorin stödjer arkitekturen.
 - **Native filhanterare-integration + molnlagring som filkälla** (nytt,
   2026-07-07, se VISION.md "Native filhanterare-integration + molnlagring
   som filkälla") — inte påbörjat. Apple: `FileProvider`-ramverket

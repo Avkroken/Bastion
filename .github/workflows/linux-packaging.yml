@@ -1,0 +1,202 @@
+name: Linux-paketering (.deb)
+
+# Paketerar bastion-cli som ett fristående .deb-paket — README:s första rad
+# lovar en "fristående" app, så bastion-cli byggs med --static-swift-stdlib
+# (Swifts egen lösning för att slippa kräva att slutanvändarens maskin har
+# Swift installerat: hela Swift-runtimen länkas statiskt in i binären i
+# stället för att bero på .so-filer som bara finns i byggavbildningen).
+#
+# Bara bastion-cli hittills — bastion-gui (LinuxApp/, GTK4-beroenden utöver
+# Swift-runtimen) är ett separat, större paketeringssteg, se ROADMAP.md.
+#
+# Statisk länkning verifieras på RIKTIGT (`readelf -d` mot binärens egen
+# DT_NEEDED-lista, inte gissat) och paketet installeras + körs faktiskt
+# efter `dpkg-deb --build` — inte bara "det kompilerar".
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: linux-packaging-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-24.04
+    container: swift:6.1-noble
+    timeout-minutes: 20
+    defaults:
+      run:
+        # Containerns standardskal är sh (dash), som saknar `set -o pipefail`
+        # (CI-fynd) — behövs av flera steg nedan.
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Läs version (senaste v*-tagg från auto-release.yml, annars 0.0.0)
+        id: version
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          TAG=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
+          VERSION="${TAG#v}"
+          if [ -z "$VERSION" ]; then VERSION="0.0.0"; fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Visa Swift-version
+        run: swift --version
+
+      - name: swift build (release, statisk Swift-runtime)
+        run: swift build -c release --product bastion-cli --static-swift-stdlib
+
+      - name: Installera binutils (readelf, om det saknas i basavbildningen)
+        run: |
+          command -v readelf >/dev/null 2>&1 && exit 0
+          apt-get update -qq
+          apt-get install -y -qq binutils
+
+      # Kollas FÖRE paketering, inte efter — en binär som av misstag länkats
+      # dynamiskt mot Swift-runtimen skulle ändå köra fint HÄR (avbildningen
+      # har ju runtimen), men misslyckas tyst på en slutanvändares maskin
+      # utan Swift installerat. `readelf -d` läser binärens egen DT_NEEDED-
+      # lista (dess faktiska dynamiska beroenden), inte vad som råkar finnas
+      # på disk i den här containern.
+      #
+      # `--static-swift-stdlib` länkar BARA Swift-runtimen (stdlib/Foundation/
+      # Dispatch) statiskt — glibc och, via SSHCores S3Client.swift som drar
+      # in FoundationNetworking/FoundationXML på Linux, sannolikt libcurl/
+      # libxml2 förblir dynamiska beroenden (CodeRabbit-fynd: web-research
+      # bekräftar detta för Swift 6.1 på Linux). Att bara leta efter "libswift"
+      # och sedan hårdkoda `Depends: libc6` hade tyst missat de beroendena —
+      # paketet hade sett ut att installeras fint HÄR (bibliotekens redan på
+      # disk i den här avbildningen) men kunnat krascha vid körning på en
+      # maskin utan libcurl/libxml2. I stället: lista ALLA direkta delade
+      # bibliotek, slå upp vilket Debian-paket vart och ett kommer från
+      # (`dpkg -S`) och bygg `Depends` av DEN listan, inte en gissning.
+      - name: Bestäm faktiska körtidsberoenden (DT_NEEDED → Debian-paket)
+        id: deps
+        run: |
+          set -euo pipefail
+          BIN=.build/release/bastion-cli
+          NEEDED=$(readelf -d "$BIN" | sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p')
+          echo "Direkta delade bibliotek (DT_NEEDED):"
+          echo "$NEEDED"
+
+          if echo "$NEEDED" | grep -qi libswift; then
+            echo "::error::bastion-cli beror fortfarande dynamiskt på Swift-runtimen — --static-swift-stdlib gav inte en fristående binär"
+            exit 1
+          fi
+
+          PACKAGES=""
+          for LIB in $NEEDED; do
+            case "$LIB" in
+              # Grundläggande glibc-familjen (samma logiska beroende, täcks
+              # av `libc6` nedan) — utesluts bara från den HÄRLEDDA listan,
+              # inte från kontrollen ovan.
+              libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libutil.so*|ld-linux*|linux-vdso*)
+                continue
+                ;;
+            esac
+            LIBPATH=$(ldconfig -p | awk -v lib="$LIB" '$1 == lib { print $NF; exit }')
+            if [ -z "$LIBPATH" ]; then
+              echo "::error::hittar inte $LIB via ldconfig — kan inte slå upp vilket Debian-paket det tillhör"
+              exit 1
+            fi
+            # ldconfig -p svarar med /lib/x86_64-linux-gnu/... men Ubuntus
+            # sammanslagna /usr (/lib är en symlänk till usr/lib) gör att
+            # dpkgs egen fildatabas bara känner igen KANONISKA /usr/lib/...
+            # (CI-fynd: `dpkg -S` gav "no path found matching pattern" på den
+            # olösta symlänk-vägen även fast filen definitivt fanns).
+            LIBPATH=$(readlink -f "$LIBPATH")
+            # `dpkg -S` skriver "pkg1, pkg2: /sökväg" när flera paket äger
+            # SAMMA sökväg (t.ex. delade filnamn mellan arkitekturvarianter) —
+            # ta bara det FÖRSTA paketnamnet, annars bryts ordet isär av det
+            # inbäddade kommatecknet när PACKAGES senare ord-delas
+            # (CodeRabbit-fynd).
+            PKG=$(dpkg -S "$LIBPATH" | head -1 | cut -d: -f1 | cut -d, -f1 | xargs)
+            if [ -z "$PKG" ]; then
+              echo "::error::$LIBPATH (från $LIB) tillhör inget känt Debian-paket"
+              exit 1
+            fi
+            PACKAGES="$PACKAGES $PKG"
+          done
+
+          # `grep -v '^libc6$'` — undviker att `libc6` (redan hårdkodat härnedan)
+          # dyker upp en andra gång ifall något DT_NEEDED-bibliotek som INTE
+          # matchar uteslutningsmönstret ovan ändå råkar tillhöra libc6
+          # (CodeRabbit-fynd).
+          EXTRA=$(printf '%s\n' $PACKAGES | sort -u | grep -v '^$' | grep -v '^libc6$' | paste -sd, - | sed 's/,/, /g')
+          DEPENDS="libc6${EXTRA:+, $EXTRA}"
+          echo "Härledd Depends-rad: $DEPENDS"
+          echo "depends=$DEPENDS" >> "$GITHUB_OUTPUT"
+
+      - name: Bygg .deb-paketträd
+        env:
+          # Undviker shell-injektion via en illvilligt utformad git-tagg —
+          # interpolerad rakt i run:-skriptet skulle taggens innehåll tolkas
+          # som skalsyntax (CodeRabbit-fynd, säkerhet).
+          VERSION: ${{ steps.version.outputs.version }}
+          DEPENDS: ${{ steps.deps.outputs.depends }}
+        run: |
+          set -euo pipefail
+          ROOT="dist/bastion-cli_${VERSION}_amd64"
+          mkdir -p "$ROOT/DEBIAN" "$ROOT/usr/bin"
+          cp .build/release/bastion-cli "$ROOT/usr/bin/bastion-cli"
+          chmod 755 "$ROOT/usr/bin/bastion-cli"
+          cat > "$ROOT/DEBIAN/control" <<EOF
+          Package: bastion-cli
+          Version: $VERSION
+          Section: net
+          Priority: optional
+          Architecture: amd64
+          Maintainer: blixten85 <noreply@github.com>
+          Homepage: https://github.com/blixten85/bastion
+          Depends: $DEPENDS
+          Description: Fri, öppen, fristående SSH-klient (kommandorad)
+           bastion-cli bevisar SSHCore-kärnan mot en riktig server — exec,
+           interaktiv shell, portvidarebefordran (-L/-R/-D), ProxyJump.
+           Statiskt länkad mot Swift-runtimen, inga körtidsberoenden utöver
+           de i Depends.
+          EOF
+          dpkg-deb --build --root-owner-group "$ROOT"
+          mkdir -p dist-out
+          mv "dist/bastion-cli_${VERSION}_amd64.deb" dist-out/
+
+      # Installerar det FAKTISKT byggda .deb-paketet (inte bara den råa
+      # binären) och kör det, i samma steg som resten av jobbet. `dpkg -i`
+      # löser Depends mot paketdatabasen i containern (där libcurl/libxml2
+      # m.fl. redan är apt-installerade som byggberoenden för Swift/
+      # Foundation) — poängen med DT_NEEDED-kollen ovan är att den listar
+      # binärens VERKLIGA beroenden, inte vad som råkar ligga på disk.
+      - name: Installera och kör paketet
+        run: |
+          set -euo pipefail
+          dpkg -i dist-out/*.deb
+          set +e
+          OUTPUT=$(bastion-cli 2>&1)
+          STATUS=$?
+          set -e
+          echo "$OUTPUT"
+          if [ "$STATUS" -ne 2 ]; then
+            echo "::error::väntade exitkod 2 (användningsfel utan argument), fick $STATUS"
+            exit 1
+          fi
+          if ! echo "$OUTPUT" | grep -q "Användning:"; then
+            echo "::error::väntade ett användningsmeddelande, fick: $OUTPUT"
+            exit 1
+          fi
+
+      - name: Ladda upp .deb-artefakt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: bastion-cli-deb
+          path: dist-out/*.deb
+          if-no-files-found: error

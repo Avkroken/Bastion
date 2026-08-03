@@ -17,7 +17,7 @@ jobs:
   xcodegen-and-build:
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -42,9 +42,9 @@ jobs:
       # tvOS-schemat byggs — Xcodes nya byggsystem beräknar paketgrafen för
       # ALLA targets i .xcodeproj:en (ComputePackagePrebuildTargetDependency-
       # Graph) oavsett vilket scheme som faktiskt byggs, så en saknad tvOS-SDK
-      # bröt även iOS-bygget nedan ("Unable to resolve module dependency:
-      # 'Sentry'", PR #191 — tvOS-targeten fanns i projektet, men
-      # plattformen var inte nedladdad på runnern än).
+      # bröt även iOS-bygget nedan med "Unable to resolve module dependency"
+      # (PR #191 — tvOS-targeten fanns i projektet, men plattformen var inte
+      # nedladdad på runnern än).
       # `-downloadPlatform` misslyckas ibland transient på en färsk runner
       # med "Unable to connect to simulator" (CoreSimulator-daemonen inte
       # redo än) — hoppar över nedladdningen helt om tvOS-runtime redan
@@ -99,7 +99,7 @@ jobs:
   swiftpm-macos:
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
       - name: Välj Xcode 26.4.1
@@ -119,7 +119,7 @@ jobs:
   ios-screenshots:
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 

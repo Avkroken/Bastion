@@ -1,4 +1,5 @@
 import Foundation
+import Gtk
 import SSHCore
 import SwiftCrossUI
 
@@ -51,17 +52,44 @@ final class TerminalController: ObservableObject {
             let shell = try await chain.target.openShell(cols: buffer.cols, rows: buffer.rowCount)
             guard !isStopped else { shell.close(); return }
             self.shell = shell
+            // Håller anslutningen vaken genom NAT/brandväggars idle-timeout
+            // (se SSHShell.startKeepAlive) — stoppas automatiskt av
+            // shell.close() nedan/i stop().
+            shell.startKeepAlive()
             statusMessage = nil
             if let initialCommand { shell.send(initialCommand + "\r") }
             for try await chunk in shell.output {
                 buffer.feed(chunk.text)
             }
-        } catch {
+            // Strömmen tar slut normalt när fjärrshellen stänger (t.ex. `exit`
+            // eller Ctrl+D) — channelInactive avslutar den utan fel. Utan denna
+            // gren blev sessionen tyst död: ingen chain-stängning, ingen
+            // statusMessage, indata gick fortfarande att skriva i men träffade
+            // en stängd shell.
+            // shell.close() FÖRE self.shell = nil — stoppar keepAlive-Task:en
+            // innan chain.close() river ner event loop-gruppen under den
+            // (CodeRabbit-fynd): annars kan Task:en hinna köra
+            // channel.triggerUserOutboundEvent på en kanal vars grupp just
+            // stängts, samma race-klass som redan dokumenteras i
+            // SSHSession.swift.
+            shell.close()
+            self.shell = nil
             await self.chain?.close()
+            self.chain = nil
+            guard !isStopped else { return }
+            statusMessage = "Sessionen avslutades."
+        } catch {
+            self.shell?.close()
+            self.shell = nil
+            await self.chain?.close()
+            self.chain = nil
             guard !isStopped else { return }
             buffer.feed("\r\n[bastion] fel: \(error)\r\n")
+            statusMessage = "Sessionen avslutades."
         }
     }
+
+    var isActive: Bool { shell != nil }
 
     func sendLine(_ text: String) {
         guard !text.isEmpty else { return }
@@ -98,14 +126,22 @@ struct TerminalSessionView: View {
                 TerminalGridView(buffer: controller.buffer)
             }
             .frame(minHeight: 320)
+            // Riktig tangentbordsinmatning (piltangenter/Tab/Esc/Backspace/
+            // Enter live, ingen Retur krävs) — se KeyEventBridge.swift.
+            // Textfältet nedan finns kvar för Ctrl-kombinationer (via
+            // kontrollknapparna) och för den som föredrar rad-i-taget.
+            .inspect(.onCreate) { (widget: Gtk.Widget) in
+                attachKeyCapture(to: widget) { text in controller.sendRaw(text) }
+            }
 
             controlKeyRow
 
             HStack {
                 TextField("Kommando…", text: $input)
                     .onSubmit { submit() }
+                    .disabled(!controller.isActive)
                 Button("Skicka") { submit() }
-                    .disabled(input.isEmpty)
+                    .disabled(input.isEmpty || !controller.isActive)
             }
         }
         .padding()

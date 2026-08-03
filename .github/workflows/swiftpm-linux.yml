@@ -1,0 +1,57 @@
+name: SwiftPM-Linux-bygge
+
+# Kärnan (SSHCore + bastion-cli, rot-paketet) påstås bygga på Linux OCH Apple
+# (se CLAUDE.md/README) — men fram tills nu verifierades det bara på en
+# macOS-runner (swiftpm-macos i xcode.yml). Rot-paketet beror inte på
+# SwiftCrossUI (det ligger i LinuxApp/, ett eget paket), så det drabbas
+# INTE av swift-mutex-kompilatorbuggen (swiftlang/swift#80759) som tvingar
+# LinuxApp/ till en dev-snapshot-toolchain (se linux-gui.yml) — en vanlig
+# stabil release räcker för rot-paketet.
+#
+# `apt install swiftlang` (som README påstod fungerar) finns INTE på en
+# vanlig ubuntu-24.04-runner ("swift" i Ubuntus repon är OpenStack Swift,
+# ett helt orelaterat paket) — upptäckt genom att faktiskt köra jobbet, inte
+# gissat. Officiella `swift`-Docker-avbildningen används i stället, samma
+# distro (`noble` = Ubuntu 24.04) som runnern annars kör på.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: swiftpm-linux-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  swiftpm-linux:
+    runs-on: ubuntu-24.04
+    container: swift:6.1-noble
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+
+      - name: Visa Swift-version
+        run: swift --version
+
+      # ArchiveOperationsTests kör riktiga tar/zip/unzip-underprocesser (se
+      # ROADMAP.md "Zip/Tar") — swift:6.1-noble-avbildningen har tar men
+      # inte zip/unzip förinstallerat (minimal image). Utan detta misslyckas
+      # testerna med "remoteExit(status: 127)" (command not found) — upptäckt
+      # genom att faktiskt köra jobbet första gången, inte gissat.
+      - name: Installera zip/unzip (för ArchiveOperationsTests)
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq zip unzip
+
+      - name: swift build (SSHCore + bastion-cli)
+        run: swift build
+
+      - name: swift test (SSHCore)
+        run: swift test
