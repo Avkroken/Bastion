@@ -46,7 +46,7 @@ delvis andra, av konkreta skäl:
 | Auto-poll av dashboard | 🧩 `DashboardModel.startPolling()`, 15 s intervall, behåller data vid övergående fel |
 | App-ikon + launch screen | ✅ `App/Assets.xcassets` |
 | Linux-GUI (`bastion-gui`, SwiftCrossUI/GTK4) | ✅ byggd och körd (Xvfb) + egen CI-lane (`linux-gui.yml`, required check) |
-| Linux-terminal (VT100/ANSI-tolk, bestående PTY-shell) | ✅ 42 fristående parser-tester gröna (`LinuxApp/Tests/`), körd (Xvfb) — radvis input, inget musstöd (ingen rå key-/gest-position-API i SwiftCrossUI) |
+| Linux-terminal (VT100/ANSI-tolk, bestående PTY-shell) | ✅ 42 fristående parser-tester gröna (`LinuxApp/Tests/`), körd (Xvfb) — riktig tangentbordsinmatning (2026-08-02, `KeyEventBridge.swift`, se "Klart"), ingen interaktiv GUI-verifiering än; inget musstöd (ingen rå gest-position-API i SwiftCrossUI) |
 | Linux-Docker-hantering (`DockerView`) | ✅ lista/start/stopp/omstart/logg/shell — motsvarar `App/DockerView.swift` |
 | Portvidarebefordran (`PortForwardView`) | ✅ lokal/fjärr/dynamisk, starta/stoppa — LinuxApp (byggd+körd, Xvfb) OCH App/ (2026-07-08, Xcode-only) |
 | ProxyJump (`ssh -J`) | ✅ `SSHSession.connect(via:)`, `bastion-cli` läser `ProxyJump` ur ssh-config automatiskt |
@@ -242,8 +242,8 @@ delvis andra, av konkreta skäl:
    **Kvar**: testa på riktigt mot en riktig Windows-maskin (VPS eller
    motsvarande) — bara CI-verifierat (kompilerar) hittills, ingen har
    faktiskt klickat runt i appen på riktig Windows-hårdvara än.
-4. Riktig rå tangentbordsinmatning i Linux-terminalen (kräver att gå under
-   SwiftCrossUI mot GTK:s event-controllers direkt — se "Uppskjutet med avsikt").
+4. ~~Riktig rå tangentbordsinmatning i Linux-terminalen~~ — ✅ klart
+   (2026-08-02), se "Klart" → "Linux-terminal".
 
 ## Klart
 
@@ -379,11 +379,34 @@ delvis andra, av konkreta skäl:
   parsern, inklusive en verklig bugg som hittades under verifieringen: Swift
   grupperar `"\r\n"` till EN grafemkluster-`Character`, så tolkning måste ske
   per `Unicode.Scalar`, inte per `Character` — annars matchar CR/LF aldrig.
-  SwiftCrossUI saknar rå tangentbords-API, så inmatning är radvis via
-  `TextField` + Enter; piltangenter/Home/End/PgUp/PgDn/Tab/Esc/Ctrl+C/Ctrl+D
-  finns som knappar och skickas som rå bytes direkt (navigering i t.ex.
-  `htop`/`less` fungerar, löpande texttangenttryckning gör det inte). Fast
-  100×30 storlek — ingen fönsterstorleks-driven `resize()` mot PTY:n än.
+  **Riktig tangentbordsinmatning** (2026-08-02, `KeyEventBridge.swift`): ✅
+  klart — löser punkten som tidigare stod under "Uppskjutet med avsikt".
+  Antagandet där (kräver att gå under SwiftCrossUI direkt mot GTK:s
+  event-controllers) stämde bara delvis: swift-cross-uis EGET `Gtk`-paket
+  har redan en publik, kodgenererad `GtkEventControllerKey`-wrapper (samma
+  mönster deras egen `Window.setEscapeKeyPressedHandler` redan använder) —
+  men den wrapperns C-trampolin returnerar `Void` trots att `key-pressed`
+  faktiskt är en `gboolean`-returnerande signal (`TRUE` stoppar vidare
+  spridning, `_gtk_boolean_handled_accumulator` i GTK:s egen källkod) — en
+  ABI-diskrepans som hittades under kodgranskning (CodeRabbit) och löstes
+  genom att koppla signalen direkt via `g_signal_connect_data` med en EGEN,
+  korrekt `gboolean`-returnerande trampolin, samma rå-signal-mönster som
+  `GestureSwipeBridge.swift` redan använder för `GtkGestureSwipe` (som
+  saknar en wrapper helt). Fokushantering (`gtk_widget_set_can_focus`/
+  `set_focusable`/`grab_focus`) saknar publika Swift-wrappers, löst via
+  samma `CGtk4Raw`-brygga.
+  **Avsiktligt avgränsat**: text + navigeringstangenter (piltangenter/Tab/
+  Esc/Backspace/Delete/Enter, `gdk_keyval_to_unicode` för allt skrivbart)
+  — INTE Ctrl-kombinationer, som filtreras bort explicit (en `GdkModifier
+  Type`-bitmask, CodeRabbit-fynd: annars hade fysisk Ctrl+C skickat en
+  bokstavlig "c" till PTY:n) och även fortsatt täcks av de befintliga
+  kontrollknapparna (Ctrl+C/Ctrl+D m.fl.).
+  Kontrollknapparna (piltangenter/Home/End/PgUp/PgDn/Tab/Esc/Ctrl+C/Ctrl+D)
+  och textfältet finns kvar som alternativ inmatningsväg. Fast 100×30
+  storlek — ingen fönsterstorleks-driven `resize()` mot PTY:n än.
+  **Ej verifierat interaktivt** (ingen riktig GUI-session eller
+  testinfrastruktur för simulerade tangenttryck i det här repot) — bara
+  `linuxapp-build` (kompilering + `TerminalBuffer`-parsertesterna) grönt.
 - **Linux-Docker-hantering**: `DockerView` (i `HostDetailView` via en knapp/sheet)
   lista/start/stopp/omstart/logg/shell — samma `DockerService` som iOS-appen.
   Shell öppnar en `TerminalSessionView` med `docker exec` som initialt kommando
@@ -419,14 +442,6 @@ delvis andra, av konkreta skäl:
   av Blowfish + bcrypt_pbkdf + AES-CTR — säkerhetskritisk kod som förtjänar en
   egen genomgång med testvektorer, inte en snabb iteration. Parsern kastar
   `SSHKeyError.encrypted` tydligt tills dess.
-- **Rå tangentbordsinmatning i Linux-terminalen.** SwiftCrossUI har ingen
-  key-event-API alls. En riktigt interaktiv terminal (piltangenter/Ctrl+C
-  live, som SwiftTerm) skulle kräva en egen Cairo-ritad GTK-widget med GTK:s
-  event-controllers direkt, utanför SwiftCrossUIs `View`-träd — större jobb,
-  och kräver en osäker generisk-till-konkret cast (`GtkBackend.Widget` är
-  faktiskt `Gtk.Widget`, så det är tekniskt möjligt men inte en ren, stödd
-  API-väg). Radvis input + kontrollknappar täcker det mesta (se "Klart" ovan)
-  tills vidare.
 - **Ssh-agent-forwarding till fjärrserver** (`auth-agent@openssh.com`-
   kanaltypen, klassisk `ssh -A`) — **arkitektoriskt blockerad i
   swift-nio-ssh, inte något i Bastions egen kod** (verifierat 2026-07-07
