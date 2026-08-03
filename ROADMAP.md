@@ -24,7 +24,8 @@ delvis andra, av konkreta skäl:
 | Lösenordsauth | ✅ testad end-to-end |
 | Ed25519-auth (rått frö + OpenSSH-nyckelfil) | ✅ testad end-to-end |
 | OpenSSH-nyckelfilsparser (`~/.ssh/id_ed25519`, okrypterad) | ✅ testad, autoupptäcks av CLI |
-| Krypterad nyckel (lösenfras) + RSA/ECDSA | ⬜ nästa steg (kastar tydligt fel nu) |
+| ECDSA-nyckelauth (P256/P384/P521, okrypterad) | ✅ testad end-to-end (3 kurvor, riktiga `ssh-keygen`-nycklar) |
+| Krypterad nyckel (lösenfras) + RSA | ⬜ se "Uppskjutet med avsikt" (kastar tydligt fel nu) |
 | Exec + strömmad stdout/stderr | ✅ testad |
 | Exitkod-hantering | ✅ |
 | Misslyckad auth utan att hänga | ✅ testad |
@@ -45,7 +46,7 @@ delvis andra, av konkreta skäl:
 | Nyckelimport i appen (Keychain) | 🧩 `HostEditView` klistra-in + validering, `HostAuth.keychainKey`, städas vid borttagning |
 | Auto-poll av dashboard | 🧩 `DashboardModel.startPolling()`, 15 s intervall, behåller data vid övergående fel |
 | App-ikon + launch screen | ✅ `App/Assets.xcassets` |
-| Linux-GUI (`bastion-gui`, SwiftCrossUI/GTK4) | ✅ byggd och körd (Xvfb) + egen CI-lane (`linux-gui.yml`, required check) |
+| Linux-GUI (`bastion-gui`, SwiftCrossUI/GTK4) | 🗑️ RIVEN (2026-08-03) — ersatt av native Rust/GTK4-`LinuxApp`, se "Arkitekturbeslut" nedan. Raden bevaras som historik, inte aktuell status. |
 | Linux-terminal (VT100/ANSI-tolk, bestående PTY-shell) | ✅ 42 fristående parser-tester gröna (`LinuxApp/Tests/`), körd (Xvfb) — riktig tangentbordsinmatning (2026-08-02, `KeyEventBridge.swift`, se "Klart"), ingen interaktiv GUI-verifiering än; inget musstöd (ingen rå gest-position-API i SwiftCrossUI) |
 | Linux-Docker-hantering (`DockerView`) | ✅ lista/start/stopp/omstart/logg/shell — motsvarar `App/DockerView.swift` |
 | Portvidarebefordran (`PortForwardView`) | ✅ lokal/fjärr/dynamisk, starta/stoppa — LinuxApp (byggd+körd, Xvfb) OCH App/ (2026-07-08, Xcode-only) |
@@ -345,8 +346,8 @@ delvis andra, av konkreta skäl:
    processen för alltid).
 
    Kvar utöver detta: ingen dedikerad Windows-CI-check för `bastion-cli`
-   än (bara macOS/CodeQL bygger rot-paketet idag), och ingen
-   `-J`-kommandoradsflagg (bara via ssh-config, se "Klart" nedan).
+   än (bara macOS/CodeQL bygger rot-paketet idag). `-J`-kommandoradsflagg
+   ✅ klart, se "Klart" nedan.
 5. ~~Riktig rå tangentbordsinmatning i Linux-terminalen~~ — ✅ klart
    (2026-08-02), se "Klart" → "Linux-terminal". (Avsåg ursprungligen den
    SwiftCrossUI-baserade `LinuxApp/`, sedan riven till förmån för Rust/GTK4
@@ -354,6 +355,45 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **ECDSA-nyckelautentisering (P256/P384/P521), okrypterad** (2026-08-03,
+  `SSHKeyParser.swift`/`SSHUserAuth.swift`): OpenSSH-privatnyckelparsern läser
+  nu `ecdsa-sha2-nistp256/384/521` utöver Ed25519 — läser den råa privata
+  skalären (SSH `mpint`, normaliserad till kurvans exakta byte-längd) och
+  bygger en `NIOSSHPrivateKey` via `P256`/`P384`/`P521.Signing.PrivateKey
+  (rawRepresentation:)`. Bekräftat via `NIOSSHPrivateKey`s källa att RSA INTE
+  stöds alls av swift-nio-ssh på klientsidan (bara Ed25519 + dessa tre
+  kurvor) — RSA är alltså en separat, egen lucka (se "Uppskjutet med
+  avsikt"), inte samma sak som "krypterad nyckel". Testat mot RIKTIGA
+  `ssh-keygen -t ecdsa -b 256/384/521`-nycklar (inte handskrivna fixtures):
+  parsning + end-to-end-autentisering mot `LoopbackServer` för alla tre
+  kurvorna, 7/7 gröna. Lösenfrasskyddade nycklar (alla typer, inklusive
+  ECDSA) stöds fortfarande inte — separat KDF/cipher-lucka, oförändrad.
+- **`ExternalBinaryFetcher` — generisk hämta+verifiera+cacha-hjälpare för
+  externa binärer** (2026-08-03, `Sources/SSHCore/ExternalBinaryFetcher.swift`):
+  första byggstenen för "Native WireGuard/Tailscale — inget externt beroende"
+  (se det avsnittet nedan för den fulla motiveringen). Tar en URL + en känd
+  SHA256-checksumma, laddar ner, verifierar checksumman mot bytesen INNAN
+  något skrivs till disk (en fel/manipulerad nedladdning hamnar aldrig i
+  cachen ens tillfälligt), cachar under en given katalog med `chmod 755`,
+  och är idempotent (ett andra anrop med samma parametrar gör INGEN
+  nätverkstrafik, verifierat explicit i testerna genom att peka det andra
+  anropet mot en overkomlig URL som skulle kastat om cachen missades). En
+  korrupt cachad fil (fel checksumma) tas bort och laddas ner på nytt
+  istället för att litas på tyst.
+  Medvetet WireGuard/Tailscale-AGNOSTISK (bara URL+checksumma+katalog in) —
+  matchar roadmap-anteckningens egen slutsats att en sådan hjälpare "är värd
+  att bygga ÅTERANVÄNDBAR för både WireGuard och Tailscale". Hör hemma i
+  `SSHCore` eftersom mekaniken (nedladdning/SHA256/filcache) är genuint
+  plattformsneutral — det är bara det FRAMTIDA valet av URL per plattform/
+  arkitektur och själva tunneluppsättningen (wg-quick-motsvarighet,
+  NetworkExtension på iOS) som hör hemma i UI-lagren, oförändrat.
+  Testat mot en RIKTIG, taggpinnad (alltså oföränderlig) fil på
+  `raw.githubusercontent.com` — inte ett mockat HTTP-svar: genuin nedladdning
+  + checksumverifiering, cache-träff utan nätverksanrop (bevisat genom att
+  peka på en overkomlig URL), avvisning av fel checksumma (aldrig skriven
+  till disk), och återhämtning från en korrupt cache-post. 4/4 nya tester
+  gröna (`ExternalBinaryFetcherTests.swift`), 290/290 totalt. Nätverksberoende
+  — hoppar tydligt över (inte fel) om miljön saknar internetåtkomst.
 - **ProxyJump (`ssh -J`)** (2026-07-06, `SSHSession.swift`): `connect(via
   jump:)` — istället för en ny TCP-anslutning öppnas en `direct-tcpip`-kanal
   FRÅN en redan uppkopplad jump-session till målet, och en helt egen,
@@ -362,9 +402,21 @@ delvis andra, av konkreta skäl:
   `ssh -J` på trådnivå.
   - `bastion-cli` läser `ProxyJump` ur `~/.ssh/config` automatiskt (fältet
     parsades redan sedan tidigare, `ResolvedHost.proxyJump`, men var aldrig
-    kopplat till en riktig anslutning förut) — inget eget `-J`-flagg på
-    kommandoraden än. Jump-hoppet återanvänder samma autentisering
-    (miljövariabler/nyckelfråga) som huvudmålet (v1-förenkling).
+    kopplat till en riktig anslutning förut). Jump-hoppet återanvänder samma
+    autentisering (miljövariabler/nyckelfråga) som huvudmålet
+    (v1-förenkling).
+  - **`-J <[user@]jumphost[:port]>`-kommandoradsflagg tillagt** (2026-08-03,
+    `Sources/bastion-cli/main.swift`) — vinner över `ProxyJump` ur
+    ssh-config om båda är satta, samma prioritetsordning som riktig
+    `ssh -J`. Återanvänder exakt samma `resolveDestination()`/
+    `connect(via:)`-väg som redan är bevisad end-to-end i
+    `ProxyJumpTests.swift` — det nya är bara flaggparsningen. Verifierat
+    genuint end-to-end mot TVÅ RIKTIGA lokala `sshd`-instanser (inte
+    `LoopbackServer`): `bastion-cli -J` hoppade genom den ena och körde
+    kommandot bevisligen på den ANDRA (separat `sshd`-process, egen
+    värdnyckel). Fel målnyckel gav ett rent, snabbt auth-fel (exit 2) —
+    inte den kända Windows-hänget (se ovan) — och saknade `-J`-argument gav
+    ett tydligt användningsfel.
   - **Viktig arkitekturbegränsning, dokumenterad i kod**: en session öppnad
     via `connect(via:)` lever på JUMP-sessionens event loop-grupp, inte sin
     egen — måste därför stängas INNAN jump-sessionen stängs. Upptäckt
@@ -652,12 +704,21 @@ delvis andra, av konkreta skäl:
 
 ## Uppskjutet med avsikt
 
-- **Krypterade nycklar (lösenfras) + RSA/ECDSA.** OpenSSH krypterar med
-  `bcrypt_pbkdf` (Blowfish-baserad) + `aes256-ctr`. Varken bcrypt_pbkdf eller
-  AES-CTR finns i swift-cryptos publika API, så det kräver egna implementationer
-  av Blowfish + bcrypt_pbkdf + AES-CTR — säkerhetskritisk kod som förtjänar en
-  egen genomgång med testvektorer, inte en snabb iteration. Parsern kastar
-  `SSHKeyError.encrypted` tydligt tills dess.
+- **Krypterade nycklar (lösenfras).** OpenSSH krypterar med `bcrypt_pbkdf`
+  (Blowfish-baserad) + `aes256-ctr`. Varken bcrypt_pbkdf eller AES-CTR finns i
+  swift-cryptos publika API, så det kräver egna implementationer av Blowfish +
+  bcrypt_pbkdf + AES-CTR — säkerhetskritisk kod som förtjänar en egen
+  genomgång med testvektorer, inte en snabb iteration. Parsern kastar
+  `SSHKeyError.encrypted` tydligt tills dess. (ECDSA P256/P384/P521, OKRYPTERADE,
+  stöds redan — se Status-tabellen; det här gäller bara lösenfrasskyddet.)
+- **RSA-nyckelauth.** Blockerad av ett ANNAT skäl än krypterade nycklar: RSA
+  finns inte alls bland `NIOSSHPrivateKey`s fall (bekräftat genom att läsa
+  `NIOSSHPrivateKey.swift` i swift-nio-ssh — bara `.ed25519`/`.ecdsaP256`/
+  `.ecdsaP384`/`.ecdsaP521`/`.secureEnclaveP256`). swift-nio-ssh saknar
+  RSA-klientautentisering helt, inte bara okrypterad parsning av den —
+  kräver antingen uppströms-stöd eller en egen RSA-signeringsimplementation
+  ovanpå biblioteket. Parsern kastar `SSHKeyError.unsupportedKeyType`
+  tydligt tills dess.
 - **Ssh-agent-forwarding till fjärrserver** (`auth-agent@openssh.com`-
   kanaltypen, klassisk `ssh -A`) — **arkitektoriskt blockerad i
   swift-nio-ssh, inte något i Bastions egen kod** (verifierat 2026-07-07
@@ -908,7 +969,8 @@ Inget nytt att bygga, bara verifiera/lansera:
 - **Native WireGuard/Tailscale — inget externt beroende** (nytt,
   2026-07-07, uttryckligt ägarönskemål — se VISION.md "En sak att
   prioritera högt": ska kännas komplett, inget proffs ska sakna något)
-  — INTE PÅBÖRJAT, ren designanteckning för framtida arbete. Dagens läge
+  — 🧩 hämta+verifiera-mekaniken PÅBÖRJAD (2026-08-03, se "Klart"), resten
+  ren designanteckning för framtida arbete. Dagens läge
   (ovan) kräver ATT `wg`/`wg-quick` respektive `tailscale`/`tailscaled`
   redan är installerade separat av användaren — motsatsen till "fristående
   app" -löftet i README:s första rad. Målet: appen kan självständigt
@@ -1800,3 +1862,125 @@ Detta var den sista punkten på den ursprungliga "kvarstående"-listan —
 krypterade molntransporter är nu en riktig, visuellt verifierad
 användarfunktion i alla tre klienter (Swift/App, Rust/LinuxApp,
 C#/WindowsApp).
+
+**WindowsApp: TabView-flikskal + Docker-flik + Kommandobibliotek/Snippets-flik
+(skrivet, kod-genomläst, INTE visuellt verifierat än).** `MainWindow` bytt
+från en enkel-session-panel (platshållare ↔ EN terminal) till ett riktigt
+`TabView`-flikskal (en flik per session/vy, stängbar), motsvarande LinuxApps
+`AdwTabView`/iOS `MultiSessionView` — en förutsättning som saknades innan
+Docker/Kommandon kunde portas utan att skapa en synligt annorlunda
+interaktionsmodell än de andra klienterna.
+
+- `DockerService.cs` (Bastion.Core): port av `DockerService.swift`/`docker.rs`
+  — samma injektionsskydd, kommandobyggare, parsning. 21 nya tester.
+- `Snippet.cs`/`SnippetStore.cs`/`CommandLibrary.cs` (Bastion.Core): port av
+  `Snippet.swift`/`SnippetStore.swift`/`CommandLibrary.swift` (samma
+  `{{variabel}}`-rendering som `snippet.rs`). 12 nya tester.
+- `MainWindow`: värdradens "Mer"-meny fick "Docker"/"Kommandon". Docker-fliken
+  (containerlista, start/stopp/omstart/loggar/shell) och Kommandon-fliken
+  (snippets + inbyggt bibliotek, "Kör" med variabelifyllningsdialog om
+  mallen har `{{variabler}}`, ny/redigera/ta bort-snippet) byggs imperativt
+  i C# (samma stil som LinuxApps `main.rs`, inte XAML-databindning) —
+  medvetet, eftersom referensimplementationen själv är imperativ.
+- 56/56 `dotnet test` gröna (Bastion.Core + Bastion.Core.Tests).
+
+**EJ verifierat**: `dotnet build` av själva `WindowsApp.csproj` kräver
+Windows (WinUI:s XAML-kompilator, `XamlCompiler.exe`, är en Windows-binär —
+`Exec format error` bekräftat vid försök på denna Linux-utvecklingsmaskin).
+Kräver `bastion-winserver`-VM:en (se ovan, `192.168.122.42`,
+`dotnet build WindowsApp.csproj -r win-x64` + xfreerdp3+xdotool-tekniken)
+för att bekräfta att XAML:en faktiskt kompilerar och renderar rätt.
+
+Kvar för full WindowsApp-paritet med LinuxApp: SFTP-bläddrare (inkl.
+chmod/chown/arkiv), Funktioner-inställningar (dölj flikar via toggles),
+rå tangentbordsinput, fler HostAuth-typer (SSH.NET saknar agent-protokoll).
+
+**WindowsApp: SFTP-bläddrare, grundpasset (skrivet, INTE visuellt
+verifierat).** Port av `App/SFTPBrowserModel.swift`/`LinuxApp/src/sftp.rs`
+— men ovanpå SSH.NETs INBYGGDA `SftpClient` istället för en egen SFTP-
+protokollimplementation (Swift/Rust hade ingen färdig SFTP-klient att
+återanvända, C#-sidan har det redan via samma SSH.NET-paket som redan
+används för terminal/Docker/kommandon).
+
+- `SftpBrowserSession.cs` (Bastion.Core): en öppen `SftpClient`-anslutning
+  återanvänds för hela bläddringen (motsvarar Swiftsidans
+  `ensureClient()`-cache / Rusts en-bakgrundstråd-per-flik — men
+  SSH.NETs synkrona API behöver ingen egen tråd/kanal-aktör).
+  List/ReadFile/WriteFile/CreateDirectory/RemoveFile/RemoveDirectory/Rename
+  + `TryDecodeUtf8` (strikt UTF-8-validering, samma säkerhetsmarginal som
+  Swiftsidans `isBinary`-fält — binärt innehåll ska aldrig tyst tolkas
+  som text och riskera att sparas över). TOFU-verifieringen delas nu med
+  `SshSession` via en gemensam `MakeHostKeyHandler`-hjälpare (refaktorering,
+  ingen betydelseändring) eftersom `SshClient`/`SftpClient` båda ärver
+  samma `BaseClient`-event.
+- 3 nya tester (`TryDecodeUtf8`, som körs utan nätverk) + 2 nya
+  SSH-gated integrationstester (samma `BASTION_TEST_SSH_KEY`-mönster som
+  `SshSessionTests`, hoppas över utan nyckel).
+  **Kunde INTE köras på riktigt i den här miljön**: `claude`-Linux-kontot
+  på mp100 har `DenyUsers claude` i `sshd_config` — SSH till localhost är
+  en avsiktlig, permanent gräns för det kontot (se
+  [[feedback_claude_account_no_docker_no_berduf_home]]), inte en
+  miljöbugg. En tillfällig testnyckel skapades, verifierades blockerad,
+  och togs bort igen.
+- `MainWindow`: "Filer"-menyalternativ, en flik per värd (upp/ny mapp/
+  uppdatera-verktygsfält + lista, klick navigerar mapp eller öppnar en
+  textredigerare, döp om/ta bort per rad) — samma UX som LinuxApps
+  grundpass (utan chmod/chown/arkiv än, se ovan).
+- 62/62 `dotnet test` gröna totalt (Bastion.Core + Bastion.Core.Tests).
+
+**EJ portat i denna pass** (LinuxApps femtonde pass, senare arbete):
+chmod/chown, komprimera/packa upp. SSH.NETs `SftpClient` saknar en
+`GetCanonicalPath`/realpath-motsvarighet i den här versionen (verifierat
+via reflektion mot den faktiska DLL:en, inte antaget) — behöver en annan
+lösning (t.ex. ett engångskommando via `SshSession.RunCommand("pwd")`)
+den dagen komprimera/packa-upp portas, som i sin tur (liksom i Rust/Swift)
+shellar ut till tar/zip snarare än att använda SFTP-protokollet direkt.
+
+**WindowsApp: Funktioner-inställningar (skrivet, INTE visuellt
+verifierat).** Port av `AppSettings.swift`/`settings.rs`
+(`FeatureToggles`, `~/.bastion/settings.json`) — samma fältnamn/wire-
+format som Swift (`showSFTPBrowser` versalt, verifierat: System.Text.Json
+gör ingen egen camelCase-omskrivning av ett redan explicit satt
+`[JsonPropertyName]`, så ingen motsvarighet till Rusts `serde(rename)`-
+fälla behövdes här). 4 nya tester.
+
+Värdradens "Mer"-knapp bygger nu menyn DYNAMISKT i C# (istället för en
+statisk `MenuFlyout` i XAML) utifrån aktuella togglar — motsvarar
+LinuxApps `gio_menu_for`, som utesluter hela menyposten när en toggle är
+av, inte bara döljer/inaktiverar en statisk post. Ny Funktioner-knapp
+("⚙") i värdlistans verktygsfält öppnar en inställningsdialog med
+Docker/Kommandobibliotek/Filer-togglar (portvidarebefordran/SSH-
+nyckeldistribution har ingen vy att gömma än i WindowsApp, samma
+avgränsning som LinuxApp dokumenterar).
+
+63/63 `dotnet test` gröna totalt (Bastion.Core + Bastion.Core.Tests).
+
+**WindowsApp: SFTP chmod/chown/arkiv (skrivet, INTE visuellt
+verifierat).** Stänger gapet mot LinuxApps femtonde pass.
+
+- `ArchiveOperations.cs` (Bastion.Core): port av `ArchiveOperations.swift`/
+  `archive.rs` — `ShellQuote` (POSIX-shell-säker citering, samma
+  RIKTIGA shell-injektionsverifiering som Rust-testet: kör faktiskt
+  `/bin/sh -c` mot en konstruerad injektionssträng) + kommandobyggare för
+  tar.gz/zip. 6 nya tester.
+- `SftpBrowserSession.SetPermissions`/`SetOwner` (redan skrivna i
+  grundpasset) kopplas nu in i UI:t via en "Rättigheter/ägare"-dialog
+  (oktalt läge + UID/GID-fält).
+- Komprimera/packa upp shellar ut via `SshSession.RunCommand` (SFTP v3 har
+  ingen egen arkivsemantik) — en ny `ResolveRealPath`-hjälpare
+  (`cd <väg> && pwd` över en engångs-exec-kanal) ersätter Swift/Rusts
+  `SFTPClient.realpath`, eftersom SSH.NETs `SftpClient` saknar den
+  motsvarigheten (bekräftat via reflektion tidigare i sessionen).
+- UI: varje SFTP-rad fick en rättigheter-knapp, mappar fick en
+  "Komprimera"-knapp, `.tar.gz`/`.tgz`/`.zip`-filer fick en
+  "Packa upp"-knapp — matchar LinuxApps radlayout.
+
+69/69 `dotnet test` gröna totalt.
+
+**Kvar för full WindowsApp-paritet med LinuxApp**: rå tangentbordsinput,
+fler HostAuth-typer (SSH.NET saknar agent-protokoll). Med detta har
+WindowsApp samma FUNKTIONSYTA som LinuxApp (Docker/Kommandon/Snippets/
+SFTP+chmod/chown/arkiv/Sync+kryptering/Funktioner-toggles) — men **hela
+UI-lagret (`MainWindow.xaml`/`.xaml.cs`, TabView-skalet) har ännu INTE
+kompilerats eller renderats en enda gång**, se separat verifieringsarbete
+nedan.

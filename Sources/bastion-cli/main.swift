@@ -7,14 +7,15 @@ import SSHCore
 //   bastion-cli -L [bindHost:]bindPort:targetHost:targetPort <user@host[:port]>
 //   bastion-cli -R [bindHost:]bindPort:targetHost:targetPort <user@host[:port]>
 //   bastion-cli -D [bindHost:]bindPort <user@host[:port]>
+//   bastion-cli -J <[user@]jumphost[:port]> <user@host[:port]> "<kommando>"
 //
-// ProxyJump: en `ProxyJump`-rad i ~/.ssh/config (redan parsad sedan tidigare,
-// se SSHConfig.swift — bara aldrig kopplad till en riktig anslutning förut)
-// hoppas genom AUTOMATISKT, inget eget CLI-flagg behövs. Jump-hoppet
+// ProxyJump: antingen en `ProxyJump`-rad i ~/.ssh/config (parsas automatiskt,
+// se SSHConfig.swift) ELLER `-J` explicit på kommandoraden (samma
+// destinationssyntax som huvudmålet — alias eller [user@]host[:port]),
+// samma mönster som riktig `ssh -J`. `-J` vinner om båda är satta. Jump-hoppet
 // återanvänder SAMMA autentisering (miljövariabler/nyckelfråga) som
 // huvudmålet — v1-förenkling, täcker det vanliga fallet med samma identitet
-// överallt. Separat auth per hopp är inte byggt. Inget stöd för `ProxyJump`
-// angivet direkt på kommandoraden (bara via ssh-config) än.
+// överallt. Separat auth per hopp är inte byggt.
 //
 // Lösenord läses från miljövariabeln BASTION_PASSWORD (annars frågas det via
 // stdin). Ed25519-nyckel (rått 32-byte frö, hex) kan ges via BASTION_ED25519_HEX.
@@ -96,6 +97,14 @@ struct DynamicForwardSpec {
 }
 
 var cliArgs = Array(CommandLine.arguments.dropFirst())
+var explicitProxyJump: String?
+if cliArgs.first == "-J" {
+    guard cliArgs.count >= 2 else {
+        fail("Användning: bastion-cli -J <[user@]jumphost[:port]> <[user@]host[:port]> \"<kommando>\"")
+    }
+    explicitProxyJump = cliArgs[1]
+    cliArgs.removeFirst(2)
+}
 var localForward: LocalForwardSpec?
 var remoteForward: LocalForwardSpec?
 var dynamicForward: DynamicForwardSpec?
@@ -184,7 +193,7 @@ let session = SSHSession(target: target, auth: auth)
 // stängas EFTER huvudsessionen (se doc-kommentaren på SSHSession.connect(via:)
 // för varför den ordningen inte är valfri).
 var jumpSession: SSHSession?
-if let proxyJump = cfg.proxyJump {
+if let proxyJump = explicitProxyJump ?? cfg.proxyJump {
     let (jumpHost, jumpPort, jumpUsername, _) = resolveDestination(proxyJump)
     FileHandle.standardError.write(Data("Hoppar via \(jumpUsername)@\(jumpHost):\(jumpPort) (ProxyJump)\n".utf8))
     let jump = SSHSession(target: SSHTarget(host: jumpHost, port: jumpPort, username: jumpUsername), auth: auth)
