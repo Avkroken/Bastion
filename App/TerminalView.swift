@@ -71,6 +71,10 @@ final class SSHTerminalController {
                 let shell = try await chain.target.openShell(cols: cols, rows: rows)
                 guard !isStopped else { shell.close(); return }
                 self.shell = shell
+                // Håller anslutningen vaken genom NAT/brandväggars idle-timeout
+                // (se SSHShell.startKeepAlive) — stoppas automatiskt av
+                // shell.close() i stop().
+                shell.startKeepAlive()
                 if let cmd = initialCommand { shell.send(cmd + "\n") }
                 for try await chunk in shell.output {
                     guard !isStopped else { break }
@@ -78,11 +82,17 @@ final class SSHTerminalController {
                     self.onData?(bytes[...])
                 }
                 // Strömmen tog slut NORMALT — fjärrshellen stängde (t.ex.
-                // `exit`/Ctrl+D). Inte samma sak som `isStopped` (använraren
-                // stängde vyn själv) — den vägen ska INTE trigga onSessionEnded,
-                // anroparen vet redan att den stänger.
+                // `exit`/Ctrl+D). Måste städas här precis som i catch-grenen
+                // nedan, annars förblir keepAlive-Task:en och den underliggande
+                // anslutningen aktiva utan att någon någonsin river ner dem
+                // (CodeRabbit-fynd: den här grenen saknade helt städning,
+                // till skillnad från LinuxApp/WindowsApp-motsvarigheterna).
                 debugLog("session", "output-strömmen tog slut normalt (fjärrshellen stängde)")
+                self.shell?.close()
                 await self.chain?.close()
+                // Inte samma sak som `isStopped` (användaren stängde vyn
+                // själv) — den vägen ska INTE trigga onSessionEnded,
+                // anroparen vet redan att den stänger.
                 if !isStopped { self.onSessionEnded?() }
             } catch {
                 // Om felet kom EFTER att chain redan var uppsatt (openShell()
@@ -91,6 +101,11 @@ final class SSHTerminalController {
                 // bara sina EGNA fel internt, inte fel som inträffar efter att
                 // den redan returnerat. Ofarligt no-op om chain fortfarande är
                 // nil (connect() self själv redan städat i den vägen).
+                // self.shell?.close() FÖRE chain?.close() — stoppar keepAlive-
+                // Task:en innan chain.close() river ner event loop-gruppen
+                // under den (CodeRabbit-fynd), samma race-klass som redan
+                // dokumenteras i SSHSession.swift.
+                self.shell?.close()
                 await self.chain?.close()
                 debugLog("session", "fel: \(error)")
                 guard !isStopped else { return }
