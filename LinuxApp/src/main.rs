@@ -9,6 +9,7 @@ mod archive;
 mod command_library;
 mod docker;
 mod host;
+mod key_deploy;
 mod known_hosts;
 mod port_forward;
 mod settings;
@@ -286,12 +287,36 @@ fn refresh_list(
                 }
             }
         ));
+        let key_deploy_action = gtk::gio::SimpleAction::new("key_deploy", None);
+        key_deploy_action.connect_activate(clone!(
+            #[strong]
+            store,
+            #[strong]
+            area,
+            #[strong(rename_to = host_id)]
+            h.id,
+            move |_, _| {
+                let host = store.borrow().all().iter().find(|x| x.id == host_id).map(|h| (*h).clone());
+                if let Some(host) = host {
+                    require_password(
+                        &area,
+                        host,
+                        clone!(
+                            #[strong]
+                            store,
+                            move |area, host, password| open_key_deploy_view(area, host, password, &store)
+                        ),
+                    );
+                }
+            }
+        ));
         action_group.add_action(&edit_action);
         action_group.add_action(&delete_action);
         action_group.add_action(&docker_action);
         action_group.add_action(&commands_action);
         action_group.add_action(&sftp_action);
         action_group.add_action(&forward_action);
+        action_group.add_action(&key_deploy_action);
         row.insert_action_group("host", Some(&action_group));
 
         list.append(&row);
@@ -312,6 +337,9 @@ fn gio_menu_for(toggles: &settings::FeatureToggles) -> gtk::gio::Menu {
     }
     if toggles.show_port_forward {
         menu.append(Some("Tunnel"), Some("host.forward"));
+    }
+    if toggles.show_key_deploy {
+        menu.append(Some("Nyckel"), Some("host.key_deploy"));
     }
     menu.append(Some("Ta bort"), Some("host.delete"));
     menu
@@ -1140,6 +1168,169 @@ fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Op
             status_label.set_label("Stoppad");
             start_button.set_sensitive(true);
             stop_button.set_sensitive(false);
+        }
+    ));
+}
+
+/// Genererar en ny Ed25519-nyckel, deployerar den mot värden (via den
+/// BEFINTLIGA auth-metoden) och verifierar att den fungerar — motsvarar
+/// `App/KeyDeployView.swift`. Vid lyckad verifiering erbjuds att byta
+/// värdens lagrade auth-metod till den nya nyckeln, så ett gammalt
+/// lösenord inte behöver sparas kvar.
+fn open_key_deploy_view(area: &Rc<SessionArea>, host: host::Host, password: Option<String>, store: &Rc<RefCell<HostStore>>) {
+    let comment_row = adw::EntryRow::builder().title("Kommentar (valfri)").text(format!("bastion@{}", host.alias)).build();
+    let group = adw::PreferencesGroup::new();
+    group.add(&comment_row);
+
+    let public_key_view = gtk::TextView::builder().editable(false).wrap_mode(gtk::WrapMode::WordChar).build();
+    public_key_view.set_visible(false);
+    let public_key_scroller = gtk::ScrolledWindow::builder()
+        .child(&public_key_view)
+        .min_content_height(60)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+
+    let status_label = gtk::Label::builder()
+        .label("Inte genererad")
+        .margin_start(12)
+        .margin_end(12)
+        .halign(gtk::Align::Start)
+        .wrap(true)
+        .build();
+    let generate_button = gtk::Button::with_label("Generera + deploya + verifiera");
+    let adopt_button = gtk::Button::with_label("Använd den nya nyckeln för den här värden");
+    adopt_button.set_sensitive(false);
+
+    let button_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .margin_bottom(8)
+        .build();
+    button_box.append(&generate_button);
+    button_box.append(&adopt_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(
+        &gtk::Label::builder()
+            .label(format!("Nyckel: {}", host.alias))
+            .margin_top(12)
+            .margin_bottom(4)
+            .margin_start(12)
+            .halign(gtk::Align::Start)
+            .css_classes(["title-4"])
+            .build(),
+    );
+    content.append(&group);
+    content.append(&button_box);
+    content.append(&status_label);
+    content.append(&public_key_scroller);
+
+    let page = area.tab_view.append(&content);
+    page.set_title(&format!("Nyckel: {}", host.alias));
+    area.tab_view.set_selected_page(&page);
+    area.update_placeholder();
+
+    // Håller den nya nyckelns sökväg mellan "Generera"- och "Använd den
+    // nya nyckeln"-klicken — bara `adopt_button` behöver den, och bara
+    // efter en lyckad verifiering (`adopt_button` är osensitiv innan dess).
+    let new_key_path: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+
+    generate_button.connect_clicked(clone!(
+        #[strong]
+        host,
+        #[strong]
+        password,
+        #[strong]
+        comment_row,
+        #[strong]
+        public_key_view,
+        #[strong]
+        public_key_scroller,
+        #[strong]
+        status_label,
+        #[strong]
+        generate_button,
+        #[strong]
+        adopt_button,
+        #[strong]
+        new_key_path,
+        move |_| {
+            let pair = match key_deploy::generate_ed25519(&comment_row.text()) {
+                Ok(p) => p,
+                Err(e) => {
+                    status_label.set_label(&format!("Fel: kunde inte generera nyckel: {e}"));
+                    return;
+                }
+            };
+            let key_path = match key_deploy::save_private_key(&pair.private_key_pem) {
+                Ok(p) => p,
+                Err(e) => {
+                    status_label.set_label(&format!("Fel: kunde inte spara nyckeln: {e}"));
+                    return;
+                }
+            };
+            public_key_view.buffer().set_text(&pair.public_key_line);
+            public_key_scroller.set_visible(true);
+            public_key_view.set_visible(true);
+            status_label.set_label("Deployerar och verifierar…");
+            generate_button.set_sensitive(false);
+
+            let rx = key_deploy::spawn_deploy_and_verify(host.clone(), password.clone(), pair.public_key_line.clone(), key_path.clone());
+            glib::spawn_future_local(clone!(
+                #[strong]
+                status_label,
+                #[strong]
+                generate_button,
+                #[strong]
+                adopt_button,
+                #[strong]
+                new_key_path,
+                async move {
+                    match rx.recv().await {
+                        Ok(Ok(())) => {
+                            status_label.set_label("Klart — nyckeln är deployad och verifierad att fungera.");
+                            *new_key_path.borrow_mut() = Some(key_path);
+                            adopt_button.set_sensitive(true);
+                        }
+                        Ok(Err(e)) => {
+                            status_label.set_label(&format!("Fel: {e}"));
+                        }
+                        Err(_) => {
+                            status_label.set_label("Fel: kanalen stängdes oväntat");
+                        }
+                    }
+                    generate_button.set_sensitive(true);
+                }
+            ));
+        }
+    ));
+
+    adopt_button.connect_clicked(clone!(
+        #[strong]
+        host,
+        #[strong]
+        store,
+        #[strong]
+        status_label,
+        #[strong]
+        adopt_button,
+        #[strong]
+        new_key_path,
+        move |_| {
+            let Some(key_path) = new_key_path.borrow_mut().take() else { return };
+            let mut updated = host.clone();
+            updated.auth = host::HostAuth::KeyFile(key_path);
+            match store.borrow_mut().upsert(updated) {
+                Ok(()) => {
+                    status_label.set_label("Värdens auth-metod är nu den nya nyckeln.");
+                    adopt_button.set_sensitive(false);
+                }
+                Err(e) => status_label.set_label(&format!("Fel: kunde inte spara den nya auth-metoden: {e}")),
+            }
         }
     ));
 }

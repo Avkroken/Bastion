@@ -1,0 +1,333 @@
+//! SSH-nyckeldistribution, motsvarigheten till `Sources/SSHCore/
+//! KeyManagement.swift` + `App/KeyDeployView.swift`. Genererar ett nytt
+//! Ed25519-nyckelpar, lägger till den publika raden i fjärrsidans
+//! `~/.ssh/authorized_keys` (idempotent, samma kommando som Swift-sidan),
+//! och verifierar sedan att nyckeln FAKTISKT fungerar genom en ny, separat
+//! anslutning — precis som `SSHSession.verifyKeyAuthWorks` gör innan ett
+//! lösenord får tas bort ur lagringen.
+//!
+//! KÄND BEGRÄNSNING: bara POSIX-fjärrsystem (`~/.ssh/authorized_keys`) —
+//! `RemotePlatform.windowsAdmin`/`.windowsStandard` i Swift-sidan har ingen
+//! motsvarighet här än, LinuxApp har inget `Host.platform`-fält.
+
+use crate::host::{Host, HostAuth};
+use russh::keys::key::KeyPair;
+use russh::keys::PublicKeyBase64;
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+pub struct GeneratedKeyPair {
+    pub public_key_line: String,
+    /// PKCS8 PEM — `russh_keys::decode_secret_key` (använd av `load_secret_key`,
+    /// se `ssh::authenticate`s `HostAuth::KeyFile`-gren) läser detta formatet
+    /// precis lika bra som `-----BEGIN OPENSSH PRIVATE KEY-----`, så samma
+    /// `HostAuth::KeyFile(path)` fungerar oavsett vilketdera som skrevs.
+    pub private_key_pem: String,
+}
+
+/// Genererar ett helt nytt, slumpmässigt Ed25519-nyckelpar. `comment`
+/// bifogas den publika raden (samma konvention som `ssh-keygen -C`).
+pub fn generate_ed25519(comment: &str) -> Result<GeneratedKeyPair, String> {
+    let keypair = KeyPair::generate_ed25519().ok_or("kunde inte generera Ed25519-nyckel")?;
+    let public_key = keypair.clone_public_key().map_err(|e| e.to_string())?;
+    let mut public_key_line = format!("{} {}", public_key.name(), public_key.public_key_base64());
+    if !comment.is_empty() {
+        public_key_line.push(' ');
+        public_key_line.push_str(comment);
+    }
+
+    let mut pem_bytes = Vec::new();
+    russh::keys::encode_pkcs8_pem(&keypair, &mut pem_bytes).map_err(|e| e.to_string())?;
+    let private_key_pem = String::from_utf8(pem_bytes).map_err(|e| e.to_string())?;
+
+    Ok(GeneratedKeyPair { public_key_line, private_key_pem })
+}
+
+/// Skriver PEM-materialet till en ny fil under `~/.bastion/keys/` med 0600 —
+/// samma rättighetsnivå som `ssh-keygen` sätter på `~/.ssh/id_ed25519`.
+/// Filnamnet innehåller ett UUID, inte värdaliaset, så två nycklar för olika
+/// värdar (eller omgenererade nycklar för samma värd) aldrig krockar.
+pub fn save_private_key(pem: &str) -> Result<String, String> {
+    let dir = dirs::home_dir().ok_or("kunde inte hitta hemkatalogen")?.join(".bastion/keys");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+
+    let path = dir.join(format!("bastion_ed25519_{}", uuid::Uuid::new_v4()));
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .map_err(|e| e.to_string())?;
+    file.write_all(pem.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Escapar en sträng säkert för inbäddning i ETT enkelcitat POSIX shell-
+/// argument — samma teknik som Swift-sidans `shellQuoted`.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Bygger kommandot som lägger till `public_key_line` i
+/// `~/.ssh/authorized_keys` — idempotent, skapar `~/.ssh` med rätt
+/// rättigheter om den saknas. Egen funktion (inte inline i
+/// `spawn_deploy_and_verify`) för att kunna testa den exakta strängen utan
+/// en riktig SSH-anslutning — samma uppdelning som Swift-sidans
+/// `deployPublicKeyCommandPOSIX`.
+pub fn deploy_command(public_key_line: &str) -> String {
+    deploy_command_at(public_key_line, "~/.ssh/authorized_keys")
+}
+
+/// Samma som `deploy_command`, fast mot en godtycklig sökväg — bara till
+/// för `deploy_and_verify`s test, som MÅSTE skriva någon annanstans än den
+/// riktiga körande kontots `~/.ssh/authorized_keys` (annars skulle testet
+/// permanent förorena den här sandboxens riktiga SSH-konfiguration OCH
+/// ändå misslyckas, eftersom `TestSshd`s isolerade `sshd` autentiserar mot
+/// sin EGEN fristående `authorized_keys`-fil, inte kontots riktiga).
+fn deploy_command_at(public_key_line: &str, path: &str) -> String {
+    let quoted = shell_quote(public_key_line);
+    let dir = path.rsplit_once('/').map(|(d, _)| d).unwrap_or("~/.ssh");
+    format!(
+        "mkdir -p {dir} && chmod 700 {dir} && touch {path} && \
+         chmod 600 {path} && \
+         (grep -qxF {quoted} {path} || echo {quoted} >> {path})"
+    )
+}
+
+/// Distribuerar den nya nyckeln (via den BEFINTLIGA auth-metoden i `host`)
+/// och verifierar sedan att den fungerar genom en HELT NY, separat
+/// anslutning som bara använder den nya nyckeln — motsvarar
+/// `SSHSession.verifyKeyAuthWorks`. Körs på en egen bakgrundstråd, samma
+/// mönster som `port_forward`/`socks_proxy`.
+pub fn spawn_deploy_and_verify(
+    host: Host,
+    password: Option<String>,
+    public_key_line: String,
+    new_key_path: String,
+) -> async_channel::Receiver<Result<(), String>> {
+    let (result_tx, result_rx) = async_channel::bounded(1);
+
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("kunde inte starta tokio-runtimen för nyckeldistributionstråden");
+        rt.block_on(async move {
+            let result = deploy_and_verify(host, password, public_key_line, new_key_path, None).await;
+            let _ = result_tx.send(result).await;
+        });
+    });
+
+    result_rx
+}
+
+async fn deploy_and_verify(
+    host: Host,
+    password: Option<String>,
+    public_key_line: String,
+    new_key_path: String,
+    authorized_keys_path_override: Option<&str>,
+) -> Result<(), String> {
+    let command = match authorized_keys_path_override {
+        Some(path) => deploy_command_at(&public_key_line, path),
+        None => deploy_command(&public_key_line),
+    };
+    let session = crate::ssh::connect(&host, password, None).await?;
+    let mut channel = session.channel_open_session().await.map_err(|e| format!("kunde inte öppna kanal: {e}"))?;
+    channel
+        .exec(true, command.as_bytes())
+        .await
+        .map_err(|e| format!("kunde inte köra distributionskommandot: {e}"))?;
+    while let Some(msg) = channel.wait().await {
+        if matches!(msg, russh::ChannelMsg::ExitStatus { .. }) {
+            break;
+        }
+    }
+
+    // Ny, HELT SEPARAT anslutning som bara litar på den nya nyckeln — bevisar
+    // att den fungerar innan anroparen (GTK-vyn) erbjuder att byta värdens
+    // lagrade auth-metod och ta bort lösenordet, precis som Swift-sidans
+    // "verifiera innan lösenordet tas bort"-resonemang.
+    let mut verify_host = host;
+    verify_host.auth = HostAuth::KeyFile(new_key_path);
+    crate::ssh::connect(&verify_host, None, None).await.map(|_| ()).map_err(|e| {
+        format!("nyckeln deployades men verifieringen misslyckades — lösenordet är INTE borttaget: {e}")
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_key_has_the_expected_ssh_ed25519_line_shape() {
+        let pair = generate_ed25519("bastion-test").unwrap();
+        assert!(pair.public_key_line.starts_with("ssh-ed25519 "), "fick: {}", pair.public_key_line);
+        assert!(pair.public_key_line.ends_with(" bastion-test"));
+        assert!(pair.private_key_pem.starts_with("-----BEGIN PRIVATE KEY-----"));
+    }
+
+    #[test]
+    fn two_generated_keys_are_never_the_same() {
+        let a = generate_ed25519("").unwrap();
+        let b = generate_ed25519("").unwrap();
+        assert_ne!(a.public_key_line, b.public_key_line);
+    }
+
+    #[test]
+    fn saved_private_key_round_trips_through_russh_keys_loader() {
+        let pair = generate_ed25519("").unwrap();
+        let path = save_private_key(&pair.private_key_pem).unwrap();
+        let loaded = russh::keys::load_secret_key(&path, None).unwrap();
+        let loaded_public = loaded.clone_public_key().unwrap();
+        assert_eq!(loaded_public.public_key_base64(), pair.public_key_line.split(' ').nth(1).unwrap());
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn deploy_command_is_idempotent_and_quotes_the_key_line() {
+        let cmd = deploy_command("ssh-ed25519 AAAA it's-a-comment");
+        assert!(cmd.contains("mkdir -p ~/.ssh"));
+        assert!(cmd.contains("grep -qxF"), "ska kolla om raden redan finns innan den lägger till den");
+        // Enkelcitatet i kommentaren ska vara escapat, inte avslutat kommandot i förtid.
+        assert!(cmd.contains("it'\\''s-a-comment"));
+    }
+
+    #[tokio::test]
+    async fn deploy_and_verify_reaches_a_real_sshd_and_the_new_key_actually_authenticates() {
+        let Some(sshd) = TestSshd::start() else {
+            eprintln!("hoppar: kunde inte starta en test-sshd i den här miljön");
+            return;
+        };
+
+        let mut host = Host::new("keydeploy-test".into(), "127.0.0.1".into(), whoami_user());
+        host.port = sshd.port as i64;
+        host.auth = HostAuth::KeyFile(sshd.client_key_path());
+
+        let pair = generate_ed25519("bastion-keydeploy-test").unwrap();
+        let key_path = save_private_key(&pair.private_key_pem).unwrap();
+
+        // Isolerad sökväg (TestSshd:ns EGEN authorized_keys-fil), inte den
+        // riktiga kontots `~/.ssh/authorized_keys` — se
+        // `deploy_command_at`s dokumentationskommentar för varför.
+        let authorized_keys_path = sshd.dir.join("authorized_keys").to_string_lossy().into_owned();
+        let result = deploy_and_verify(
+            host,
+            None,
+            pair.public_key_line.clone(),
+            key_path.clone(),
+            Some(&authorized_keys_path),
+        )
+        .await;
+        assert!(result.is_ok(), "deploy+verify misslyckades: {result:?}");
+
+        // Bevisa att raden verkligen hamnade i authorized_keys på riktigt —
+        // inte bara att verifieringsanslutningen råkade lyckas av någon
+        // annan anledning (t.ex. den ORIGINALA test-nyckeln fortfarande
+        // liggandes kvar i samma fil).
+        let authorized_keys = std::fs::read_to_string(sshd.dir.join("authorized_keys")).unwrap();
+        assert!(authorized_keys.contains(&pair.public_key_line), "den nya nyckeln hittades inte i authorized_keys");
+
+        std::fs::remove_file(key_path).ok();
+    }
+
+    /// Samma fristående test-sshd-teknik som `port_forward`/`socks_proxy`,
+    /// men `authorized_keys` pekar på HEMKATALOGENS `~/.ssh/authorized_keys`
+    /// (inte en fristående fil) eftersom `deploy_command` alltid skriver dit
+    /// — testet kör alltså mot den riktiga `$HOME` för den här sandboxens
+    /// `claude`-användare, samma sätt som övriga `TestSshd`-baserade tester
+    /// redan gör (ingen isolerad hemkatalog per sshd-instans).
+    struct TestSshd {
+        child: std::process::Child,
+        port: u16,
+        dir: std::path::PathBuf,
+    }
+
+    impl TestSshd {
+        fn start() -> Option<Self> {
+            let dir = std::env::temp_dir().join(format!("bastion-keydeploy-sshd-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).ok()?;
+
+            let host_key = dir.join("hostkey");
+            let status = std::process::Command::new("ssh-keygen")
+                .args(["-q", "-N", "", "-t", "ed25519", "-f"])
+                .arg(&host_key)
+                .status()
+                .ok()?;
+            if !status.success() {
+                return None;
+            }
+
+            let client_key = dir.join("client_key");
+            let status = std::process::Command::new("ssh-keygen")
+                .args(["-q", "-N", "", "-t", "ed25519", "-f"])
+                .arg(&client_key)
+                .status()
+                .ok()?;
+            if !status.success() {
+                return None;
+            }
+            let client_pub = std::fs::read_to_string(dir.join("client_key.pub")).ok()?;
+            // Den fristående sshd:ns EGEN authorized_keys, i testkatalogen —
+            // inte den riktiga kontots `~/.ssh/authorized_keys`. Bara den
+            // ORIGINALA test-nyckeln finns här från start; `deploy_command`
+            // lägger till den NYA genererade nyckeln i samma fil (eftersom
+            // `AuthorizedKeysFile` pekar hit, inte `~/.ssh/authorized_keys`
+            // relativt en riktig hemkatalog).
+            std::fs::write(dir.join("authorized_keys"), client_pub).ok()?;
+
+            let port = {
+                let l = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
+                l.local_addr().ok()?.port()
+            };
+
+            let config_path = dir.join("sshd_config");
+            std::fs::write(
+                &config_path,
+                format!(
+                    "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\n\
+                     PubkeyAuthentication yes\nPasswordAuthentication no\nUsePAM no\nStrictModes no\n\
+                     AllowTcpForwarding yes\nPidFile {}\n",
+                    host_key.display(),
+                    dir.join("authorized_keys").display(),
+                    dir.join("pid").display()
+                ),
+            )
+            .ok()?;
+
+            let child = std::process::Command::new("/usr/sbin/sshd")
+                .args(["-f"])
+                .arg(&config_path)
+                .args(["-D", "-e"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .ok()?;
+
+            for _ in 0..50 {
+                if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                    return Some(TestSshd { child, port, dir });
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            None
+        }
+
+        fn client_key_path(&self) -> String {
+            self.dir.join("client_key").to_string_lossy().into_owned()
+        }
+    }
+
+    impl Drop for TestSshd {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn whoami_user() -> String {
+        std::env::var("USER").unwrap_or_else(|_| "test".into())
+    }
+}

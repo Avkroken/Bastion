@@ -488,7 +488,35 @@ delvis andra, av konkreta skäl:
     Keychain (se `AuthResolver.swift`), så "ta bort lösenordet" betyder här
     bara att sluta FRÅGA efter det (`.askPassword` → `.keyFile`); LinuxApp
     sparade aldrig själva lösenordsvärdet till att börja med. Byggd + körd
-    (Xvfb), rent utan krasch.
+    (Xvfb), rent utan krasch. **HISTORIK, inte aktuell status** — den här
+    `KeyDeployView.swift` hörde till den gamla SwiftCrossUI/GTK4-`bastion-gui`,
+    som är RIVEN sedan arkitekturbeslutet 2026-08-03 (se "Arkitekturbeslut").
+    Motsvarigheten i den NYA Rust/GTK4-LinuxApp beskrivs separat nedan.
+  - **Rust/GTK4-LinuxApp: SSH-nyckeldistribution, backend + UI klart**
+    (2026-08-03, `LinuxApp/src/key_deploy.rs`): `generate_ed25519` (via
+    `russh::keys::key::KeyPair::generate_ed25519`) → `deploy_command`
+    (idempotent `~/.ssh/authorized_keys`-tillägg, samma logik som Swifts
+    `deployPublicKeyCommandPOSIX` — bara POSIX, `Host.platform`/Windows-
+    grenarna finns inte i LinuxApp) → `deploy_and_verify` öppnar en HELT NY,
+    separat anslutning med bara den nya nyckeln för att bevisa att den
+    fungerar, motsvarande `SSHSession.verifyKeyAuthWorks`. Nyckeln sparas
+    som PKCS8 PEM (0600, `~/.bastion/keys/bastion_ed25519_<uuid>`) — samma
+    `russh_keys::decode_secret_key` som redan läser OpenSSH-format läser
+    PKCS8 lika bra, ingen egen OpenSSH-writer behövdes. Testat genuint
+    end-to-end mot samma fristående test-sshd-mönster som `-L`/`-R`/`-D`:
+    en riktig ny nyckel genereras, deployas, och en efterföljande anslutning
+    som ENDAST litar på den nya nyckeln lyckas — plus en explicit kontroll
+    att raden verkligen landade i den (isolerade) `authorized_keys`-filen,
+    inte bara att verifieringen råkade lyckas av något annat skäl.
+    GTK4-vyn ("Nyckel"-menyposten, bakom `show_key_deploy`) har
+    Generera+deploya+verifiera i ETT klick, visar den publika raden, och en
+    separat "Använd den nya nyckeln"-knapp (bara aktiv efter lyckad
+    verifiering — opt-in, aldrig automatiskt, samma
+    [[feedback_password_removal_scope]]-princip som Swift-sidan) som byter
+    `host.auth` till den nya nyckelfilen via `HostStore::upsert`. Byggd och
+    körd under Xvfb utan krasch. **Kvar**: "klistra in befintlig nyckel"-
+    flödet (bara generera-nya-flödet är byggt), och `Host.platform`/Windows-
+    mål (LinuxApp har inget platform-fält alls än).
   - **App/-flödet klart** (2026-07-08, `App/KeyDeployView.swift`): samma
     generera→deploya→verifiera-ordning, men lagrar nyckeln i Keychain
     (`.keychainKey`, samma ID-schema `host-key-<uuid>` som `HostEditView`
