@@ -110,7 +110,18 @@ jobs:
               echo "::error::hittar inte $LIB via ldconfig — kan inte slå upp vilket Debian-paket det tillhör"
               exit 1
             fi
-            PKG=$(dpkg -S "$LIBPATH" | head -1 | cut -d: -f1)
+            # ldconfig -p svarar med /lib/x86_64-linux-gnu/... men Ubuntus
+            # sammanslagna /usr (/lib är en symlänk till usr/lib) gör att
+            # dpkgs egen fildatabas bara känner igen KANONISKA /usr/lib/...
+            # (CI-fynd: `dpkg -S` gav "no path found matching pattern" på den
+            # olösta symlänk-vägen även fast filen definitivt fanns).
+            LIBPATH=$(readlink -f "$LIBPATH")
+            # `dpkg -S` skriver "pkg1, pkg2: /sökväg" när flera paket äger
+            # SAMMA sökväg (t.ex. delade filnamn mellan arkitekturvarianter) —
+            # ta bara det FÖRSTA paketnamnet, annars bryts ordet isär av det
+            # inbäddade kommatecknet när PACKAGES senare ord-delas
+            # (CodeRabbit-fynd).
+            PKG=$(dpkg -S "$LIBPATH" | head -1 | cut -d: -f1 | cut -d, -f1 | xargs)
             if [ -z "$PKG" ]; then
               echo "::error::$LIBPATH (från $LIB) tillhör inget känt Debian-paket"
               exit 1
@@ -118,7 +129,11 @@ jobs:
             PACKAGES="$PACKAGES $PKG"
           done
 
-          EXTRA=$(printf '%s\n' $PACKAGES | sort -u | grep -v '^$' | paste -sd, - | sed 's/,/, /g')
+          # `grep -v '^libc6$'` — undviker att `libc6` (redan hårdkodat härnedan)
+          # dyker upp en andra gång ifall något DT_NEEDED-bibliotek som INTE
+          # matchar uteslutningsmönstret ovan ändå råkar tillhöra libc6
+          # (CodeRabbit-fynd).
+          EXTRA=$(printf '%s\n' $PACKAGES | sort -u | grep -v '^$' | grep -v '^libc6$' | paste -sd, - | sed 's/,/, /g')
           DEPENDS="libc6${EXTRA:+, $EXTRA}"
           echo "Härledd Depends-rad: $DEPENDS"
           echo "depends=$DEPENDS" >> "$GITHUB_OUTPUT"
