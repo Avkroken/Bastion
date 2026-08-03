@@ -46,7 +46,7 @@ delvis andra, av konkreta skäl:
 | Nyckelimport i appen (Keychain) | 🧩 `HostEditView` klistra-in + validering, `HostAuth.keychainKey`, städas vid borttagning |
 | Auto-poll av dashboard | 🧩 `DashboardModel.startPolling()`, 15 s intervall, behåller data vid övergående fel |
 | App-ikon + launch screen | ✅ `App/Assets.xcassets` |
-| Linux-GUI (`bastion-gui`, SwiftCrossUI/GTK4) | ✅ byggd och körd (Xvfb) + egen CI-lane (`linux-gui.yml`, required check) |
+| Linux-GUI (`bastion-gui`, SwiftCrossUI/GTK4) | ✅ byggd och körd (Xvfb) + egen CI-lane (`linux-gui.yml`, required check) på `main` idag — men se "Arkitekturbeslut" nedan: en ännu OMERGAD branch river ut hela SwiftCrossUI-spåret till förmån för native Rust/GTK4. Fram tills den branchen mergas är raden ovan fortsatt sann, inte historik. |
 | Linux-terminal (VT100/ANSI-tolk, bestående PTY-shell) | ✅ 42 fristående parser-tester gröna (`LinuxApp/Tests/`), körd (Xvfb) — riktig tangentbordsinmatning (2026-08-02, `KeyEventBridge.swift`, se "Klart"), ingen interaktiv GUI-verifiering än; inget musstöd (ingen rå gest-position-API i SwiftCrossUI) |
 | Linux-Docker-hantering (`DockerView`) | ✅ lista/start/stopp/omstart/logg/shell — motsvarar `App/DockerView.swift` |
 | Portvidarebefordran (`PortForwardView`) | ✅ lokal/fjärr/dynamisk, starta/stoppa — LinuxApp (byggd+körd, Xvfb) OCH App/ (2026-07-08, Xcode-only) |
@@ -1560,11 +1560,17 @@ alternativ hade sett ut, och slutsatsen blev ett definitivt beslut:
 > plattforms klient native. Och sammankopplingen mellan klienterna sker på
 > annat sätt än att dela kod. [...] Skriv varje klient efter dess native
 > plattform."
-**Beslut:**
+**Beslut** (fattat, men ÄNNU INTE mergat till `main` — se not nedan):
 - `LinuxApp/` (SwiftCrossUI/GTK4) och `WindowsApp/` (SwiftCrossUI/WinUIBackend,
-  commit 98f9931-portningen) är borttagna helt, inte frysta som referens.
-  `.github/workflows/linux-gui.yml`/`windows-gui.yml` borttagna med samma
-  commit (byggde bara de borttagna paketen).
+  commit 98f9931-portningen) ska tas bort helt, inte frysas som referens.
+  `.github/workflows/linux-gui.yml`/`windows-gui.yml` tas bort med samma
+  commit (byggde bara de paketen).
+  **Status 2026-08-03**: rivningen (commit `a6c0457`) finns bara på den
+  separata `claude/ios-multisession-swipe`-branchen (PR #216), ännu inte
+  mergad till `main`. Fram tills den mergar är `bastion-gui` FORTFARANDE den
+  levande, byggda SwiftCrossUI-implementationen på `main` (se Status-
+  tabellen ovan) — den här sektionen beskriver en fattad riktning, inte
+  redan genomförd verklighet på `main`.
 - Ny `WindowsApp/`: C#/.NET + WinUI 3 + SSH.NET, byggs från grunden.
 - Ny `LinuxApp/`: Rust + GTK4 (gtk4-rs) + russh/libssh2, byggs från grunden.
 - `SSHCore` delas INTE längre av Windows/Linux — samma princip som redan

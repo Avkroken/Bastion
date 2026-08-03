@@ -52,7 +52,11 @@ final class KeyParserTests: XCTestCase {
         process.arguments = ["-t", "ecdsa", "-b", "\(bits)", "-N", "", "-f", keyPath, "-C", ""]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-        try process.run()
+        do {
+            try process.run()
+        } catch {
+            throw XCTSkip("ssh-keygen kunde inte startas (bits=\(bits)): \(error)")
+        }
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {
             throw XCTSkip("ssh-keygen inte tillgänglig eller misslyckades (bits=\(bits))")
@@ -97,15 +101,19 @@ final class KeyParserTests: XCTestCase {
             let auth = try OpenSSHPrivateKey.parse(pem)
 
             let server = try LoopbackServer.start(password: "irrelevant")
+            defer { server.shutdown() }
             let session = SSHSession(
                 target: SSHTarget(host: "127.0.0.1", port: server.port, username: "tester"),
                 auth: auth, knownHosts: KnownHosts(path: nil))
-            try await session.connect()
-            let output = try await session.run("whoami")
-            await session.close()
-            server.shutdown()
-
-            XCTAssertEqual(output, "ran: whoami\n", "misslyckades för ecdsa-\(bits)")
+            do {
+                try await session.connect()
+                let output = try await session.run("whoami")
+                await session.close()
+                XCTAssertEqual(output, "ran: whoami\n", "misslyckades för ecdsa-\(bits)")
+            } catch {
+                await session.close()
+                throw error
+            }
         }
     }
 }
