@@ -454,7 +454,23 @@ delvis andra, av konkreta skäl:
   via `env:` (inte direkt `${{ }}`-interpolering) för att inte vara sårbar
   för skalinjektion via en illvillig taggnamn.
   **Kvar**: bara `bastion-cli` — `bastion-gui` (GTK4-beroenden utöver
-  Swift-runtimen) är ett separat, större paketeringssteg. Inget `.rpm` än.
+  Swift-runtimen) är ett separat, större paketeringssteg.
+- **`.rpm`-paketering av `bastion-cli`** (2026-08-03,
+  `linux-packaging-rpm.yml`): ✅ klart — RHEL/Fedora-halvan av samma
+  backloggpunkt. Samma härledda-beroende-strategi som `.deb`-jobbet
+  (binärens egna `DT_NEEDED`-lista via `readelf -d`, uppslaget mot
+  RPM-paket via `rpm -qf` i stället för `dpkg -S`, `Requires`-raden byggd
+  av DEN listan) — bara paketeringsverktyget bytt, ingen ny gissning.
+  Bygger i den officiella `swift:6.1-rhel-ubi9`-containern (giltig
+  image-tagg bekräftad direkt i CI, ingen omväg behövdes till skillnad
+  från `.deb`-jobbets `sh`/dash- och symlänk-fällor). Spec-filen skrivs
+  inline i workflowet (`%install` kopierar bara den redan byggda binären,
+  inget `%build`-steg) med `%global debug_package %{nil}` för att slippa
+  att `find-debuginfo.sh` letar efter debug-sektioner i en Swift-länkad
+  binär. Installeras + körs på riktigt (`rpm -i` + samma smoke-test som
+  `.deb`-jobbet) — inte bara "det kompilerar". Grönt på första försöket,
+  inga CodeRabbit-fynd. **Kvar**: samma som `.deb` — bara `bastion-cli`,
+  `bastion-gui` är ett separat steg.
 - **Linux-Docker-hantering**: `DockerView` (i `HostDetailView` via en knapp/sheet)
   lista/start/stopp/omstart/logg/shell — samma `DockerService` som iOS-appen.
   Shell öppnar en `TerminalSessionView` med `docker exec` som initialt kommando
@@ -975,17 +991,19 @@ Inget nytt att bygga, bara verifiera/lansera:
 - **Paketering + BSD-täckning** (nytt, 2026-07-07, se VISION.md
   "Plattforms- och paketeringsmål, fullständigt"):
   `.deb`-paket för `bastion-cli` (Debian/Ubuntu) — ✅ klart (2026-08-03,
-  se "Klart" → "`.deb`-paketering av `bastion-cli`"). Kvar: `.deb` för
+  se "Klart" → "`.deb`-paketering av `bastion-cli`"). `.rpm`-paket för
+  `bastion-cli` (RHEL/Fedora) — ✅ klart (2026-08-03, se "Klart" →
+  "`.rpm`-paketering av `bastion-cli`"). Kvar: `.deb`/`.rpm` för
   `bastion-gui` (GTK4-beroenden utöver Swift-runtimen, större steg),
-  `.rpm`-paket (RHEL/Fedora), FreeBSD-bygge (Swift har community-
-  toolchains där), OpenBSD/NetBSD-undersökning (oklart om Swift ens
-  fungerar där än — måste verifieras mot en riktig installation innan
-  något annat antas). `linux-packaging.yml` bygger idag bara `amd64`
-  (CodeRabbit-fynd: föregående skrivning antydde felaktigt att ARM64/
-  Raspberry Pi redan täcktes) — ARM64 kräver en egen körning på en
-  ARM64-runner/toolchain och ett faktiskt testat `.deb`-artefakt innan
-  det kan räknas som klart, inte bara att toolchainen i teorin stödjer
-  arkitekturen.
+  FreeBSD-bygge (Swift har community-toolchains där), OpenBSD/NetBSD-
+  undersökning (oklart om Swift ens fungerar där än — måste verifieras
+  mot en riktig installation innan något annat antas). Både
+  `linux-packaging.yml` och `linux-packaging-rpm.yml` bygger idag bara
+  `amd64` (CodeRabbit-fynd på `.deb`-jobbet: föregående skrivning antydde
+  felaktigt att ARM64/Raspberry Pi redan täcktes) — ARM64 kräver en egen
+  körning på en ARM64-runner/toolchain och ett faktiskt testat artefakt
+  innan det kan räknas som klart, inte bara att toolchainen i teorin
+  stödjer arkitekturen.
 - **Native filhanterare-integration + molnlagring som filkälla** (nytt,
   2026-07-07, se VISION.md "Native filhanterare-integration + molnlagring
   som filkälla") — inte påbörjat. Apple: `FileProvider`-ramverket
