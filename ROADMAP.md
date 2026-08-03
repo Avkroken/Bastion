@@ -492,6 +492,29 @@ delvis andra, av konkreta skäl:
   `-dev`-paketen installerade — Xvfb-smoke-testet (starta binären, vänta
   5s, kontrollera att processen fortfarande lever) körs sedan INUTI den
   containern.
+  **Uppföljande CI-fynd (upptäckt EFTER merge, ny PR samma dag)**: den
+  ursprungliga `--static-swift-stdlib`-strategin (samma som `bastion-cli`)
+  visade sig krascha på RIKTIGT i CI — `undefined reference to
+  'swift_uloc_toLegacyKey'` m.fl. ICU-symboler när SwiftCrossUIs
+  makro-/kompilatorplugin (`SwiftCrossUIMacrosPlugin`, körs på
+  byggvärden, inte i den slutgiltiga binären) länkas mot dev-snapshotens
+  `swift_static/`-bibliotek. Bekräftat (websökning) vara en känd
+  buggkategori specifik för tarball-installerade Swift dev-snapshots —
+  Docker-baserade toolchains (som `bastion-clis swift:6.1-noble`) har
+  aldrig haft problemet. Löst genom att gå tillbaka till DYNAMISK länkning
+  av Swift-runtimen och i stället BUNTA IHOP toolchainens egna `.so`-filer
+  i paketet (`usr/lib/bastion-gui/`) med en RPATH satt via `patchelf`.
+  **Ytterligare CodeRabbit-fynd (Major) på den lösningen**: en enkel
+  genomsökning av bara bastion-guis EGNA direkta `DT_NEEDED`-lista räcker
+  inte — de buntade Swift-biblioteken har SJÄLVA transitiva beroenden
+  (t.ex. FoundationInternationalization → ICU) som aldrig syns där, och
+  `DT_RUNPATH` är dessutom INTE transitivt till barn-bibliotek (ld.so(8):
+  gäller bara objektets egna direkta beroenden). Löst med en riktig
+  arbetskö (BFS) som även genomsöker varje buntat biblioteks egna
+  `DT_NEEDED`, och `patchelf` på VARJE buntat bibliotek (inte bara
+  huvudbinären) — alla ligger i samma katalog så `$ORIGIN` räcker för dem
+  alla. Smoke-testet kompletterades med en precis `ldd`-baserad kontroll
+  (pekar ut exakt vilket bibliotek som saknas) INNAN Xvfb ens startas.
   **Kvar**: `.rpm` för `bastion-gui` inte påbörjat. Bara `amd64`.
 - **Linux-Docker-hantering**: `DockerView` (i `HostDetailView` via en knapp/sheet)
   lista/start/stopp/omstart/logg/shell — samma `DockerService` som iOS-appen.
