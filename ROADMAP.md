@@ -255,9 +255,21 @@ delvis andra, av konkreta skäl:
   `ssh -J` på trådnivå.
   - `bastion-cli` läser `ProxyJump` ur `~/.ssh/config` automatiskt (fältet
     parsades redan sedan tidigare, `ResolvedHost.proxyJump`, men var aldrig
-    kopplat till en riktig anslutning förut) — inget eget `-J`-flagg på
-    kommandoraden än. Jump-hoppet återanvänder samma autentisering
-    (miljövariabler/nyckelfråga) som huvudmålet (v1-förenkling).
+    kopplat till en riktig anslutning förut). Jump-hoppet återanvänder samma
+    autentisering (miljövariabler/nyckelfråga) som huvudmålet
+    (v1-förenkling).
+  - **`-J <[user@]jumphost[:port]>`-kommandoradsflagg tillagt** (2026-08-03,
+    `Sources/bastion-cli/main.swift`) — vinner över `ProxyJump` ur
+    ssh-config om båda är satta, samma prioritetsordning som riktig
+    `ssh -J`. Återanvänder exakt samma `resolveDestination()`/
+    `connect(via:)`-väg som redan är bevisad end-to-end i
+    `ProxyJumpTests.swift` — det nya är bara flaggparsningen. Verifierat
+    genuint end-to-end mot TVÅ RIKTIGA lokala `sshd`-instanser (inte
+    `LoopbackServer`): `bastion-cli -J` hoppade genom den ena och körde
+    kommandot bevisligen på den ANDRA (separat `sshd`-process, egen
+    värdnyckel). Fel målnyckel gav ett rent, snabbt auth-fel (exit 2) —
+    inte den kända Windows-hänget (se ovan) — och saknade `-J`-argument gav
+    ett tydligt användningsfel.
   - **Viktig arkitekturbegränsning, dokumenterad i kod**: en session öppnad
     via `connect(via:)` lever på JUMP-sessionens event loop-grupp, inte sin
     egen — måste därför stängas INNAN jump-sessionen stängs. Upptäckt
