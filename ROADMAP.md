@@ -407,6 +407,30 @@ delvis andra, av konkreta skäl:
   **Ej verifierat interaktivt** (ingen riktig GUI-session eller
   testinfrastruktur för simulerade tangenttryck i det här repot) — bara
   `linuxapp-build` (kompilering + `TerminalBuffer`-parsertesterna) grönt.
+- **SSHCore verifierat mot en riktig Linux-runner** (2026-08-02,
+  `swiftpm-linux.yml`): ✅ klart. Påståendet "kärnan bygger på Linux och
+  Apple" (CLAUDE.md/README) verifierades tidigare bara på en macOS-runner
+  (`swiftpm-macos`) — ingen faktisk `swift build`/`swift test` av
+  rot-paketet kördes någonsin på Linux i CI. Kör i den officiella
+  `swift:6.1-noble`-Docker-avbildningen (rot-paketet beror inte på
+  SwiftCrossUI, drabbas alltså inte av swift-mutex-kompilatorbuggen som
+  tvingar `LinuxApp/` till en dev-snapshot). Hittade och fixade en riktig
+  miljöbugg direkt: `ArchiveOperationsTests` (zip-rundresa) misslyckades
+  med "remoteExit(status: 127)" — den minimala Docker-avbildningen saknade
+  `zip`/`unzip`.
+  **Kvarstående, dokumenterad flakighet** (upptäckt 2026-08-02, PR #223):
+  `TerminalTeardownRaceTests.testConcurrentOpenShellAndCloseNeverCrashes`
+  kraschade en gång på `swiftpm-linux` ("Cannot schedule tasks on an
+  EventLoop that has already shut down" → "leaking promise"-fatal error i
+  `EventLoopFuture.deinit`) — samma race-klass filen redan dokumenterar
+  utförligt för macOS, men uppenbarligen med ett annat timingfönster på
+  Linux (epoll) än macOS (kqueue), där samma test konsekvent gått grönt.
+  En omkörning av EXAKT samma commit gick grönt utan ändringar — bekräftat
+  intermittent, inte deterministiskt reproducerbart här och nu. Inte
+  utrett vidare denna omgång (kräver djupare undersökning av den
+  Linux-specifika event loop-avstängningsordningen, se `SSHSession.swift`s
+  omfattande kommentarer om samma raceklass) — flaggat för framtida arbete
+  snarare än en blind gissning.
 - **Linux-Docker-hantering**: `DockerView` (i `HostDetailView` via en knapp/sheet)
   lista/start/stopp/omstart/logg/shell — samma `DockerService` som iOS-appen.
   Shell öppnar en `TerminalSessionView` med `docker exec` som initialt kommando
