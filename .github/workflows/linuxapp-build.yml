@@ -1,0 +1,67 @@
+name: LinuxApp-bygge (Rust/GTK4)
+
+# Bygger+testar den native Rust/GTK4/libadwaita-klienten i LinuxApp/ — se
+# ROADMAP.md "Arkitekturbeslut" (2026-07-29): SwiftCrossUI-spåret (byggdes
+# tidigare av det nu borttagna linux-gui.yml) är riven och ersatt av detta.
+#
+# Jobbnamnet `linuxapp-build` matchar EXAKT branch-rulesetets
+# required_status_checks-lista på main (samma namn den gamla SwiftCrossUI-
+# byggningen hade) — utan denna workflow skulle den obligatoriska checken
+# aldrig kunna bli grön, oavsett vad koden gör.
+#
+# GTK4/libadwaita/vte4-headers krävs för att ens KOMPILERA gtk4-rs-
+# bindningarna (inte bara länka) — verifierat genom att faktiskt köra
+# `cargo build` lokalt efter att paketen installerats, inte antaget.
+#
+# MEDVETET INGEN `paths:`-filtrering här, trots att jobbet bara rör
+# LinuxApp/: detta är ett REQUIRED-check-namn i branch-rulesetet på main
+# (`linuxapp-build`). Ett required-check-jobb som inte triggas för en PR
+# (t.ex. en ren SSHCore/dokumentationsändring) rapporterar ALDRIG något
+# värde — GitHub låser då PR:en permanent på "Expected — waiting for
+# status" istället för att bara hoppa förbi. Samma mönster som redan syns
+# i `xcode.yml` (`xcodegen-and-build`/`swiftpm-macos`, också required,
+# också opathfiltrerade) — måste köra på VARJE PR mot main, inte bara de
+# som råkar röra LinuxApp/.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: linuxapp-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linuxapp-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: LinuxApp
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+
+      - name: Installera GTK4/libadwaita/vte4-headers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
+        with:
+          toolchain: stable
+
+      - name: Visa Rust-version
+        run: rustc --version && cargo --version
+
+      - name: cargo build
+        run: cargo build --verbose
+
+      - name: cargo test
+        run: cargo test --verbose
