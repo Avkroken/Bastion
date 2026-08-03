@@ -1607,11 +1607,39 @@ session per flik) + touchscreen-svep mellan dem (`GestureSwipe`,
 400px/s-tröskel) — motsvarar iOS MultiSessionView. Flikstängning (manuell
 eller fjärrskalets EOF) stänger SSH-anslutningen rent.
 
-**Medvetet UPPSKJUTET, inte glömt:** Funktioner-inställningar (Docker
-valfritt m.m.) kräver att Docker/Snippets/SFTP/portvidarebefordran-vyerna
-finns FÖRST i LinuxApp — de finns inte än (bara HostList+terminal). Att
-bygga togglar för obefintliga funktioner nu vore tomt skelett. Bygg
-underliggande vyer, lägg till togglar när det finns något att gömma.
+**Medvetet UPPSKJUTET, inte glömt** (STATUS 2026-08-03, se nedan för vad som
+sedan dess faktiskt byggts): Funktioner-inställningar (Docker valfritt m.m.)
+kräver att Docker/Snippets/SFTP/portvidarebefordran-vyerna finns FÖRST i
+LinuxApp. Vid skrivandets tillfälle fanns bara HostList+terminal. **Docker-,
+Kommandobiblioteks/Snippets- och SFTP-vyerna (inkl. rättigheter/arkiv) är
+sedan dess byggda** (se `src/main.rs`: `open_docker_view`/
+`open_command_library_view`/`open_sftp_view` m.fl.) — den här texten är
+alltså delvis inaktuell historik, inte aktuell status; kvarstår korrekt bara
+för portvidarebefordran (se nästa stycke) och själva Funktioner-togglarna
+(som fortfarande saknar UI trots att `settings::FeatureToggles` redan har
+alla fälten, inklusive `show_port_forward`).
+
+**Portvidarebefordran (lokal, `-L`), backend klar — UI ÄNNU INTE byggt**
+(2026-08-03, `LinuxApp/src/port_forward.rs`): ny `spawn_local_forward`
+öppnar en `direct-tcpip`-SSH-kanal per inkommen lokal TCP-anslutning via
+russh (`channel_open_direct_tcpip` + `Channel::into_stream()` +
+`tokio::io::copy_bidirectional`) — motsvarar
+`SSHSession.openLocalPortForward` i SSHCore. Delar samma `ssh::connect()`-
+hjälpare som redan används av den interaktiva shellen och engångskommandon.
+Testat genuint end-to-end: en fristående, minimal `sshd`-instans (egen
+konfigfil på en slumpad hög port — läser INTE `/etc/ssh/sshd_config`,
+träffas alltså inte av den här kontots `DenyUsers`-restriktion, se
+`bastion-cli -J`-verifieringen ovan för samma teknik) + en separat, oberoende
+TCP-ekoserver som målet. Klientdata skickad genom den lokala vidarebefordrade
+porten kom tillbaka genom HELA kedjan (lokal socket → SSH-kanal → sshd →
+ekoserver → samma väg tillbaka), inte en kortsluten loopback-gissning.
+1/1 nytt test grönt, 45/45 totalt (8 ignorerade, kräver riktig localhost-
+sshd på port 22 specifikt — se `ssh.rs`/`sftp.rs`).
+**Kvar**: fjärr- (`-R`) och dynamisk (`-D`, SOCKS5) vidarebefordran (inte
+byggda alls än), samt en `PortForwardView`-motsvarande GTK4-vy i `main.rs`
+som kopplar in `spawn_local_forward` (idag bara ett bibliotekslager, ingen
+knapp i UI:t) — matchar samma "bibliotek klart, ytnivå kvar"-mönster som
+redan gäller synk-mappval.
 
 **Klart samma dag, fjärde pass: formellt synkprotokoll, dokumenterat OCH
 implementerat** — se [SYNC_PROTOCOL.md](SYNC_PROTOCOL.md). `LinuxApp/src/

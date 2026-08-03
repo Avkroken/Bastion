@@ -10,6 +10,7 @@ mod command_library;
 mod docker;
 mod host;
 mod known_hosts;
+mod port_forward;
 mod settings;
 mod sftp;
 mod snippet;
