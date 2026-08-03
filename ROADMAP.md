@@ -980,9 +980,12 @@ Inget nytt att bygga, bara verifiera/lansera:
   `.rpm`-paket (RHEL/Fedora), FreeBSD-bygge (Swift har community-
   toolchains där), OpenBSD/NetBSD-undersökning (oklart om Swift ens
   fungerar där än — måste verifieras mot en riktig installation innan
-  något annat antas). ARM64/Raspberry Pi täcks naturligt av samma
-  Linux-bygge + `.deb`-paketering, förutsatt att toolchainen stödjer
-  target-arkitekturen (gör den, för Linux ARM64).
+  något annat antas). `linux-packaging.yml` bygger idag bara `amd64`
+  (CodeRabbit-fynd: föregående skrivning antydde felaktigt att ARM64/
+  Raspberry Pi redan täcktes) — ARM64 kräver en egen körning på en
+  ARM64-runner/toolchain och ett faktiskt testat `.deb`-artefakt innan
+  det kan räknas som klart, inte bara att toolchainen i teorin stödjer
+  arkitekturen.
 - **Native filhanterare-integration + molnlagring som filkälla** (nytt,
   2026-07-07, se VISION.md "Native filhanterare-integration + molnlagring
   som filkälla") — inte påbörjat. Apple: `FileProvider`-ramverket
