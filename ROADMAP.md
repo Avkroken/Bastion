@@ -469,8 +469,30 @@ delvis andra, av konkreta skäl:
   att `find-debuginfo.sh` letar efter debug-sektioner i en Swift-länkad
   binär. Installeras + körs på riktigt (`rpm -i` + samma smoke-test som
   `.deb`-jobbet) — inte bara "det kompilerar". Grönt på första försöket,
-  inga CodeRabbit-fynd. **Kvar**: samma som `.deb` — bara `bastion-cli`,
-  `bastion-gui` är ett separat steg.
+  inga CodeRabbit-fynd.
+- **`.deb`-paketering av `bastion-gui`** (2026-08-03,
+  `linux-packaging-gui.yml`): ✅ klart — GUI-halvan av backloggpunkten.
+  Byggs INTE i `swift:6.1-noble`-containern som CLI-paketen — bastion-gui
+  drar in SwiftCrossUI, vars kärnmodul kraschar stabila Swift 6.1.3
+  (swift-mutex-buggen), så samma Swift dev-snapshot-hämtning som
+  `linux-gui.yml` redan använder återanvänds rakt av. Samma härledda-
+  beroende-teknik som `.deb`-jobbet för `bastion-cli` (`readelf -d` →
+  `dpkg -S`) — bara en mycket LÄNGRE lista (hela GTK4/GLib/Pango/Cairo/
+  GdkPixbuf-familjen i stället för bara libcurl/libxml2), eftersom
+  tekniken är generisk och inte bryr sig om hur många delade bibliotek
+  binären råkar länka mot.
+  **CodeRabbit-fynd (Major)**: det första smoke-test-utkastet körde
+  `dpkg -i` + start direkt på byggvärden — men samma värd hade precis
+  installerat `libgtk-4-dev` som byggberoende, vilket redan lägger GTK4-
+  runtimebiblioteken på disk. Ett ofullständigt/felaktigt `Depends` hade
+  alltså kunnat passera testet ändå (fel sak bevisad). Löst genom att
+  flytta install+körning till en HELT FRISK `ubuntu:24.04`-container
+  (`docker run`) och byta `dpkg -i` mot `apt-get install ./paket.deb`,
+  som faktiskt löser `Depends`-raden via apt i en miljö som aldrig haft
+  `-dev`-paketen installerade — Xvfb-smoke-testet (starta binären, vänta
+  5s, kontrollera att processen fortfarande lever) körs sedan INUTI den
+  containern.
+  **Kvar**: `.rpm` för `bastion-gui` inte påbörjat. Bara `amd64`.
 - **Linux-Docker-hantering**: `DockerView` (i `HostDetailView` via en knapp/sheet)
   lista/start/stopp/omstart/logg/shell — samma `DockerService` som iOS-appen.
   Shell öppnar en `TerminalSessionView` med `docker exec` som initialt kommando
@@ -993,17 +1015,17 @@ Inget nytt att bygga, bara verifiera/lansera:
   `.deb`-paket för `bastion-cli` (Debian/Ubuntu) — ✅ klart (2026-08-03,
   se "Klart" → "`.deb`-paketering av `bastion-cli`"). `.rpm`-paket för
   `bastion-cli` (RHEL/Fedora) — ✅ klart (2026-08-03, se "Klart" →
-  "`.rpm`-paketering av `bastion-cli`"). Kvar: `.deb`/`.rpm` för
-  `bastion-gui` (GTK4-beroenden utöver Swift-runtimen, större steg),
-  FreeBSD-bygge (Swift har community-toolchains där), OpenBSD/NetBSD-
-  undersökning (oklart om Swift ens fungerar där än — måste verifieras
-  mot en riktig installation innan något annat antas). Både
-  `linux-packaging.yml` och `linux-packaging-rpm.yml` bygger idag bara
-  `amd64` (CodeRabbit-fynd på `.deb`-jobbet: föregående skrivning antydde
-  felaktigt att ARM64/Raspberry Pi redan täcktes) — ARM64 kräver en egen
-  körning på en ARM64-runner/toolchain och ett faktiskt testat artefakt
-  innan det kan räknas som klart, inte bara att toolchainen i teorin
-  stödjer arkitekturen.
+  "`.rpm`-paketering av `bastion-cli`"). `.deb`-paket för `bastion-gui`
+  — ✅ klart (2026-08-03, se "Klart" → "`.deb`-paketering av
+  `bastion-gui`"). Kvar: `.rpm` för `bastion-gui`, FreeBSD-bygge (Swift
+  har community-toolchains där), OpenBSD/NetBSD-undersökning (oklart om
+  Swift ens fungerar där än — måste verifieras mot en riktig installation
+  innan något annat antas). Alla tre paketeringsworkflows bygger idag
+  bara `amd64` (CodeRabbit-fynd på `.deb`-jobbet för `bastion-cli`:
+  föregående skrivning antydde felaktigt att ARM64/Raspberry Pi redan
+  täcktes) — ARM64 kräver en egen körning på en ARM64-runner/toolchain
+  och ett faktiskt testat artefakt innan det kan räknas som klart, inte
+  bara att toolchainen i teorin stödjer arkitekturen.
 - **Native filhanterare-integration + molnlagring som filkälla** (nytt,
   2026-07-07, se VISION.md "Native filhanterare-integration + molnlagring
   som filkälla") — inte påbörjat. Apple: `FileProvider`-ramverket
