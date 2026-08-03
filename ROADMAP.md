@@ -24,7 +24,8 @@ delvis andra, av konkreta skäl:
 | Lösenordsauth | ✅ testad end-to-end |
 | Ed25519-auth (rått frö + OpenSSH-nyckelfil) | ✅ testad end-to-end |
 | OpenSSH-nyckelfilsparser (`~/.ssh/id_ed25519`, okrypterad) | ✅ testad, autoupptäcks av CLI |
-| Krypterad nyckel (lösenfras) + RSA/ECDSA | ⬜ nästa steg (kastar tydligt fel nu) |
+| ECDSA-nyckelauth (P256/P384/P521, okrypterad) | ✅ testad end-to-end (3 kurvor, riktiga `ssh-keygen`-nycklar) |
+| Krypterad nyckel (lösenfras) + RSA | ⬜ se "Uppskjutet med avsikt" (kastar tydligt fel nu) |
 | Exec + strömmad stdout/stderr | ✅ testad |
 | Exitkod-hantering | ✅ |
 | Misslyckad auth utan att hänga | ✅ testad |
@@ -45,7 +46,7 @@ delvis andra, av konkreta skäl:
 | Nyckelimport i appen (Keychain) | 🧩 `HostEditView` klistra-in + validering, `HostAuth.keychainKey`, städas vid borttagning |
 | Auto-poll av dashboard | 🧩 `DashboardModel.startPolling()`, 15 s intervall, behåller data vid övergående fel |
 | App-ikon + launch screen | ✅ `App/Assets.xcassets` |
-| Linux-GUI (`bastion-gui`, SwiftCrossUI/GTK4) | ✅ byggd och körd (Xvfb) + egen CI-lane (`linux-gui.yml`, required check) |
+| Linux-GUI (`bastion-gui`, SwiftCrossUI/GTK4) | ✅ byggd och körd (Xvfb) + egen CI-lane (`linux-gui.yml`, required check) på `main` idag — men se "Arkitekturbeslut" nedan: en ännu OMERGAD branch river ut hela SwiftCrossUI-spåret till förmån för native Rust/GTK4. Fram tills den branchen mergas är raden ovan fortsatt sann, inte historik. |
 | Linux-terminal (VT100/ANSI-tolk, bestående PTY-shell) | ✅ 42 fristående parser-tester gröna (`LinuxApp/Tests/`), körd (Xvfb) — riktig tangentbordsinmatning (2026-08-02, `KeyEventBridge.swift`, se "Klart"), ingen interaktiv GUI-verifiering än; inget musstöd (ingen rå gest-position-API i SwiftCrossUI) |
 | Linux-Docker-hantering (`DockerView`) | ✅ lista/start/stopp/omstart/logg/shell — motsvarar `App/DockerView.swift` |
 | Portvidarebefordran (`PortForwardView`) | ✅ lokal/fjärr/dynamisk, starta/stoppa — LinuxApp (byggd+körd, Xvfb) OCH App/ (2026-07-08, Xcode-only) |
@@ -220,33 +221,153 @@ delvis andra, av konkreta skäl:
    Clang än Swift 6.1 (Clang 19.1.4) bundlar. Löst genom att uppgradera
    till Swift 6.3.3-RELEASE (bundlar Clang 21.1.6) — inte en riktig
    Bastion-relaterad bugg, bara toolchain-miljödrift på testmaskinen.
-   **Riktiga vyerna porterade** (2026-07-30, PR #217): hela UI-lagret
-   (host-lista/`ContentView`, dashboard, Docker, SFTP, S3, WireGuard,
-   Tailscale, portvidarebefordran, snippets, command library,
-   terminalflikar m.fl. — 28 filer) kopierat rakt av från
-   `LinuxApp/Sources/bastion-gui/` — ren SwiftCrossUI-kod skriven mot
-   standard `View`/`Scene`-API:t, ingen GTK-koppling i själva vyerna.
-   Verifierat FÖRST genom att läsa `WinUIBackend`-källan (klonad lokalt
-   från `moreSwift/swift-cross-ui`): alla widgets vyerna använder (List,
-   TextEditor, Picker, ScrollView, ProgressView, Toggle, SecureField,
-   NavigationSplitView) har en implementation där. `windowsapp-build`
-   grönt på riktigt med hela vyträdet inkopplat (inte bara placeholder-
-   vyn längre), PR #217 mergad.
-   Två filer portades medvetet INTE: `BastionGUIApp.swift` (Windows
-   behåller sitt eget `@main`, nu kopplat till den riktiga `ContentView()`)
-   och `GestureSwipeBridge.swift` (rå GLib/GTK4-signalkoppling för
-   touchscreen-svep mellan terminalflikar — ingen WinUIBackend-
-   motsvarighet finns, ingen egen pekar-/manipulationshändelse-API
-   exponerad i `.inspect()` ännu; dokumenterat i `TerminalTabsView.swift`,
-   flikbyte via knapptryck fungerar oförändrat).
-   **Kvar**: testa på riktigt mot en riktig Windows-maskin (VPS eller
-   motsvarande) — bara CI-verifierat (kompilerar) hittills, ingen har
-   faktiskt klickat runt i appen på riktig Windows-hårdvara än.
-4. ~~Riktig rå tangentbordsinmatning i Linux-terminalen~~ — ✅ klart
-   (2026-08-02), se "Klart" → "Linux-terminal".
+   **2026-07-28: verifierat på RIKTIG Windows-hårdvara för första gången**
+   (lokal Windows Server 2025-VM på mp100, inte bara CI:s cross-compile).
+   `bastion-gui.exe` kraschade omedelbart ("This application requires the
+   Windows App Runtime Version 1.5" / `WinUI/SwiftApplication.swift:64:
+   Fatal error: fatal` i swift-winuis `SwiftApplication.main()`) tills
+   EXAKT rätt version av Windows App Runtime installerades —
+   `1.5-preview1` (`1.5.240205001-preview1`, dokumenterad i swift-winuis
+   README), INTE en senare 1.5.x-patch (2.3.1 eller 1.5.250108004 gav
+   samma krasch). Efter det: ett riktigt WinUI3-fönster renderade
+   ("Bastion för Windows", platshållar-UI). Ny `WindowsApp/Install-
+   Bastion.ps1` + `WindowsApp/README.md` paketerar detta beroende
+   (kontrollerar/installerar automatiskt) — se commit `addc43e`.
+   MSIX-paketregistrering nekar åtkomst (`0x80070005`) över en icke-
+   interaktiv fjärrshell (WinRM) — måste köras i en riktig inloggad
+   session, samma begränsningsklass som Microsoft Store-installationer.
+   **Touch-svep tillagt samma dag** (användarbegäran: "Kan du få touchen
+   att funka på Windows och Linux"): ny `WinUISwipeGestureBridge.swift` —
+   till skillnad från GTK-sidan (som behövde en rå ABI-koppling) exponerar
+   swift-winui redan `UIElement.manipulationMode`/`.manipulationCompleted`
+   direkt via sin genererade WinRT-projektion, ingen egen C-bindning
+   behövdes. Minimal tvåsidig platshållar-demo i `ContentView` (svep
+   vänster/höger växlar sida). Ett riktigt kompileringsfel hittades och
+   fixades på riktig hårdvara (`.inspect` efter `.padding()` matchar
+   `FrameworkElement`-overloaden, inte `VStack`s egen `Canvas`-variant) —
+   commit `087b0e7`. **EJ verifierat på riktig touchhårdvara** — ingen
+   tillgänglig i den här miljön (bara en iPhone 16 Pro och en Samsung
+   Q80D, ingen Windows-touchskärm), bekräftat av användaren själv
+   (2026-07-28). Bara verifierat: kompilerar/länkar/startar utan krasch.
+   **Riktig installer tillagd och VERIFIERAD på riktig hårdvara 2026-07-29**
+   (`WindowsApp/Installer.iss` + `Build-Installer.ps1`, Inno Setup 6):
+   bygger `Output\BastionSetup.exe` som buntar `bastion-gui.exe` + Windows
+   App Runtime-installeraren i EN fil — runtimen körs tyst som ett
+   `[Run]`-steg innan appen startas, ingen PowerShell/manuell paketjakt
+   synlig för slutanvändaren. Direkt svar på packningsklagomålet ("allt
+   som bastion behöver måste följas med"). Två riktiga buggar hittades
+   och fixades under verifieringen (inte antaganden — hittade via faktisk
+   `iscc`-körning på `bastion-winserver`-VM:en):
+   - Icke-ASCII-tecken (å/ä/ö/em-dash) i `Build-Installer.ps1`/
+     `Installer.iss`/`Install-Bastion.ps1` korrumperades vid git-checkout
+     på Windows och gav "missing string terminator" i PowerShell-parsern
+     — fixat genom att skriva om alla tre filer i ren ASCII (commit
+     `18b3b5e`).
+   - `Installer.iss` saknade obligatoriskt `AppVersion`-direktiv — ISCC
+     vägrade kompilera ("[Setup] section must include an AppVersion or
+     AppVerName directive") — fixat (commit `76911ad`).
+   Efter fixarna: `iscc Installer.iss` gav "Successful compile (63.281
+   sec)", `BastionSetup.exe` (89MB) kördes interaktivt via RDP, hela
+   guiden (Select Destination → Ready to Install → Installing → Finish)
+   fungerade felfritt, skrivbordsikon skapades korrekt.
+
+   **Krasch hittad OCH LÖST samma session (2026-07-29)**: `bastion-gui.exe`
+   kraschade omedelbart efter installation. Windows händelselogg visade
+   `Exception code: 0xc000001d` (STATUS_ILLEGAL_INSTRUCTION) i
+   `swiftCore.dll` — en första hypotes (AVX-512-instruktion som VM:ens
+   AMD Ryzen 7430U saknar) verifierades vara FEL genom disassemblering
+   (`objdump`): instruktionen på kraschadressen var en avsiktlig `ud2`-
+   trap direkt efter ett `call`, inte en olaglig CPU-instruktion — det
+   vanliga kompilatormönstret efter anrop till en `noreturn`-funktion.
+   Den riktiga orsaken hittades genom att köra appen i en riktig konsol
+   (`cmd.exe`, inte en bakgrundslogg — WinRM/Start-Process-omdirigerad
+   stdout buffrades bort och visade aldrig felet): swift-winuis egen
+   `catch`-block skrev ut det verkliga felet innan `fatalError("fatal")`:
+
+       Failed to initialize WindowsAppRuntimeInitializer:
+       missingBootstrapper(["swift-winui_CWinAppSDK.resources\
+       Microsoft.WindowsAppRuntime.Bootstrap.dll", ...])
+
+   SwiftPM skapar en resursmapp `swift-winui_CWinAppSDK.resources`
+   (innehåller `Microsoft.WindowsAppRuntime.Bootstrap.dll`) bredvid
+   `.exe`-filen vid `swift build` — men `Installer.iss` kopierade bara
+   själva `.exe`-filen, aldrig denna mapp. Fixat genom att lägga till en
+   `[Files]`-post för mappen (commit `0e9952f`). **Verifierat på riktig
+   hårdvara**: ombyggd installer + ren installation + körning från
+   skrivbordsikon i en interaktiv session gav ett fullt renderat WinUI-
+   fönster ("Bastion för Windows", "0 sparade värdar", läser `HostStore`
+   korrekt) — ingen krasch. Svep-gesten testades INTE denna gång (kräver
+   äkta touch-input, en syntetisk musdrag via xdotool triggar inte
+   `ManipulationCompleted`) — kvarstår overifierad på riktig
+   touchhårdvara, som redan dokumenterat.
+
+   **Swift-runtime-DLL:erna buntade och verifierade OCKSÅ 2026-07-29**
+   (`Build-Installer.ps1` hittar automatiskt Swift-runtimens bin-katalog
+   och kopierar `swiftCore.dll` m.fl. till `Redist/SwiftRuntime/` innan
+   Inno Setup-kompilering, commit `addc8f0`+`0d6bb34`). **Hårt verifierat
+   på riktig hårdvara**: bytte tillfälligt namn på hela
+   `...\Programs\Swift`-katalogen (så toolchainen INTE kunde hittas av
+   något fallback), installerade om `BastionSetup.exe`, körde
+   `bastion-gui.exe` från den nya installationen — fullt renderat
+   fönster, ingen "DLL saknas"-krasch. `BastionSetup.exe` är nu en
+   genuint fristående installer: kräver INGEN separat Swift- eller
+   Windows App Runtime-installation på målmaskinen.
+
+   **Nästa steg**: porta de riktiga vyerna från `LinuxApp/Sources/bastion-
+   gui/` hit (inte påbörjat, svep-bryggan väntar på riktiga flikar att
+   växla mellan) — enda återstående punkten för denna sektion.
+4. **`bastion-cli` som headless/skriptbar fallback** (användarförslag
+   2026-07-28): "Den borde kunna integreras med Linux och Windows Shell
+   också, bash osv, cmd, PowerShell, så att det går att köra den remote
+   utan GUI." `bastion-cli` (rot-paketet, `Sources/bastion-cli/`) gör
+   redan detta — exec, `-L`/`-R`/-D`-portvidarebefordran, ProxyJump, ren
+   `SSHCore` utan GUI-beroende — men var ENDAST testad på macOS/Linux
+   (`xcode.yml`/CodeQL). Verifierat 2026-07-28: bygger och länkar rent
+   på Windows med samma Swift 6.1/MSVC-toolchain som `bastion-gui`, INGET
+   Windows App Runtime-beroende (ren SwiftNIO, ingen WinUI/MSIX
+   inblandad) — bekräftar att detta redan fungerar som den GUI-fria
+   reservlösningen användaren efterfrågade.
+
+   **BUGG hittad vid samma verifiering, PLATTFORMSSPECIFIK**: en
+   misslyckad autentisering (fel lösenord) mot en riktig SSH-server
+   hänger OÄNDLIGT på Windows (`bastion-cli.exe ... ` blockerar för
+   alltid, 0% CPU — inte en TCP/nätverksfråga, `Test-NetConnection`
+   bekräftar porten når fram). Samma exakta anrop (fel lösenord) på
+   Linux/macOS misslyckas KORREKT och snabbt: `Fel:
+   channelFailed("End of file")`, exit-kod 2. Roten är sannolikt i hur
+   swift-nio-ssh/swift-nio hanterar kanalstängning eller async-avbrott
+   annorlunda i sin Windows-portering (jämför den redan kända,
+   uppströms-rapporterade `apple/swift-nio#3647` ovan för samma
+   allmänna riskbild: swift-nios Windows-portering skiljer sig
+   strukturellt från POSIX-sidan). EJ rotorsaksbestämt än — kräver
+   vidare felsökning i `SSHSession`/`NIOSSHHandler`-felvägen specifikt
+   under Windows. Blockerar `bastion-cli` som en pålitlig Windows-
+   fallback tills löst (en trasig autentisering ska INTE kunna hänga
+   processen för alltid).
+
+   Kvar utöver detta: ingen dedikerad Windows-CI-check för `bastion-cli`
+   än (bara macOS/CodeQL bygger rot-paketet idag). `-J`-kommandoradsflagg
+   ✅ klart, se "Klart" nedan.
+5. ~~Riktig rå tangentbordsinmatning i Linux-terminalen~~ — ✅ klart
+   (2026-08-02), se "Klart" → "Linux-terminal". (Avsåg ursprungligen den
+   SwiftCrossUI-baserade `LinuxApp/`, sedan riven till förmån för Rust/GTK4
+   — se "Uppskjutet med avsikt"-beslutet nedan.)
 
 ## Klart
 
+- **ECDSA-nyckelautentisering (P256/P384/P521), okrypterad** (2026-08-03,
+  `SSHKeyParser.swift`/`SSHUserAuth.swift`): OpenSSH-privatnyckelparsern läser
+  nu `ecdsa-sha2-nistp256/384/521` utöver Ed25519 — läser den råa privata
+  skalären (SSH `mpint`, normaliserad till kurvans exakta byte-längd) och
+  bygger en `NIOSSHPrivateKey` via `P256`/`P384`/`P521.Signing.PrivateKey
+  (rawRepresentation:)`. Bekräftat via `NIOSSHPrivateKey`s källa att RSA INTE
+  stöds alls av swift-nio-ssh på klientsidan (bara Ed25519 + dessa tre
+  kurvor) — RSA är alltså en separat, egen lucka (se "Uppskjutet med
+  avsikt"), inte samma sak som "krypterad nyckel". Testat mot RIKTIGA
+  `ssh-keygen -t ecdsa -b 256/384/521`-nycklar (inte handskrivna fixtures):
+  parsning + end-to-end-autentisering mot `LoopbackServer` för alla tre
+  kurvorna, 7/7 gröna. Lösenfrasskyddade nycklar (alla typer, inklusive
+  ECDSA) stöds fortfarande inte — separat KDF/cipher-lucka, oförändrad.
 - **`ExternalBinaryFetcher` — generisk hämta+verifiera+cacha-hjälpare för
   externa binärer** (2026-08-03, `Sources/SSHCore/ExternalBinaryFetcher.swift`):
   första byggstenen för "Native WireGuard/Tailscale — inget externt beroende"
@@ -583,12 +704,21 @@ delvis andra, av konkreta skäl:
 
 ## Uppskjutet med avsikt
 
-- **Krypterade nycklar (lösenfras) + RSA/ECDSA.** OpenSSH krypterar med
-  `bcrypt_pbkdf` (Blowfish-baserad) + `aes256-ctr`. Varken bcrypt_pbkdf eller
-  AES-CTR finns i swift-cryptos publika API, så det kräver egna implementationer
-  av Blowfish + bcrypt_pbkdf + AES-CTR — säkerhetskritisk kod som förtjänar en
-  egen genomgång med testvektorer, inte en snabb iteration. Parsern kastar
-  `SSHKeyError.encrypted` tydligt tills dess.
+- **Krypterade nycklar (lösenfras).** OpenSSH krypterar med `bcrypt_pbkdf`
+  (Blowfish-baserad) + `aes256-ctr`. Varken bcrypt_pbkdf eller AES-CTR finns i
+  swift-cryptos publika API, så det kräver egna implementationer av Blowfish +
+  bcrypt_pbkdf + AES-CTR — säkerhetskritisk kod som förtjänar en egen
+  genomgång med testvektorer, inte en snabb iteration. Parsern kastar
+  `SSHKeyError.encrypted` tydligt tills dess. (ECDSA P256/P384/P521, OKRYPTERADE,
+  stöds redan — se Status-tabellen; det här gäller bara lösenfrasskyddet.)
+- **RSA-nyckelauth.** Blockerad av ett ANNAT skäl än krypterade nycklar: RSA
+  finns inte alls bland `NIOSSHPrivateKey`s fall (bekräftat genom att läsa
+  `NIOSSHPrivateKey.swift` i swift-nio-ssh — bara `.ed25519`/`.ecdsaP256`/
+  `.ecdsaP384`/`.ecdsaP521`/`.secureEnclaveP256`). swift-nio-ssh saknar
+  RSA-klientautentisering helt, inte bara okrypterad parsning av den —
+  kräver antingen uppströms-stöd eller en egen RSA-signeringsimplementation
+  ovanpå biblioteket. Parsern kastar `SSHKeyError.unsupportedKeyType`
+  tydligt tills dess.
 - **Ssh-agent-forwarding till fjärrserver** (`auth-agent@openssh.com`-
   kanaltypen, klassisk `ssh -A`) — **arkitektoriskt blockerad i
   swift-nio-ssh, inte något i Bastions egen kod** (verifierat 2026-07-07
@@ -1421,3 +1551,442 @@ Inget nytt att bygga, bara verifiera/lansera:
   typsnitt-API) eller ett byte av renderingslager för att göra rätt.
   Terminalfärger i App/ (SwiftTerm) är opåverkade av allt ovan — SwiftTerm
   har redan eget stöd för både musrapportering och ligaturer.
+Under Windows-portningen av LinuxApp-vyerna (commit 98f9931) upptäcktes att
+`WinUIBackend` (SwiftCrossUI) saknar `BackendFeatures.Sheets` — alla 9
+`.sheet()`-baserade popup-vyer i den porterade `ContentView.swift` kraschade
+på Windows. Det ledde till en diskussion om vad ett rent Windows-native
+alternativ hade sett ut, och slutsatsen blev ett definitivt beslut:
+> "Det är bättre att göra ett gediget jobb från början och göra varje
+> plattforms klient native. Och sammankopplingen mellan klienterna sker på
+> annat sätt än att dela kod. [...] Skriv varje klient efter dess native
+> plattform."
+**Beslut** (fattat, men ÄNNU INTE mergat till `main` — se not nedan):
+- `LinuxApp/` (SwiftCrossUI/GTK4) och `WindowsApp/` (SwiftCrossUI/WinUIBackend,
+  commit 98f9931-portningen) ska tas bort helt, inte frysas som referens.
+  `.github/workflows/linux-gui.yml`/`windows-gui.yml` tas bort med samma
+  commit (byggde bara de paketen).
+  **Status 2026-08-03**: rivningen (commit `a6c0457`) finns bara på den
+  separata `claude/ios-multisession-swipe`-branchen (PR #216), ännu inte
+  mergad till `main`. Fram tills den mergar är `bastion-gui` FORTFARANDE den
+  levande, byggda SwiftCrossUI-implementationen på `main` (se Status-
+  tabellen ovan) — den här sektionen beskriver en fattad riktning, inte
+  redan genomförd verklighet på `main`.
+- Ny `WindowsApp/`: C#/.NET + WinUI 3 + SSH.NET, byggs från grunden.
+- Ny `LinuxApp/`: Rust + GTK4 (gtk4-rs) + russh/libssh2, byggs från grunden.
+- `SSHCore` delas INTE längre av Windows/Linux — samma princip som redan
+  gällde `Android/` (Kotlin + Apache MINA SSHD). `SSHCore` förblir kärnan
+  bara för `App/` (iOS/macOS), eftersom Swift redan är native där.
+- Sammankoppling mellan klienter (host-databas-synk m.m.) byggs vidare på
+  befintligt synklager till ett formellt, klientoberoende protokoll/API —
+  inte en helt ny tjänst, inte delad UI- eller SSH-kod.
+**Varför:** uttalat produktmål (samma session) — inte att minimera kod/arbete,
+utan att bygga den klient folk väljer framför alla andra, oavsett plattform,
+utan att behöva jonglera flera olika leverantörers klienter för samma syfte.
+Ett delat cross-platform UI-ramverk (SwiftCrossUI) släpar efter varje enskild
+plattforms verkliga förmågor (Sheets-luckan var bara det senaste exemplet) —
+motsatsen till målet.
+**Status (2026-07-30):** `LinuxApp/` har nu en riktig grund: Host-datamodell +
+HostStore wire-kompatibel med `Sources/SSHCore/Host.swift`/`HostStore.swift`
+(verifierat mot en faktisk Swift-genererad `hosts.json`, inte gissat), en
+GTK4/libadwaita HostList-UI (lägg till/redigera/ta bort), samt en riktig
+SSH-anslutning via `russh` kopplad till en VTE4-terminalwidget — verifierat
+end-to-end mot en levande lokal sshd.
+
+**Kända begränsningar i SSH-lagret (dokumenterade i `src/ssh.rs`), näst på tur:**
+- Bara `HostAuth::KeyFile` (utan lösenfras), `AgentDefault` (ssh-agent) och
+  `AskPassword` stöds. `KeychainKey`/`CertificateFile`/`BitwardenItem` saknar
+  Linux-motsvarighet.
+- Ingen terminalstorlek-ombindning vid fönsterresize (fast 80x24).
+
+**Klart samma dag, tredje pass: TOFU host-key-verifiering** —
+`src/known_hosts.rs` portar `Sources/SSHCore/KnownHosts.swift` rakt av (samma
+filformat, `~/.bastion/known_hosts`), `check_server_key` avvisar nu en
+ändrad värdnyckel istället för att acceptera allt. Verifierat end-to-end mot
+en levande sshd: dels en normal anslutning (lärde/litade på den riktiga
+nyckeln, återanvände en post som redan fanns i `~/.bastion/known_hosts` från
+tidigare Bastion-bruk på samma maskin — samma fil delas alltså redan
+konceptuellt med Swift-sidan), dels en medveten manipulerad known_hosts-post
+som korrekt gav ett avslag med ett förklarande felmeddelande.
+
+**Klart samma dag, senare pass:** flikar (`AdwTabView`/`AdwTabBar`, en SSH-
+session per flik) + touchscreen-svep mellan dem (`GestureSwipe`,
+400px/s-tröskel) — motsvarar iOS MultiSessionView. Flikstängning (manuell
+eller fjärrskalets EOF) stänger SSH-anslutningen rent.
+
+**Medvetet UPPSKJUTET, inte glömt:** Funktioner-inställningar (Docker
+valfritt m.m.) kräver att Docker/Snippets/SFTP/portvidarebefordran-vyerna
+finns FÖRST i LinuxApp — de finns inte än (bara HostList+terminal). Att
+bygga togglar för obefintliga funktioner nu vore tomt skelett. Bygg
+underliggande vyer, lägg till togglar när det finns något att gömma.
+
+**Klart samma dag, fjärde pass: formellt synkprotokoll, dokumenterat OCH
+implementerat** — se [SYNC_PROTOCOL.md](SYNC_PROTOCOL.md). `LinuxApp/src/
+sync.rs` porterar `SyncEngine.merge` + `FolderSyncProvider` från Swift,
+`HostStore::sync` kopplar ihop dem. Verifierat med ett riktigt cross-
+instans-test: två oberoende `HostStore`-instanser konvergerar via en delad
+`FolderSyncProvider`-fil till samma tillstånd. Ingen UI för att välja/
+konfigurera en synkmapp än (biblioteksnivå klart, inte ytnivå); krypterade
+molntransporter (Dropbox/Drive/OneDrive) inte porterade.
+
+**Klart samma dag, femte pass: `WindowsApp/`-scaffold (C#/.NET + WinUI 3 +
+SSH.NET)** — `WindowsApp.csproj` (net8.0-windows10.0.19041.0,
+`WindowsAppSDKSelfContained=true`, `Microsoft.WindowsAppSDK` 1.6 +
+`SSH.NET`), minimal `App`/`MainWindow` (NavigationView-skal, ingen
+HostList/SSH-koppling än — det är nästa steg, inte detta). Verifierat på
+den lokala `bastion-winserver`-VM:en (Windows Server 2025, build 26100,
+.NET SDK 8.0.423 installerat via winget): **`dotnet build` lyckas rent,
+0 varningar/0 fel, första försöket** — självständig deployment bundlar
+alla WinAppSDK/WinUI-DLL:er korrekt (verifierat: filerna finns faktiskt i
+`bin/.../win-x64/`, inte bara antaget).
+
+**RENDERING VERIFIERAD (2026-07-30, senare pass).** Körning via WinRM
+(icke-interaktiv session, eller ens via `schtasks /it` från en
+scheduled-task-kontext) ger antingen en krasch
+(`Microsoft.UI.Xaml.dll`, `0xc000027b`) eller ett processfönster utan
+`MainWindowHandle` — bekräftat samma klass session-isolationsproblem som
+touchscreen-verifieringen ([[project-bastion-linuxapp-touchscreen-goal]]).
+LÖSNINGEN: koppla upp mot VM:ens redan aktiva RDP-session (`rdp-tcp#0`,
+session 2, `xfreerdp3` från denna Linux-värd) och skriva launch-kommandot
+DIREKT i en redan öppen interaktiv terminal i den sessionen (via `xdotool`
+mot den lokala Xvfb-skärmen som visar RDP-klienten) — INTE via WinRM eller
+en scheduled task, båda kör i fel session/window-station trots
+`/it`-flaggan. Resultatet: ett riktigt, korrekt renderat `Bastion`-fönster
+(NavigationView + "Värdar"-menyalternativ + platshållartexten "Ingen
+session öppen — värdlistan är inte kopplad in än." — exakt `MainWindow.xaml`
+som skriven), skärmdump tagen som bevis, processen städad och den
+tillfälliga `schtasks`-uppgiften borttagen efteråt.
+
+**Klart samma dag, sjätte pass: `LinuxApp` Docker-vy** — port av
+`Sources/SSHCore/DockerService.swift` (`docker.rs`: validering mot
+shell-injektion, kommandobyggare, parsning — alla 5 Swift-testfallen
+portade rakt av och gröna). UI: en "Docker"-flik per värd (öppnas via
+menyn på värdraden) med containerlista, start/stopp/omstart/loggar/shell
+per rad. "Shell" återanvänder den befintliga terminal-infrastrukturen
+(`startup_command` skickar `docker exec -it ...` automatiskt in i en ny
+flik) — ingen ny SSH-kod behövdes.
+
+Ny `ssh::run_command` (engångs-exec utan pty, delar `connect()`-hjälpen
+med den interaktiva shell-sessionen). Verifierat mot RIKTIGA levande
+Docker-containrar på utvecklingsmaskinen (plex/maintainerr/fetcher/
+watchtower) — men ENDAST läsande (`docker ps`), aldrig start/stopp/
+omstart mot riktiga containrar i ett test.
+
+**Klart samma dag, sjunde pass: `LinuxApp` Funktioner-inställningar
+(Docker-delen)** — port av `Sources/SSHCore/AppSettings.swift`
+(`settings.rs`, `~/.bastion/settings.json`, samma sex fält/wire-format som
+Swift, inklusive `showSFTPBrowser`s versala SFTP-akronym som avviker från
+serdes automatiska camelCase — verifierat mot en riktig `swift`-körning).
+En inställningsknapp i sidopanelen öppnar en dialog med en Docker-toggle;
+avstängd döljer den "Docker"-menyposten på alla värdrader direkt. De
+övriga fem fälten (Snippets/Kommandobibliotek/SFTP/portvidarebefordran/
+SSH-nyckeldistribution) round-trippar korrekt genom filen men saknar UI
+än — de har ingen vy att gömma i LinuxApp (se ovan). Detta uppfyller det
+uttryckligen namngivna kravet "Docker måste vara valfritt".
+
+**Klart samma dag, åttonde pass: `LinuxApp` Kommandobibliotek + Snippets +
+Funktioner-togglen för det** — port av `Sources/SSHCore/CommandLibrary.swift`
+(`command_library.rs`, alla 30 statiska referenskommandon Docker/Linux/Git/
+Cloudflare/Tailscale/WireGuard/systemd) + `Snippet.swift`/`SnippetStore.swift`
+(`snippet.rs`, `~/.bastion/snippets.json`, `{{variabel}}`-rendering). UI: en
+"Kommandon"-flik per värd listar båda; "Kör" fyller i variabler via en
+dialog om det behövs, annars öppnar direkt en ny terminalflik med
+kommandot som `startup_command` — samma återanvända mönster som
+Docker-shell, ingen ny SSH-kod. Egna snippets går att lägga till/redigera/
+ta bort. Funktioner-inställningen har nu även en Kommandobibliotek-toggle.
+
+**Explicit verifierat denna session (adresserar tidigare påpekande):**
+"exit måste avsluta sessionen" — ett nytt riktigt test
+(`ssh::tests::typing_exit_in_the_shell_closes_the_session`) skriver
+faktiskt `exit\n` i en levande SSH-shell och verifierar att
+`SshEvent::Closed` kommer tillbaka (vilket `start_session` i `main.rs`
+redan reagerar på genom att stänga fliken) — inte bara antaget från
+tidigare commits.
+
+**Klart samma dag, nionde pass: `LinuxApp` SFTP-bläddrare** — port av
+App/SFTPBrowserModel.swifts kärnfunktioner via `russh-sftp`-cratet ovanpå
+den befintliga `ssh::connect()`-hjälpen. `sftp.rs`: en bakgrundstråd med en
+enda återanvänd `SftpSession` (samma `ensureClient()`-cache-princip som
+Swift), kommandon via kanal (list/read/write/mkdir/remove_file/remove_dir/
+rename). UI: "Filer"-flik per värd, mapp-först-sortering, textredigering
+med binär-innehåll-detektering (UTF-8-avkodningsfel → skrivskyddad
+platshållartext, samma säkerhetsmarginal som Swiftsidans `isBinary`-fält —
+sparaknappen kan aldrig råka skriva över binärt innehåll med text). Ny
+Filer-toggle i Funktioner-inställningen.
+
+**Fälla hittad och fixad under verifiering:** `SftpSession::write()`
+öppnar bara med `OpenFlags::WRITE` — misslyckas med "No such file" på en
+NY fil, till skillnad från Swiftsidans `SFTPClient.writeFile` som alltid
+kan skapa. Egen `write_file()`-hjälp med `CREATE|TRUNCATE|WRITE` löser det.
+
+**Medvetet uppskjutet** (dokumenterat i `sftp.rs`, inte dolt): chmod/chown/
+komprimera/packa upp (Swiftsidans `chmod`/`chown`/`compress`/`extract`) —
+bara lista/navigera/ladda upp/ladda ner/ta bort/mkdir/döp om är porterat.
+
+Verifierat END-TO-END mot en levande sshd, inte bara byggt: ett komplett
+integrationstest (`full_round_trip_against_a_real_sftp_server`) kör mkdir
+→ write → read → list → rename → remove_file → remove_dir i en egen
+engångsmapp under `/tmp`, rör aldrig något annat på testmaskinen.
+
+**Klart samma dag, tionde pass: `WindowsApp`-rendering verifierad** — se
+uppdaterad status ovan i "Scaffolda ny WindowsApp/"-avsnittet. Nästa steg
+för Windows-sidan är nu funktionsutveckling, inte längre toolchain-
+verifiering.
+
+**Klart samma dag, elfte pass: `WindowsApp` HostStore/HostList** — ny
+`Bastion.Core` (plain net8.0-bibliotek, ingen WinUI-koppling): port av
+`Host.swift`/`HostStore.swift`/`SyncEngine.swift`/`SyncProvider.swift` till
+C#, samma wire-format som redan verifierat i `LinuxApp/src/host.rs`
+(ReferenceDate-epok, HostAuth-kodning, platt tombstones-array). 11 xUnit-
+tester körs DIREKT på Linux-utvecklingsmaskinen (separat .NET SDK
+installerat lokalt) — ingen VM-omväg för denna del av verifieringen.
+En riktig bugg hittades och fixades under testning: `ReferenceDate`
+saknade `[JsonConverter(...)]`-attributet på själva typen. Cross-
+instans-synktestet (`FolderSyncProvider`) portades också — SAMMA test
+som Rust-sidan, nu i ett TREDJE språk, verifierar att synkprotokollet
+verkligen är klientoberoende.
+
+`MainWindow`: riktig HostList (`ListView` bunden mot `HostStore.All()`),
+"Lägg till värd" via en native `ContentDialog`. Verifierat VISUELLT
+end-to-end via samma xfreerdp+xdotool-teknik som render-verifieringen
+([[reference-windows-vm-interactive-render-verification]]): lade till en
+värd genom UI:t, den dök upp i listan, klick visade rätt platshållartext,
+och `~/.bastion/hosts.json` på VM:en innehöll exakt rätt wire-format —
+inte bara byggt, faktiskt kört och sett fungera.
+
+**Klart samma dag, tolfte pass: `WindowsApp` SSH.NET-anslutning + riktig
+terminal — FULLSTÄNDIGT visuellt end-to-end-verifierad.** Ny `SshSession`
+(Bastion.Core, SSH.NET är rent C# — portabel, testad direkt på Linux mot
+en riktig sshd, 15 xUnit-tester inkl. exit-stänger-sessionen via
+`ShellStream.Closed` och TOFU-avvisning av ändrad värdnyckel). Terminalen
+renderas med xterm.js i en `WebView2` (vendrat lokalt i `Assets/xterm/`,
+ingen CDN) — WinUI 3 har ingen inbyggd VTE-motsvarighet.
+
+Verifierat: klick på en riktig värd i `WindowsApp` kopplade upp mot en
+levande sshd på värdmaskinen (via VM:ens virbr0-gateway, `192.168.122.1`),
+visade en RIKTIG `berduf@mp100:~$`-prompt i xterm.js, tog emot inskrivet
+`echo hello-from-windowsapp-terminal` och fick tillbaka rätt utdata, och
+`exit` stängde sessionen rent ("Sessionen avslutades"). Hela kedjan —
+tangentbord → `window.chrome.webview.postMessage` → `ShellStream.Write` →
+riktigt fjärrskal → `ShellStream.DataReceived` → `window.feed(...)` →
+xterm.js — fungerar. Detta var INTE bara byggt utan faktiskt kört och sett
+fungera, med skärmdumpar som bevis (samma xfreerdp+xdotool-teknik som
+tidigare render-verifiering). All testinfrastruktur (temporär nyckel i
+authorized_keys, testfil på VM:en) städad efteråt.
+
+KÄND BEGRÄNSNING (dokumenterad i SshSession.cs): bara nyckelfil (utan
+lösenfras) och lösenord — SSH.NET saknar agent-protokollstöd, så
+HostAuth.AgentDefault är inte porterat till WindowsApp. UI:t har heller
+ingen auth-typväljare än (alla nya värdar skapas med AgentDefault, som
+alltså inte fungerar i WindowsApp ännu — nästa steg).
+
+**Klart samma dag, trettonde pass:** `WindowsApp` fick en auth-typväljare
+i "Lägg till värd" (ComboBox: Nyckelfil/Lösenord — de enda två som
+faktiskt fungerar, AgentDefault döljs medvetet eftersom SSH.NET saknar
+agent-protokollstöd). Utan denna fix skapades nya värdar tyst med en
+obrukbar auth-typ.
+
+`LinuxApp` fick synk-UI: en ny `SyncConfig` (klientlokal — `~/.bastion/
+sync-config.json`, medvetet SKILD från det delade `SyncState`-protokollet
+eftersom vilken mapp man synkar mot är en per-enhet-inställning, inte
+data att slå ihop). Inställningsdialogen har nu en "Synk"-sektion: "Välj
+mapp…" (nativ `GtkFileDialog`) + "Synka nu" som kör `HostStore::sync` mot
+en `FolderSyncProvider` i den valda mappen. Biblioteket var redan
+verifierat (cross-instans-konvergenstestet); detta kopplar bara in ytan.
+6 enhetstester (1 ny: `sync_config_round_trips_through_disk`), cargo
+build/test rent, headless xvfb-run-körning utan krasch.
+
+**Klart samma dag, fjortonde pass: `WindowsApp` Synk-UI — VISUELLT
+end-to-end-verifierad.** `SyncConfig.cs` (Bastion.Core, 2 xUnit-tester) +
+en ny Synk-knapp i sidopanelen öppnar en dialog med "Välj mapp…" (riktig
+Windows `FolderPicker` via HWND-interop, `WinRT.Interop.WindowNative`) +
+"Synka nu" (`HostStore.Sync` mot en `FolderSyncProvider`).
+
+Verifierat via samma xfreerdp+xdotool-teknik: klickade Synk-knappen, en
+RIKTIG native Windows-mappväljare öppnades, valde en testmapp, sökvägen
+sparades och visades, "Synka nu" gav "Synkad", och den skrivna
+`hosts.json` i testmappen hade exakt rätt `SyncState`-wire-format
+(`{"hosts":[],"tombstones":[]}`) — samma protokoll som LinuxApp/Swift.
+Testmapp + sync-config.json städade efteråt.
+
+**Klart samma dag, femtonde pass: `LinuxApp` SFTP-utökningar
+(chmod/chown/komprimera/packa upp)** — port av
+`Sources/SSHCore/ArchiveOperations.swift` (`archive.rs`: samma
+shell-citeringslogik, alla 6 Swift-testfallen portade rakt av inklusive
+den RIKTIGA shell-injektionsverifieringen via `/bin/sh -c`) + chmod/chown
+via `russh-sftp`s `FileAttributes`/`set_metadata` (`sftp.rs`).
+
+UI: varje SFTP-rad fick en "Rättigheter/ägare"-knapp (oktalt läge +
+UID/GID-fält), mappar fick en "Komprimera"-knapp (tar.gz), och
+`.tar.gz`/`.tgz`/`.zip`-filer fick en "Packa upp"-knapp. Komprimera/
+packa upp shellar ut till tar/zip via `ssh::run_command` (SFTP v3 har
+ingen egen arkivsemantik) — infrastrukturen krävde en refaktorering
+(`SftpContext`-struct som buntar handtag+host+lösenord) så
+engångskommandona kan köras vid sidan av den öppna SFTP-sessionen.
+
+Verifierat END-TO-END mot en levande sshd, inte bara byggt: chmod
+verifierat via ett OBEROENDE `stat`-anrop (inte bara att SFTP-anropet
+returnerade Ok), och ett komplett komprimera→ta-bort-original→packa-upp-
+test som bevisar att filINNEHÅLLET faktiskt överlever hela resan.
+37 enhetstester (7 nya: 6 archive.rs + chmod/chown + arkiv-roundtrip),
+cargo build/test rent, headless xvfb-run-körning utan krasch.
+
+**Klart 2026-07-30, sextonde pass: krypterade molntransporter (AES-256-GCM)
+i alla TRE klienter, cross-språksverifierade byte-för-byte.**
+`sync_crypto.rs` (LinuxApp) och `SyncCrypto.cs` (`WindowsApp/Bastion.Core`,
+med .NETs inbyggda `Rfc2898DeriveBytes`/`AesGcm` — inga nya paket) portar
+`Sources/SSHCore/SyncCrypto.swift`: PBKDF2-HMAC-SHA256 + AES-256-GCM,
+samma "BSYNC1"-kuvert (magic + iterationer + salt + nonce||chiffertext||
+tagg). `EncryptedFolderSyncProvider` i alla tre språk.
+
+UI: både LinuxApp (`adw::SwitchRow` + `PasswordEntryRow` i synk-dialogen)
+och WindowsApp (`ToggleSwitch` + `PasswordBox`) fick en "Kryptera"-växel
+som byter `sync_now`-anropet mellan `FolderSyncProvider` (hosts.json,
+klartext) och `EncryptedFolderSyncProvider` (hosts.enc, krypterad) —
+rätt för en molnmapp (Dropbox/Drive/OneDrive) man inte litar på blint.
+
+Cross-språksverifiering: körde RIKTIGA test mot varandras faktiska
+kuvert i alla tre riktningar (Swift↔Rust, Rust↔C#) — genererade en
+sealed blob med ett språks verkliga testkörning och läste den med ett
+annat språks verkliga kod, inte bara "formatet ser rätt ut". Alla
+tillfälliga cross-språk-testmetoder borttagna igen efter körning.
+26 C#-tester (7 nya i `SyncCryptoTests.cs`), 44 Rust-tester (cargo
+build/test rent), 283 Swift-tester (oförändrat, `swift test` rent).
+
+WindowsApp-sidan VISUELLT verifierad också: `bastion-winserver`-VM:en
+(mp100, 192.168.122.42) var faktiskt igång, koden synkades dit (WinRM +
+base64-filöverföring, ingen git-klon där), `dotnet build
+WindowsApp.csproj -r win-x64` byggde rent (kräver explicit RID för
+`WindowsAppSDKSelfContained`, annars `error: requires a supported
+Windows architecture` — miljöbegränsning, inte en kodbugg), och via
+xfreerdp3+Xvfb+xdotool mot VM:ens redan aktiva RDP-session klickades
+Synk-knappen, "Kryptera"-växeln slogs på LIVE och lösenfrasfältet dök
+upp med texten "Dropbox/Drive/OneDrive — AES-256-GCM" — identiskt
+beteende med LinuxApp:s `SwitchRow`/`PasswordEntryRow`. Processen
+stoppades och VM-tillståndet återställdes efteråt.
+
+Detta var den sista punkten på den ursprungliga "kvarstående"-listan —
+krypterade molntransporter är nu en riktig, visuellt verifierad
+användarfunktion i alla tre klienter (Swift/App, Rust/LinuxApp,
+C#/WindowsApp).
+
+**WindowsApp: TabView-flikskal + Docker-flik + Kommandobibliotek/Snippets-flik
+(skrivet, kod-genomläst, INTE visuellt verifierat än).** `MainWindow` bytt
+från en enkel-session-panel (platshållare ↔ EN terminal) till ett riktigt
+`TabView`-flikskal (en flik per session/vy, stängbar), motsvarande LinuxApps
+`AdwTabView`/iOS `MultiSessionView` — en förutsättning som saknades innan
+Docker/Kommandon kunde portas utan att skapa en synligt annorlunda
+interaktionsmodell än de andra klienterna.
+
+- `DockerService.cs` (Bastion.Core): port av `DockerService.swift`/`docker.rs`
+  — samma injektionsskydd, kommandobyggare, parsning. 21 nya tester.
+- `Snippet.cs`/`SnippetStore.cs`/`CommandLibrary.cs` (Bastion.Core): port av
+  `Snippet.swift`/`SnippetStore.swift`/`CommandLibrary.swift` (samma
+  `{{variabel}}`-rendering som `snippet.rs`). 12 nya tester.
+- `MainWindow`: värdradens "Mer"-meny fick "Docker"/"Kommandon". Docker-fliken
+  (containerlista, start/stopp/omstart/loggar/shell) och Kommandon-fliken
+  (snippets + inbyggt bibliotek, "Kör" med variabelifyllningsdialog om
+  mallen har `{{variabler}}`, ny/redigera/ta bort-snippet) byggs imperativt
+  i C# (samma stil som LinuxApps `main.rs`, inte XAML-databindning) —
+  medvetet, eftersom referensimplementationen själv är imperativ.
+- 56/56 `dotnet test` gröna (Bastion.Core + Bastion.Core.Tests).
+
+**EJ verifierat**: `dotnet build` av själva `WindowsApp.csproj` kräver
+Windows (WinUI:s XAML-kompilator, `XamlCompiler.exe`, är en Windows-binär —
+`Exec format error` bekräftat vid försök på denna Linux-utvecklingsmaskin).
+Kräver `bastion-winserver`-VM:en (se ovan, `192.168.122.42`,
+`dotnet build WindowsApp.csproj -r win-x64` + xfreerdp3+xdotool-tekniken)
+för att bekräfta att XAML:en faktiskt kompilerar och renderar rätt.
+
+Kvar för full WindowsApp-paritet med LinuxApp: SFTP-bläddrare (inkl.
+chmod/chown/arkiv), Funktioner-inställningar (dölj flikar via toggles),
+rå tangentbordsinput, fler HostAuth-typer (SSH.NET saknar agent-protokoll).
+
+**WindowsApp: SFTP-bläddrare, grundpasset (skrivet, INTE visuellt
+verifierat).** Port av `App/SFTPBrowserModel.swift`/`LinuxApp/src/sftp.rs`
+— men ovanpå SSH.NETs INBYGGDA `SftpClient` istället för en egen SFTP-
+protokollimplementation (Swift/Rust hade ingen färdig SFTP-klient att
+återanvända, C#-sidan har det redan via samma SSH.NET-paket som redan
+används för terminal/Docker/kommandon).
+
+- `SftpBrowserSession.cs` (Bastion.Core): en öppen `SftpClient`-anslutning
+  återanvänds för hela bläddringen (motsvarar Swiftsidans
+  `ensureClient()`-cache / Rusts en-bakgrundstråd-per-flik — men
+  SSH.NETs synkrona API behöver ingen egen tråd/kanal-aktör).
+  List/ReadFile/WriteFile/CreateDirectory/RemoveFile/RemoveDirectory/Rename
+  + `TryDecodeUtf8` (strikt UTF-8-validering, samma säkerhetsmarginal som
+  Swiftsidans `isBinary`-fält — binärt innehåll ska aldrig tyst tolkas
+  som text och riskera att sparas över). TOFU-verifieringen delas nu med
+  `SshSession` via en gemensam `MakeHostKeyHandler`-hjälpare (refaktorering,
+  ingen betydelseändring) eftersom `SshClient`/`SftpClient` båda ärver
+  samma `BaseClient`-event.
+- 3 nya tester (`TryDecodeUtf8`, som körs utan nätverk) + 2 nya
+  SSH-gated integrationstester (samma `BASTION_TEST_SSH_KEY`-mönster som
+  `SshSessionTests`, hoppas över utan nyckel).
+  **Kunde INTE köras på riktigt i den här miljön**: `claude`-Linux-kontot
+  på mp100 har `DenyUsers claude` i `sshd_config` — SSH till localhost är
+  en avsiktlig, permanent gräns för det kontot (se
+  [[feedback_claude_account_no_docker_no_berduf_home]]), inte en
+  miljöbugg. En tillfällig testnyckel skapades, verifierades blockerad,
+  och togs bort igen.
+- `MainWindow`: "Filer"-menyalternativ, en flik per värd (upp/ny mapp/
+  uppdatera-verktygsfält + lista, klick navigerar mapp eller öppnar en
+  textredigerare, döp om/ta bort per rad) — samma UX som LinuxApps
+  grundpass (utan chmod/chown/arkiv än, se ovan).
+- 62/62 `dotnet test` gröna totalt (Bastion.Core + Bastion.Core.Tests).
+
+**EJ portat i denna pass** (LinuxApps femtonde pass, senare arbete):
+chmod/chown, komprimera/packa upp. SSH.NETs `SftpClient` saknar en
+`GetCanonicalPath`/realpath-motsvarighet i den här versionen (verifierat
+via reflektion mot den faktiska DLL:en, inte antaget) — behöver en annan
+lösning (t.ex. ett engångskommando via `SshSession.RunCommand("pwd")`)
+den dagen komprimera/packa-upp portas, som i sin tur (liksom i Rust/Swift)
+shellar ut till tar/zip snarare än att använda SFTP-protokollet direkt.
+
+**WindowsApp: Funktioner-inställningar (skrivet, INTE visuellt
+verifierat).** Port av `AppSettings.swift`/`settings.rs`
+(`FeatureToggles`, `~/.bastion/settings.json`) — samma fältnamn/wire-
+format som Swift (`showSFTPBrowser` versalt, verifierat: System.Text.Json
+gör ingen egen camelCase-omskrivning av ett redan explicit satt
+`[JsonPropertyName]`, så ingen motsvarighet till Rusts `serde(rename)`-
+fälla behövdes här). 4 nya tester.
+
+Värdradens "Mer"-knapp bygger nu menyn DYNAMISKT i C# (istället för en
+statisk `MenuFlyout` i XAML) utifrån aktuella togglar — motsvarar
+LinuxApps `gio_menu_for`, som utesluter hela menyposten när en toggle är
+av, inte bara döljer/inaktiverar en statisk post. Ny Funktioner-knapp
+("⚙") i värdlistans verktygsfält öppnar en inställningsdialog med
+Docker/Kommandobibliotek/Filer-togglar (portvidarebefordran/SSH-
+nyckeldistribution har ingen vy att gömma än i WindowsApp, samma
+avgränsning som LinuxApp dokumenterar).
+
+63/63 `dotnet test` gröna totalt (Bastion.Core + Bastion.Core.Tests).
+
+**WindowsApp: SFTP chmod/chown/arkiv (skrivet, INTE visuellt
+verifierat).** Stänger gapet mot LinuxApps femtonde pass.
+
+- `ArchiveOperations.cs` (Bastion.Core): port av `ArchiveOperations.swift`/
+  `archive.rs` — `ShellQuote` (POSIX-shell-säker citering, samma
+  RIKTIGA shell-injektionsverifiering som Rust-testet: kör faktiskt
+  `/bin/sh -c` mot en konstruerad injektionssträng) + kommandobyggare för
+  tar.gz/zip. 6 nya tester.
+- `SftpBrowserSession.SetPermissions`/`SetOwner` (redan skrivna i
+  grundpasset) kopplas nu in i UI:t via en "Rättigheter/ägare"-dialog
+  (oktalt läge + UID/GID-fält).
+- Komprimera/packa upp shellar ut via `SshSession.RunCommand` (SFTP v3 har
+  ingen egen arkivsemantik) — en ny `ResolveRealPath`-hjälpare
+  (`cd <väg> && pwd` över en engångs-exec-kanal) ersätter Swift/Rusts
+  `SFTPClient.realpath`, eftersom SSH.NETs `SftpClient` saknar den
+  motsvarigheten (bekräftat via reflektion tidigare i sessionen).
+- UI: varje SFTP-rad fick en rättigheter-knapp, mappar fick en
+  "Komprimera"-knapp, `.tar.gz`/`.tgz`/`.zip`-filer fick en
+  "Packa upp"-knapp — matchar LinuxApps radlayout.
+
+69/69 `dotnet test` gröna totalt.
+
+**Kvar för full WindowsApp-paritet med LinuxApp**: rå tangentbordsinput,
+fler HostAuth-typer (SSH.NET saknar agent-protokoll). Med detta har
+WindowsApp samma FUNKTIONSYTA som LinuxApp (Docker/Kommandon/Snippets/
+SFTP+chmod/chown/arkiv/Sync+kryptering/Funktioner-toggles) — men **hela
+UI-lagret (`MainWindow.xaml`/`.xaml.cs`, TabView-skalet) har ännu INTE
+kompilerats eller renderats en enda gång**, se separat verifieringsarbete
+nedan.

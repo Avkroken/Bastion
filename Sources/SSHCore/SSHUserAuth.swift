@@ -1,4 +1,5 @@
 import Crypto
+import Foundation
 import NIOCore
 import NIOSSH
 
@@ -57,6 +58,17 @@ final class SSHUserAuth: NIOSSHClientUserAuthenticationDelegate {
                 offer: .privateKey(.init(privateKey: priv)))
             nextChallengePromise.succeed(offer)
 
+        case .ecdsa(let curve, let scalar):
+            guard availableMethods.contains(.publicKey),
+                  let priv = try? Self.niosshKey(curve: curve, scalar: scalar) else {
+                giveUp(nextChallengePromise)
+                return
+            }
+            let offer = NIOSSHUserAuthenticationOffer(
+                username: username, serviceName: "",
+                offer: .privateKey(.init(privateKey: priv)))
+            nextChallengePromise.succeed(offer)
+
         case .certificate(let seed, let certificateLine):
             // Signerar med den RÅA privata nyckeln (samma som .ed25519Seed),
             // men erbjuder CERTIFIKATET som publik nyckel istället för den
@@ -93,6 +105,14 @@ final class SSHUserAuth: NIOSSHClientUserAuthenticationDelegate {
                 username: username, serviceName: "",
                 offer: .privateKey(.init(privateKey: priv, certifiedKey: certifiedKey)))
             nextChallengePromise.succeed(offer)
+        }
+    }
+
+    private static func niosshKey(curve: ECDSACurve, scalar: Data) throws -> NIOSSHPrivateKey {
+        switch curve {
+        case .p256: return NIOSSHPrivateKey(p256Key: try P256.Signing.PrivateKey(rawRepresentation: scalar))
+        case .p384: return NIOSSHPrivateKey(p384Key: try P384.Signing.PrivateKey(rawRepresentation: scalar))
+        case .p521: return NIOSSHPrivateKey(p521Key: try P521.Signing.PrivateKey(rawRepresentation: scalar))
         }
     }
 }
