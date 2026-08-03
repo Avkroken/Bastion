@@ -13,12 +13,33 @@ public struct SSHTarget: Sendable {
     }
 }
 
+/// De ECDSA-kurvor swift-nio-ssh stödjer för klientautentisering. RSA stöds
+/// INTE alls av swift-nio-ssh på klientsidan (bekräftat i `NIOSSHPrivateKey`s
+/// källa) — bara Ed25519 och dessa tre NIST-kurvor.
+public enum ECDSACurve: Sendable, Equatable {
+    case p256, p384, p521
+
+    /// Förväntad längd (byte) på den råa privata skalären i OpenSSH:s
+    /// nyckelformat (mpint, vänsterutfylld till denna längd).
+    var scalarLength: Int {
+        switch self {
+        case .p256: return 32
+        case .p384: return 48
+        case .p521: return 66
+        }
+    }
+}
+
 /// Autentiseringsmetod. Lösenord är fullt implementerat. Publik nyckel stöds
-/// för råa Ed25519-frön (32 byte) — OpenSSH-filparsning (`~/.ssh/id_ed25519`)
-/// är nästa steg, se `SSHUserAuth`.
+/// för råa Ed25519-frön (32 byte) samt okrypterade ECDSA-nycklar (P256/P384/
+/// P521) via OpenSSH-filparsning (`~/.ssh/id_ed25519`/`id_ecdsa`) — se
+/// `SSHKeyParser`/`SSHUserAuth`. RSA-nycklar och lösenfrasskyddade nycklar
+/// stöds inte än (`SSHKeyError.unsupportedKeyType`/`.encrypted`).
 public enum SSHAuth: Sendable {
     case password(String)
     case ed25519Seed(Data)
+    /// Rå privat ECDSA-skalär, vänsterutfylld till `curve.scalarLength` byte.
+    case ecdsa(curve: ECDSACurve, scalar: Data)
     /// OpenSSH-certifikatautentisering: signerar med den råa Ed25519-fröet
     /// (`seed`, samma som `.ed25519Seed`) men erbjuder servern CERTIFIKATET
     /// (`certificateLine`, en hel `type base64 kommentar`-rad som en

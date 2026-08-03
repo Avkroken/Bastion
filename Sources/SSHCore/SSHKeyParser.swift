@@ -44,12 +44,35 @@ public enum OpenSSHPrivateKey {
         guard check1 == check2 else { throw SSHKeyError.malformed }   // fel lösenfras/korrupt
 
         let keyType = try pr.readStringUTF8()
-        guard keyType == "ssh-ed25519" else { throw SSHKeyError.unsupportedKeyType(keyType) }
+        switch keyType {
+        case "ssh-ed25519":
+            _ = try pr.readString()           // publik nyckel (32 byte)
+            let secret = try pr.readString()  // 64 byte: frö(32) || publik(32)
+            guard secret.count == 64 else { throw SSHKeyError.malformed }
+            return .ed25519Seed(Data(secret.prefix(32)))
 
-        _ = try pr.readString()           // publik nyckel (32 byte)
-        let secret = try pr.readString()  // 64 byte: frö(32) || publik(32)
-        guard secret.count == 64 else { throw SSHKeyError.malformed }
-        return .ed25519Seed(Data(secret.prefix(32)))
+        case "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521":
+            let curve: ECDSACurve = keyType.hasSuffix("256") ? .p256 : keyType.hasSuffix("384") ? .p384 : .p521
+            _ = try pr.readStringUTF8()       // kurvnamn ("nistp256" m.fl.)
+            _ = try pr.readString()           // publik punkt Q (0x04 || X || Y)
+            let d = try pr.readString()       // mpint: privat skalär
+            return .ecdsa(curve: curve, scalar: Data(normalizeScalar(d, length: curve.scalarLength)))
+
+        default:
+            throw SSHKeyError.unsupportedKeyType(keyType)
+        }
+    }
+
+    /// Normaliserar en SSH `mpint` (big-endian, minimal längd, en ledande
+    /// 0x00-byte tillåten bara för teckendisambiguering) till exakt `length`
+    /// byte — CryptoKits `rawRepresentation`-initierare kräver exakt längd,
+    /// men mpint-kodningen kan vara kortare (litet tal) eller en byte längre
+    /// (disambigueringsbyten).
+    private static func normalizeScalar(_ bytes: [UInt8], length: Int) -> [UInt8] {
+        var b = bytes
+        while b.count > length, b.first == 0 { b.removeFirst() }
+        if b.count < length { b = Array(repeating: 0, count: length - b.count) + b }
+        return b
     }
 
     /// Läser och parsar en nyckelfil från disk.
