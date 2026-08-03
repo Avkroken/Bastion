@@ -156,6 +156,13 @@ private struct TerminalPaneBody: View {
                 TerminalGridView(buffer: controller.buffer)
             }
             .frame(minHeight: 320)
+            // Riktig tangentbordsinmatning (piltangenter/Tab/Esc/Backspace/
+            // Enter live, ingen Retur krävs) — se KeyEventBridge.swift.
+            // Textfältet nedan finns kvar för Ctrl-kombinationer (via
+            // kontrollknapparna) och för den som föredrar rad-i-taget.
+            .inspect(.onCreate) { (widget: Gtk.Widget) in
+                attachKeyCapture(to: widget) { text in controller.sendRaw(text) }
+            }
 
             controlKeyRow
 
