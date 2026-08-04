@@ -355,6 +355,37 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **Telnet (RFC 854) i den NYA Rust/GTK4-`LinuxApp`** (2026-08-04,
+  `LinuxApp/src/telnet.rs`): helt saknades i den nya Rust-omskrivningen —
+  Telnet delar ingen kod med SSH-lagret (rå TCP, ingen kryptering, egen
+  IAC-förhandling), så det fanns inget att av misstag hoppa över när
+  `ssh.rs` porterades, bara ett helt eget spår som aldrig byggdes.
+  Byte-för-byte-port av `Sources/SSHCore/Telnet.swift`s `TelnetIACFilter`-
+  statmaskin (samma refusera-allt-strategi: `WILL`→`DONT`, `DO`→`WONT`,
+  subförhandlingar kastas bort helt — enklast möjliga korrekta
+  klientbeteende, servern faller tillbaka till rått NVT-läge). `telnet::
+  spawn` körs på en egen bakgrundstråd med egen tokio-runtime, exakt
+  samma `async_channel`-mönster som `ssh::spawn_shell` — och
+  `start_telnet_session` (`main.rs`) återanvänder t.o.m. SAMMA
+  `terminal.set_data("bastion-ssh-input", …)`-nyckel som SSH-sessioner,
+  så den redan existerande generiska close-page-städningen
+  (`SessionArea::new`) fungerar identiskt utan telnet-specifik kod där.
+  - Ny "Telnet"-knapp i sidopanelens header (bredvid "Lägg till värd"),
+    öppnar en AD HOC-anslutningsdialog (bara värd+port, INGEN auth —
+    motsvarar `App/TelnetConnectView.swift`: Telnet-inloggning, om
+    servern ens kräver någon, sker inuti själva terminalsessionen via en
+    login-prompt, inte som ett separat handskakningssteg). Ingen sparning
+    i värdlistan, medvetet — samma designval som Swift-sidan.
+  - Testat: 8 enhetstester för IAC-statmaskinen (ren dataväg, escaped
+    `0xFF`, WILL/DO-refusering, WONT/DONT kräver inget svar,
+    subförhandling kastas bort, kommandon utan optionsbyte, fragmenterad
+    förhandling över flera läsningar) + 1 genuint end-to-end-test mot en
+    RIKTIG TCP-server som beter sig som en telnet-server (skickar en
+    förhandling klienten ska refusera, läser klientens svar direkt av
+    tråden — bevisar att hela vägen, inte bara filtrets logik i
+    isolering, fungerar). Port av `TelnetTests.swift` rakt av. 87/87
+    `cargo test` gröna totalt.
+
 - **Wake-on-LAN i den NYA Rust/GTK4-`LinuxApp`** (2026-08-04,
   `LinuxApp/src/wake_on_lan.rs`): `Host.mac_address` fanns redan i
   datamodellen (för wire-format-kompatibilitet med App/Windows-synk) men

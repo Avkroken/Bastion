@@ -20,6 +20,7 @@ mod socks_proxy;
 mod ssh;
 mod sync;
 mod sync_crypto;
+mod telnet;
 mod wake_on_lan;
 
 use host::{Host, HostStore};
@@ -91,6 +92,16 @@ fn build_ui(app: &adw::Application) {
         )
     ));
 
+    let telnet_button = gtk::Button::from_icon_name("utilities-terminal-symbolic");
+    telnet_button.set_tooltip_text(Some("Telnet"));
+    telnet_button.connect_clicked(clone!(
+        #[weak]
+        app,
+        #[strong]
+        area,
+        move |_| show_telnet_connect_dialog(&app, &area)
+    ));
+
     let settings_button = gtk::Button::from_icon_name("preferences-system-symbolic");
     settings_button.set_tooltip_text(Some("Funktioner"));
     settings_button.connect_clicked(clone!(
@@ -121,6 +132,7 @@ fn build_ui(app: &adw::Application) {
 
     let sidebar_header = adw::HeaderBar::new();
     sidebar_header.pack_end(&add_button);
+    sidebar_header.pack_end(&telnet_button);
     sidebar_header.pack_end(&settings_button);
 
     let sidebar_content = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -1325,6 +1337,137 @@ fn start_session(
             }
         }
     ));
+}
+
+/// Ansluter till en Telnet-värd (RFC 854, okrypterat, inget lösenord/
+/// nyckelval — autentisering, om servern ens kräver någon, sker inuti
+/// terminalsessionen via en login-prompt, inte som ett separat
+/// handskakningssteg). Motsvarar `start_session` för SSH, men wirear
+/// `telnet::spawn` istället för `ssh::spawn_shell` — samma
+/// `terminal.set_data("bastion-ssh-input", …)`-nyckel återanvänds rakt av
+/// så den redan existerande generiska close-page-städningen (`SessionArea::
+/// new`) fungerar identiskt utan telnet-specifik kod där.
+fn start_telnet_session(area: &Rc<SessionArea>, host: String, port: u16) {
+    let terminal = vte::Terminal::builder().vexpand(true).hexpand(true).build();
+    let handle = telnet::spawn(host.clone(), port);
+
+    unsafe {
+        terminal.set_data("bastion-ssh-input", handle.input.clone());
+    }
+
+    let page = area.tab_view.append(&terminal);
+    page.set_title(&format!("{host}:{port} (telnet)"));
+    area.tab_view.set_selected_page(&page);
+    area.update_placeholder();
+
+    terminal.connect_commit(clone!(
+        #[strong(rename_to = input)]
+        handle.input,
+        move |_, text, _| {
+            let _ = input.try_send(text.as_bytes().to_vec());
+        }
+    ));
+
+    glib::spawn_future_local(clone!(
+        #[weak]
+        terminal,
+        #[strong]
+        area,
+        #[weak]
+        page,
+        #[strong(rename_to = output)]
+        handle.output,
+        async move {
+            while let Ok(event) = output.recv().await {
+                match event {
+                    telnet::TelnetEvent::Data(bytes) => terminal.feed(&bytes),
+                    telnet::TelnetEvent::Error(msg) => {
+                        terminal.feed(
+                            format!("\r\n\x1b[31m[bastion] fel: {msg}\x1b[0m\r\n").as_bytes(),
+                        );
+                    }
+                    telnet::TelnetEvent::Connected => {}
+                    telnet::TelnetEvent::Closed => {
+                        if area.tab_view.page_position(&page) >= 0 {
+                            area.tab_view.close_page(&page);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    ));
+}
+
+/// Ad-hoc anslutningsdialog för Telnet — inget sparande i värdlistan,
+/// motsvarar `App/TelnetConnectView.swift` (bara värd+port, ingen auth).
+fn show_telnet_connect_dialog(app: &adw::Application, area: &Rc<SessionArea>) {
+    let host_row = adw::EntryRow::builder().title("Värd (t.ex. 10.0.0.5)").build();
+    let port_row = adw::EntryRow::builder().title("Port").text("23").build();
+
+    let group = adw::PreferencesGroup::new();
+    group.add(&host_row);
+    group.add(&port_row);
+    let warning_label = gtk::Label::builder()
+        .label("Telnet är okrypterat — använd bara på ett nätverk du litar på (t.ex. mot nätverksutrustning som saknar SSH-stöd).")
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(4)
+        .halign(gtk::Align::Start)
+        .wrap(true)
+        .css_classes(["dim-label", "caption"])
+        .build();
+
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+
+    let connect_button = gtk::Button::with_label("Anslut");
+    connect_button.add_css_class("suggested-action");
+    let cancel_button = gtk::Button::with_label("Avbryt");
+    let header = adw::HeaderBar::builder()
+        .show_end_title_buttons(false)
+        .build();
+    header.pack_start(&cancel_button);
+    header.pack_end(&connect_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&page);
+    content.append(&warning_label);
+
+    let win = adw::Window::builder()
+        .transient_for(&app.active_window().expect("inget aktivt fönster"))
+        .modal(true)
+        .default_width(380)
+        .default_height(220)
+        .title("Telnet")
+        .content(&content)
+        .build();
+
+    cancel_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        move |_| win.close()
+    ));
+    connect_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        #[strong]
+        area,
+        move |_| {
+            let host = host_row.text().trim().to_string();
+            let Ok(port) = port_row.text().parse::<u16>() else {
+                return;
+            };
+            if host.is_empty() || port == 0 {
+                return;
+            }
+            win.close();
+            start_telnet_session(&area, host, port);
+        }
+    ));
+
+    win.present();
 }
 
 /// Öppnar Docker-vyn för `host` i en ny flik: en containerlista med
