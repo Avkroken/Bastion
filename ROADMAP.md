@@ -514,9 +514,21 @@ delvis andra, av konkreta skäl:
     verifiering — opt-in, aldrig automatiskt, samma
     [[feedback_password_removal_scope]]-princip som Swift-sidan) som byter
     `host.auth` till den nya nyckelfilen via `HostStore::upsert`. Byggd och
-    körd under Xvfb utan krasch. **Kvar**: "klistra in befintlig nyckel"-
-    flödet (bara generera-nya-flödet är byggt), och `Host.platform`/Windows-
-    mål (LinuxApp har inget platform-fält alls än).
+    körd under Xvfb utan krasch.
+    **"Klistra in befintlig nyckel"-flödet klart** (2026-08-04,
+    `key_deploy::import_existing`): tolkar en klistrad OpenSSH-privatnyckel-
+    PEM via `russh::keys::decode_secret_key`, motsvarande Swifts
+    `KeyGenerator.fromExisting`/`KeyDeployModel.importExisting`. Avvisar
+    tydligt lösenfras-skyddade nycklar (`Error::KeyIsEncrypted`) och
+    icke-Ed25519-nycklar (RSA/ECDSA/…) — bara Ed25519 stöds, samma
+    begränsning som Swift-sidan. Testat mot RIKTIGA `ssh-keygen`-genererade
+    nycklar (okrypterad Ed25519, lösenfras-skyddad Ed25519, RSA), inte
+    handkonstruerade PEM-strängar. GTK4-vyn fick ett textfält för att
+    klistra in nyckeln + en egen "Importera + deploya + verifiera"-knapp
+    som återanvänder samma deploy/verifiera/adoptera-flöde som
+    generera-ny-knappen. Byggd och körd under Xvfb utan krasch.
+    **Kvar**: `Host.platform`/Windows-mål (LinuxApp har inget platform-fält
+    alls än — bara POSIX-fjärrsystem stöds för `deploy_command`).
   - **App/-flödet klart** (2026-07-08, `App/KeyDeployView.swift`): samma
     generera→deploya→verifiera-ordning, men lagrar nyckeln i Keychain
     (`.keychainKey`, samma ID-schema `host-key-<uuid>` som `HostEditView`

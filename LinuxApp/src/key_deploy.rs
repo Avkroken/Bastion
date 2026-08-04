@@ -16,6 +16,7 @@ use russh::keys::PublicKeyBase64;
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
+#[derive(Debug, PartialEq)]
 pub struct GeneratedKeyPair {
     pub public_key_line: String,
     /// PKCS8 PEM — `russh_keys::decode_secret_key` (använd av `load_secret_key`,
@@ -29,6 +30,28 @@ pub struct GeneratedKeyPair {
 /// bifogas den publika raden (samma konvention som `ssh-keygen -C`).
 pub fn generate_ed25519(comment: &str) -> Result<GeneratedKeyPair, String> {
     let keypair = KeyPair::generate_ed25519().ok_or("kunde inte generera Ed25519-nyckel")?;
+    key_pair_to_generated(keypair, comment)
+}
+
+/// Bygger en `GeneratedKeyPair` ur en KLISTRAD, redan befintlig OpenSSH-
+/// privatnyckel-PEM istället för att slumpa fram en ny — motsvarar Swift-
+/// sidans `KeyGenerator.fromExisting`/`KeyDeployModel.importExisting`.
+/// Bara OKRYPTERADE Ed25519-nycklar stöds (samma begränsning som
+/// Swift-sidan): `Error::KeyIsEncrypted` ges ett eget, tydligt
+/// felmeddelande istället för det generiska tolkningsfelet, och alla
+/// andra nyckeltyper (RSA/ECDSA/…) avvisas explicit.
+pub fn import_existing(pem: &str, comment: &str) -> Result<GeneratedKeyPair, String> {
+    let keypair = russh::keys::decode_secret_key(pem, None).map_err(|e| match e {
+        russh::keys::Error::KeyIsEncrypted => "lösenfras-skyddade nycklar stöds inte än".to_string(),
+        other => format!("kunde inte tolka nyckeln: {other}"),
+    })?;
+    if !matches!(keypair, KeyPair::Ed25519(_)) {
+        return Err("bara Ed25519-nycklar stöds".to_string());
+    }
+    key_pair_to_generated(keypair, comment)
+}
+
+fn key_pair_to_generated(keypair: KeyPair, comment: &str) -> Result<GeneratedKeyPair, String> {
     let public_key = keypair.clone_public_key().map_err(|e| e.to_string())?;
     let mut public_key_line = format!("{} {}", public_key.name(), public_key.public_key_base64());
     if !comment.is_empty() {
@@ -173,6 +196,71 @@ mod tests {
         let a = generate_ed25519("").unwrap();
         let b = generate_ed25519("").unwrap();
         assert_ne!(a.public_key_line, b.public_key_line);
+    }
+
+    /// Genererar en RIKTIG OpenSSH Ed25519-nyckel via `ssh-keygen` (inte en
+    /// handkonstruerad sträng) och "klistrar in" dess PEM-text — bevisar att
+    /// `import_existing` faktiskt kan tolka en nyckel skapad av ett annat
+    /// verktyg, inte bara sitt eget `generate_ed25519`-format.
+    #[test]
+    fn import_existing_parses_a_real_ssh_keygen_generated_ed25519_key() {
+        let dir = std::env::temp_dir().join(format!("bastion-import-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let key_path = dir.join("id_ed25519");
+        let status = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-N", "", "-t", "ed25519", "-f"])
+            .arg(&key_path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let pem = std::fs::read_to_string(&key_path).unwrap();
+        let expected_public_line = std::fs::read_to_string(dir.join("id_ed25519.pub")).unwrap();
+        let expected_key_part = expected_public_line.split(' ').nth(1).unwrap();
+
+        let imported = import_existing(&pem, "imported-comment").unwrap();
+        assert!(imported.public_key_line.starts_with("ssh-ed25519 "));
+        assert!(imported.public_key_line.contains(expected_key_part), "den importerade nyckeln ska matcha ssh-keygens .pub-fil");
+        assert!(imported.public_key_line.ends_with(" imported-comment"));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn import_existing_rejects_a_passphrase_protected_key_with_a_clear_message() {
+        let dir = std::env::temp_dir().join(format!("bastion-import-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let key_path = dir.join("id_ed25519");
+        let status = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-N", "hemlis", "-t", "ed25519", "-f"])
+            .arg(&key_path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let pem = std::fs::read_to_string(&key_path).unwrap();
+
+        let result = import_existing(&pem, "");
+        assert_eq!(result, Err("lösenfras-skyddade nycklar stöds inte än".to_string()));
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn import_existing_rejects_a_non_ed25519_key() {
+        let dir = std::env::temp_dir().join(format!("bastion-import-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let key_path = dir.join("id_rsa");
+        let status = std::process::Command::new("ssh-keygen")
+            .args(["-q", "-N", "", "-t", "rsa", "-b", "2048", "-f"])
+            .arg(&key_path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let pem = std::fs::read_to_string(&key_path).unwrap();
+
+        let result = import_existing(&pem, "");
+        assert_eq!(result, Err("bara Ed25519-nycklar stöds".to_string()));
+
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

@@ -1447,6 +1447,27 @@ fn open_key_deploy_view(
     let group = adw::PreferencesGroup::new();
     group.add(&comment_row);
 
+    // Klistra in en REDAN BEFINTLIG privatnyckel (OpenSSH-PEM) istället för
+    // att generera en ny — motsvarar Swift-sidans
+    // `KeyDeployModel.importExisting`. Bara okrypterade Ed25519-nycklar
+    // stöds (`key_deploy::import_existing` ger ett tydligt fel annars).
+    let paste_view = gtk::TextView::builder().monospace(true).build();
+    let paste_scroller = gtk::ScrolledWindow::builder()
+        .child(&paste_view)
+        .min_content_height(80)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(4)
+        .build();
+    let paste_placeholder = gtk::Label::builder()
+        .label("Klistra in en OpenSSH-privatnyckel (-----BEGIN OPENSSH PRIVATE KEY-----…) här för att importera den istället för att generera en ny.")
+        .margin_start(12)
+        .margin_end(12)
+        .halign(gtk::Align::Start)
+        .wrap(true)
+        .css_classes(["dim-label", "caption"])
+        .build();
+
     let public_key_view = gtk::TextView::builder()
         .editable(false)
         .wrap_mode(gtk::WrapMode::WordChar)
@@ -1467,6 +1488,7 @@ fn open_key_deploy_view(
         .wrap(true)
         .build();
     let generate_button = gtk::Button::with_label("Generera + deploya + verifiera");
+    let import_button = gtk::Button::with_label("Importera + deploya + verifiera");
     let adopt_button = gtk::Button::with_label("Använd den nya nyckeln för den här värden");
     adopt_button.set_sensitive(false);
 
@@ -1479,6 +1501,7 @@ fn open_key_deploy_view(
         .margin_bottom(8)
         .build();
     button_box.append(&generate_button);
+    button_box.append(&import_button);
     button_box.append(&adopt_button);
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -1493,6 +1516,8 @@ fn open_key_deploy_view(
             .build(),
     );
     content.append(&group);
+    content.append(&paste_placeholder);
+    content.append(&paste_scroller);
     content.append(&button_box);
     content.append(&status_label);
     content.append(&public_key_scroller);
@@ -1579,6 +1604,87 @@ fn open_key_deploy_view(
                         }
                     }
                     generate_button.set_sensitive(true);
+                }
+            ));
+        }
+    ));
+
+    import_button.connect_clicked(clone!(
+        #[strong]
+        host,
+        #[strong]
+        password,
+        #[strong]
+        comment_row,
+        #[strong]
+        paste_view,
+        #[strong]
+        public_key_view,
+        #[strong]
+        public_key_scroller,
+        #[strong]
+        status_label,
+        #[strong]
+        import_button,
+        #[strong]
+        adopt_button,
+        #[strong]
+        new_key_path,
+        move |_| {
+            let buffer = paste_view.buffer();
+            let pasted = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
+            let pair = match key_deploy::import_existing(&pasted, &comment_row.text()) {
+                Ok(p) => p,
+                Err(e) => {
+                    status_label.set_label(&format!("Fel: {e}"));
+                    return;
+                }
+            };
+            let key_path = match key_deploy::save_private_key(&pair.private_key_pem) {
+                Ok(p) => p,
+                Err(e) => {
+                    status_label.set_label(&format!("Fel: kunde inte spara nyckeln: {e}"));
+                    return;
+                }
+            };
+            public_key_view.buffer().set_text(&pair.public_key_line);
+            public_key_scroller.set_visible(true);
+            public_key_view.set_visible(true);
+            status_label.set_label("Deployerar och verifierar…");
+            import_button.set_sensitive(false);
+
+            let rx = key_deploy::spawn_deploy_and_verify(
+                host.clone(),
+                password.clone(),
+                pair.public_key_line.clone(),
+                key_path.clone(),
+            );
+            glib::spawn_future_local(clone!(
+                #[strong]
+                status_label,
+                #[strong]
+                import_button,
+                #[strong]
+                adopt_button,
+                #[strong]
+                new_key_path,
+                async move {
+                    match rx.recv().await {
+                        Ok(Ok(())) => {
+                            status_label.set_label(
+                                "Klart — den importerade nyckeln är deployad och verifierad att fungera.",
+                            );
+                            *new_key_path.borrow_mut() = Some(key_path);
+                            adopt_button.set_sensitive(true);
+                        }
+                        Ok(Err(e)) => {
+                            status_label.set_label(&format!("Fel: {e}"));
+                        }
+                        Err(_) => {
+                            status_label.set_label("Fel: kanalen stängdes oväntat");
+                        }
+                    }
+                    import_button.set_sensitive(true);
                 }
             ));
         }
