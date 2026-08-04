@@ -24,6 +24,17 @@ public sealed partial class MainWindow : Window
     private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
     private SshSession? _activeSession;
     private SyncConfig _syncConfig = SyncConfig.Load(SyncConfig.DefaultPath);
+    /// <summary>
+    /// Handtaget till DEN AKTUELLA sessionens <c>WebMessageReceived</c>-
+    /// handler — måste kopplas bort INNAN en ny läggs till vid ett
+    /// värdbyte, annars staplas en handler per anslutning på samma
+    /// <c>CoreWebView2</c>-instans. Varje kvarvarande gammal handler
+    /// fångar sin EGEN (redan disponerade) <c>session</c>, så ett
+    /// tangenttryck efter ett värdbyte skrev tidigare till ALLA
+    /// tidigare sessioner samtidigt — inklusive ett skrivförsök mot en
+    /// redan stängd <c>ShellStream</c> (CodeRabbit-fynd).
+    /// </summary>
+    private EventHandler<Microsoft.Web.WebView2.Core.CoreWebView2WebMessageReceivedEventArgs>? _terminalInputHandler;
 
     public MainWindow()
     {
@@ -174,33 +185,45 @@ public sealed partial class MainWindow : Window
             syncButton.IsEnabled = true;
         };
 
-        syncButton.Click += (_, _) =>
+        syncButton.Click += async (_, _) =>
         {
             if (_syncConfig.FolderPath is null) return;
+            ISyncProvider provider;
+            if (_syncConfig.Encrypted)
+            {
+                if (string.IsNullOrEmpty(passphraseBox.Password))
+                {
+                    statusLabel.Text = "Ange en lösenfras först";
+                    return;
+                }
+                provider = new EncryptedFolderSyncProvider(
+                    Path.Combine(_syncConfig.FolderPath, "hosts.enc"), passphraseBox.Password);
+            }
+            else
+            {
+                provider = new FolderSyncProvider(Path.Combine(_syncConfig.FolderPath, "hosts.json"));
+            }
+
+            // Filens I/O (kan vara en molnsynkad mapp — Dropbox/Drive/
+            // OneDrive — som stallar) och, för den krypterade varianten,
+            // PBKDF2-nyckelhärledningen är för tunga för att köras rakt av
+            // på UI-tråden — samma resonemang/fix som SshSession.Connect
+            // redan fick nedan (CodeRabbit-fynd).
+            statusLabel.Text = "Synkar…";
+            syncButton.IsEnabled = false;
             try
             {
-                ISyncProvider provider;
-                if (_syncConfig.Encrypted)
-                {
-                    if (string.IsNullOrEmpty(passphraseBox.Password))
-                    {
-                        statusLabel.Text = "Ange en lösenfras först";
-                        return;
-                    }
-                    provider = new EncryptedFolderSyncProvider(
-                        Path.Combine(_syncConfig.FolderPath, "hosts.enc"), passphraseBox.Password);
-                }
-                else
-                {
-                    provider = new FolderSyncProvider(Path.Combine(_syncConfig.FolderPath, "hosts.json"));
-                }
-                _store.Sync(provider);
+                await Task.Run(() => _store.Sync(provider));
                 statusLabel.Text = "Synkad";
                 Refresh();
             }
             catch (Exception ex)
             {
                 statusLabel.Text = $"Fel: {ex.Message}";
+            }
+            finally
+            {
+                syncButton.IsEnabled = true;
             }
         };
 
@@ -243,17 +266,43 @@ public sealed partial class MainWindow : Window
     {
         _activeSession?.Dispose();
         _activeSession = null;
+        if (_terminalInputHandler is not null && TerminalView.CoreWebView2 is not null)
+        {
+            TerminalView.CoreWebView2.WebMessageReceived -= _terminalInputHandler;
+            _terminalInputHandler = null;
+        }
 
         ContentPlaceholder.Text = $"Ansluter till {host.Alias}…";
 
-        await TerminalView.EnsureCoreWebView2Async();
+        // Både `EnsureCoreWebView2Async` (WebView2-runtimen kan saknas) och
+        // navigeringen (kunde tidigare "lyckas" tyst även vid ett faktiskt
+        // navigeringsfel — `a.IsSuccess` lästes aldrig) låg tidigare UTANFÖR
+        // `async void OnHostItemClicked`s enda skyddsnät, så ett fel här kunde
+        // krascha appen istället för att visa platshållaren (CodeRabbit-fynd).
         var htmlPath = Path.Combine(AppContext.BaseDirectory, "Assets", "xterm", "terminal.html");
-        var navigated = new TaskCompletionSource();
-        void OnNavigationCompleted(WebView2 s, Microsoft.Web.WebView2.Core.CoreWebView2NavigationCompletedEventArgs a) => navigated.TrySetResult();
-        TerminalView.NavigationCompleted += OnNavigationCompleted;
-        TerminalView.CoreWebView2.Navigate(new Uri(htmlPath).AbsoluteUri);
-        await navigated.Task;
-        TerminalView.NavigationCompleted -= OnNavigationCompleted;
+        var navigated = new TaskCompletionSource<bool>();
+        void OnNavigationCompleted(WebView2 s, Microsoft.Web.WebView2.Core.CoreWebView2NavigationCompletedEventArgs a) => navigated.TrySetResult(a.IsSuccess);
+        try
+        {
+            await TerminalView.EnsureCoreWebView2Async();
+            TerminalView.NavigationCompleted += OnNavigationCompleted;
+            TerminalView.CoreWebView2.Navigate(new Uri(htmlPath).AbsoluteUri);
+            if (!await navigated.Task)
+            {
+                throw new InvalidOperationException("terminalsidan gick inte att ladda");
+            }
+        }
+        catch (Exception ex)
+        {
+            ContentPlaceholder.Text = $"Kunde inte initiera terminalvyn: {ex.Message}";
+            PlaceholderPanel.Visibility = Visibility.Visible;
+            TerminalView.Visibility = Visibility.Collapsed;
+            return;
+        }
+        finally
+        {
+            TerminalView.NavigationCompleted -= OnNavigationCompleted;
+        }
 
         SshSession session;
         try
@@ -279,22 +328,31 @@ public sealed partial class MainWindow : Window
         PlaceholderPanel.Visibility = Visibility.Collapsed;
         TerminalView.Visibility = Visibility.Visible;
 
-        TerminalView.CoreWebView2.WebMessageReceived += (_, args) =>
+        _terminalInputHandler = (_, args) =>
         {
+            // Skriv bara till DEN HÄR anropets session — utan denna kontroll
+            // skulle en handler som (mot förmodan) överlevde en avprenumeration
+            // fortfarande kunna skriva till en redan disponerad ShellStream.
+            if (!ReferenceEquals(_activeSession, session)) return;
             var text = args.TryGetWebMessageAsString();
             session.Shell.Write(text);
         };
+        TerminalView.CoreWebView2.WebMessageReceived += _terminalInputHandler;
 
-        session.Shell.DataReceived += (_, args) => FeedTerminal(args);
+        session.Shell.DataReceived += (_, args) => FeedTerminal(session, args);
         session.Shell.Closed += (_, _) => _dispatcher.TryEnqueue(() => OnSessionClosed(session));
     }
 
-    private void FeedTerminal(ShellDataEventArgs args)
+    private void FeedTerminal(SshSession session, ShellDataEventArgs args)
     {
         var base64 = Convert.ToBase64String(args.Data);
         _dispatcher.TryEnqueue(() =>
         {
-            if (_activeSession is null) return; // sessionen stängdes redan
+            // Måste matcha DEN HÄR specifika sessionen, inte bara "någon"
+            // session — annars kan utdata från en gammal session (om dess
+            // DataReceived mot förmodan fyrar efter ett värdbyte) hamna i
+            // en nyare terminal (CodeRabbit-fynd).
+            if (!ReferenceEquals(_activeSession, session)) return;
             _ = TerminalView.CoreWebView2.ExecuteScriptAsync($"window.feed('{base64}')");
         });
     }
