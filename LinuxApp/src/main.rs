@@ -20,6 +20,7 @@ mod sftp;
 mod snippet;
 mod socks_proxy;
 mod ssh;
+mod ssh_config;
 mod sync;
 mod sync_crypto;
 mod tailscale;
@@ -112,6 +113,24 @@ fn build_ui(app: &adw::Application) {
         #[strong]
         area,
         move |_| show_quick_connect_dialog(&app, &area)
+    ));
+
+    let import_button = gtk::Button::from_icon_name("document-open-symbolic");
+    import_button.set_tooltip_text(Some("Importera ssh-config"));
+    import_button.connect_clicked(clone!(
+        #[weak]
+        app,
+        #[strong]
+        store,
+        #[weak]
+        list,
+        #[strong]
+        area,
+        #[strong]
+        settings_store,
+        #[strong]
+        snippet_store,
+        move |_| show_ssh_config_import_dialog(&app, &store, &list, &area, &settings_store, &snippet_store)
     ));
 
     let telnet_button = gtk::Button::from_icon_name("utilities-terminal-symbolic");
@@ -212,6 +231,7 @@ fn build_ui(app: &adw::Application) {
     let sidebar_header = adw::HeaderBar::new();
     sidebar_header.pack_end(&add_button);
     sidebar_header.pack_end(&quick_connect_button);
+    sidebar_header.pack_end(&import_button);
     sidebar_header.pack_end(&telnet_button);
     sidebar_header.pack_end(&serial_button);
     sidebar_header.pack_end(&tailscale_button);
@@ -616,6 +636,109 @@ fn gio_menu_for(toggles: &settings::FeatureToggles, mac_address: &Option<String>
     }
     menu.append(Some("Ta bort"), Some("host.delete"));
     menu
+}
+
+/// Importera värdar från en `~/.ssh/config` — klistra in innehållet
+/// (ingen filväljare i v1, till skillnad från `App/ImportConfigView.swift`
+/// som har en dokumentväljare — LinuxApp-användare kan lika gärna
+/// `cat ~/.ssh/config`/`xclip` in det). Alias som redan finns i
+/// värdlistan (skiftlägesokänsligt) hoppas tyst över, så ett omimport av
+/// samma fil inte skapar dubbletter — se `HostStore::import_ssh_config`.
+fn show_ssh_config_import_dialog(
+    app: &adw::Application,
+    store: &Rc<RefCell<HostStore>>,
+    list: &gtk::ListBox,
+    area: &Rc<SessionArea>,
+    settings_store: &Rc<RefCell<settings::AppSettingsStore>>,
+    snippet_store: &Rc<RefCell<snippet::SnippetStore>>,
+) {
+    let text_view = gtk::TextView::builder().monospace(true).build();
+    let text_scrolled = gtk::ScrolledWindow::builder()
+        .child(&text_view)
+        .min_content_height(280)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(12)
+        .vexpand(true)
+        .build();
+    let status_label = gtk::Label::builder()
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .margin_bottom(8)
+        .halign(gtk::Align::Start)
+        .wrap(true)
+        .build();
+
+    let import_button = gtk::Button::with_label("Importera");
+    import_button.add_css_class("suggested-action");
+    let cancel_button = gtk::Button::with_label("Avbryt");
+    let header = adw::HeaderBar::builder()
+        .show_end_title_buttons(false)
+        .build();
+    header.pack_start(&cancel_button);
+    header.pack_end(&import_button);
+    header.set_title_widget(Some(&adw::WindowTitle::new(
+        "Importera ssh-config",
+        "Klistra in innehållet från din ~/.ssh/config",
+    )));
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&text_scrolled);
+    content.append(&status_label);
+
+    let win = adw::Window::builder()
+        .transient_for(&app.active_window().expect("inget aktivt fönster"))
+        .modal(true)
+        .default_width(520)
+        .default_height(440)
+        .content(&content)
+        .build();
+
+    cancel_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        move |_| win.close()
+    ));
+    import_button.connect_clicked(clone!(
+        #[strong]
+        app,
+        #[strong]
+        store,
+        #[weak]
+        list,
+        #[strong]
+        area,
+        #[strong]
+        settings_store,
+        #[strong]
+        snippet_store,
+        #[strong]
+        status_label,
+        #[weak]
+        win,
+        move |_| {
+            let buffer = text_view.buffer();
+            let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
+            if text.trim().is_empty() {
+                return;
+            }
+            match store.borrow_mut().import_ssh_config(&text) {
+                Ok(n) => {
+                    refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store);
+                    if n > 0 {
+                        win.close();
+                    } else {
+                        status_label.set_label("Inga nya värdar hittades (redan importerade, eller inget alias hade en användare angiven).");
+                    }
+                }
+                Err(e) => status_label.set_label(&format!("Fel: {e}")),
+            }
+        }
+    ));
+
+    win.present();
 }
 
 /// Lägg till/redigera-dialogen. `existing = None` skapar en ny värd.
