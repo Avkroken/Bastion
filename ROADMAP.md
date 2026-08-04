@@ -2168,11 +2168,46 @@ det ovan var faktiskt bekräftat innan den här omgången.
      packa-upp gjorde det redan rätt. Samma inkonsekvens-mönster som #1,
      fixat på alla fyra ställen.
 
-**Kvar**: fler HostAuth-typer (SSH.NET saknar agent-protokoll) — se
-motiveringen ovan om varför "rå tangentbordsinput" INTE längre räknas som
-en lucka (xterm.js `onData` hanterar det redan korrekt) — och, det enda
-som faktiskt kräver Windows-hårdvara/en VM för att stänga helt, en RIKTIG
-kompilering+körning av
+**WindowsApp: ssh-agent-autentisering (`HostAuth.AgentDefault`) —
+stänger den sista HostAuth-luckan.** SSH.NET har INGET inbyggt
+agent-protokollstöd (bekräftat via reflektion mot den faktiska DLL:en
+tidigare i sessionen) — `SshAgent.cs` (Bastion.Core) implementerar
+draft-miller-ssh-agent-tråd­protokollet från grunden istället för att
+vänta på ett tredjepartsbibliotek:
+
+- `SshAgentClient`: ansluter via `SSH_AUTH_SOCK` (Unix-socket) eller,
+  om den saknas och OS är Windows, `\\.\pipe\openssh-ssh-agent`
+  (Win32-OpenSSHs standard-named-pipe). `RequestIdentities()`/`Sign()`
+  över samma 4-byte-längdprefix-ramning som `SSHAgentClient.swift`/
+  russhs agentklient. Bara Ed25519-identiteter listas (samma
+  prioritering som resten av projektet) — RSA/ECDSA i agenten hoppas
+  tyst över, ingen agentmix-krasch.
+- `AgentHostAlgorithm`/`AgentPrivateKeySource`: kopplar in agenten i
+  SSH.NET via `Renci.SshNet.Security.HostAlgorithm`/`IPrivateKeySource`
+  — signeringen delegeras till agentprocessen, den privata nyckeln
+  lämnar den aldrig.
+- `SshSession.BuildAuthenticationMethod`: ny `HostAuth.AgentDefault`-
+  gren bygger EN `AgentPrivateKeySource` PER identitet agenten har
+  laddad och skickar alla till `PrivateKeyAuthenticationMethod`, som
+  provar dem i tur och ordning — samma "provar ALLA laddade
+  identiteter, inte bara den första"-beteende som redan gäller för
+  LinuxApp/`ssh.rs` (en tidigare CodeRabbit-fix i den här sessionen).
+  Tydliga svenska felmeddelanden om ingen agent hittas eller agenten
+  saknar Ed25519-identiteter.
+- Verifiering: 3 nya tester (`SshAgentTests.cs`) mot en RIKTIG,
+  självstartad `ssh-agent`-process (`ssh-agent -a <sockel>` + `ssh-add`,
+  ingen mock) — inklusive den avgörande `openssl pkeyutl -verify`-
+  kontrollen, som HELT OBEROENDE av SSH.NET/min egen kod bevisar att
+  agentens signatur faktiskt är giltig Ed25519 över exakt den skickade
+  datan (och att den INTE verifierar mot manipulerad data). 85/85
+  `dotnet test` gröna totalt (Bastion.Core + Bastion.Core.Tests).
+
+Detta stänger "fler HostAuth-typer"-luckan från föregående pass —
+WindowsApp har nu paritet med LinuxApp/App på alla tre auth-typer
+(nyckelfil, lösenord, ssh-agent).
+
+**Kvar**: det enda som faktiskt kräver Windows-hårdvara/en VM för att
+stänga helt är en RIKTIG kompilering+körning av
 `MainWindow.xaml`/`.xaml.cs` (WinUI3s XAML-kompilator finns bara på
 Windows). Med Bastion.Core-lagret verifierat och UI-lagret manuellt
 granskat rad för rad är risken låg, men "manuellt granskad" är inte

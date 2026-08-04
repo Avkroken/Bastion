@@ -9,10 +9,10 @@ namespace Bastion.Core;
 /// (<see cref="ShellStream"/>), samt en engångskörning för Docker-liknande
 /// kommandon.
 ///
-/// KÄND BEGRÄNSNING (dokumenterad, inte dold, samma som ssh.rs): bara
-/// nyckelfilsautentisering (utan lösenfras) och lösenordsautentisering
-/// stöds. ssh-agent-baserad autentisering (HostAuth.AgentDefault) är INTE
-/// porterad — SSH.NET har inget inbyggt agent-protokollstöd.
+/// KÄND BEGRÄNSNING (dokumenterad, inte dold): bara Ed25519-identiteter
+/// stöds för ssh-agent-autentisering (HostAuth.AgentDefault) — se
+/// SshAgent.cs klassdoc. Nyckelfilsautentisering (utan lösenfras) och
+/// lösenordsautentisering stöds oförändrat.
 /// </summary>
 public sealed class SshHostKeyChangedException(string message) : Exception(message);
 
@@ -29,7 +29,8 @@ public sealed class SshSession : IDisposable
 
     public static SshSession Connect(Host host, string? password, KnownHosts knownHosts, uint cols = 80, uint rows = 24)
     {
-        var auth = BuildAuthenticationMethod(host, password);
+        using var agent = ConnectAgentIfNeeded(host);
+        var auth = BuildAuthenticationMethod(host, password, agent);
         var connectionInfo = new ConnectionInfo(host.HostName, (int)host.Port, host.User, auth);
         var client = new SshClient(connectionInfo);
         client.HostKeyReceived += MakeHostKeyHandler(host, knownHosts, throwOnChange: true);
@@ -59,14 +60,50 @@ public sealed class SshSession : IDisposable
         }
     }
 
-    /// <summary>Delas med <see cref="SftpBrowserSession"/> — samma auth-uppslagning för SFTP-anslutningar.</summary>
-    internal static AuthenticationMethod BuildAuthenticationMethod(Host host, string? password) => host.Auth switch
+    /// <summary>
+    /// Ansluter till den lokala ssh-agenten OM värden faktiskt använder
+    /// `AgentDefault` — annars `null`, ingen anledning att öppna en
+    /// agentanslutning i onödan. Anroparen (`Connect`/`RunCommand`) håller
+    /// den vid liv genom `using` bara under den synkrona `Connect()`/
+    /// `Execute()`-anropet, där SSH.NET faktiskt signerar via den.
+    /// </summary>
+    private static SshAgentClient? ConnectAgentIfNeeded(Host host) =>
+        host.Auth is HostAuth.AgentDefault ? SshAgentClient.Connect() : null;
+
+    /// <summary>
+    /// Delas med <see cref="SftpBrowserSession"/> — samma auth-uppslagning
+    /// för SFTP-anslutningar. `agent`: se <see cref="ConnectAgentIfNeeded"/>
+    /// — `null` OK för alla auth-typer utom `AgentDefault`.
+    /// </summary>
+    internal static AuthenticationMethod BuildAuthenticationMethod(Host host, string? password, SshAgentClient? agent = null) => host.Auth switch
     {
         HostAuth.KeyFile kf => new PrivateKeyAuthenticationMethod(host.User, new PrivateKeyFile(kf.Path)),
         HostAuth.AskPassword => new PasswordAuthenticationMethod(host.User, password
             ?? throw new InvalidOperationException("lösenord krävs men saknades")),
+        HostAuth.AgentDefault => BuildAgentAuthenticationMethod(host, agent),
         var other => throw new NotSupportedException($"autentiseringstypen {other.GetType().Name} stöds inte i WindowsApp ännu"),
     };
+
+    /// <summary>
+    /// En `IPrivateKeySource` PER identitet agenten har laddad —
+    /// `PrivateKeyAuthenticationMethod` provar dem i tur och ordning tills
+    /// en lyckas (samma "provar ALLA laddade identiteter"-beteende som
+    /// redan gäller för `ssh.rs`/`russh`s agent-autentisering).
+    /// </summary>
+    private static AuthenticationMethod BuildAgentAuthenticationMethod(Host host, SshAgentClient? agent)
+    {
+        if (agent is null)
+        {
+            throw new InvalidOperationException("ingen ssh-agent hittades (SSH_AUTH_SOCK/named pipe saknas eller anslutningen misslyckades)");
+        }
+        var identities = agent.RequestIdentities();
+        if (identities.Count == 0)
+        {
+            throw new InvalidOperationException("ssh-agent har inga (Ed25519-)identiteter laddade");
+        }
+        var sources = identities.Select(i => (IPrivateKeySource)new AgentPrivateKeySource(agent, i.PublicKeyBlob)).ToArray();
+        return new PrivateKeyAuthenticationMethod(host.User, sources);
+    }
 
     /// <summary>
     /// Delad TOFU-verifiering (samma <see cref="KnownHosts"/>-fil) för SshClient/SftpClient
