@@ -1268,10 +1268,41 @@ Inget nytt att bygga, bara verifiera/lansera:
   `bastion-cli` (RHEL/Fedora) — ✅ klart (2026-08-03, se "Klart" →
   "`.rpm`-paketering av `bastion-cli`"). `.deb`-paket för `bastion-gui`
   — ✅ klart (2026-08-03, se "Klart" → "`.deb`-paketering av
-  `bastion-gui`"). Kvar: `.rpm` för `bastion-gui`, FreeBSD-bygge (Swift
-  har community-toolchains där), OpenBSD/NetBSD-undersökning (oklart om
-  Swift ens fungerar där än — måste verifieras mot en riktig installation
-  innan något annat antas). Alla tre paketeringsworkflows bygger idag
+  `bastion-gui`"). `bastion-gui` (SwiftCrossUI/GTK4) är sedan dess RIVEN
+  (2026-08-03, se "Arkitekturbeslut") och ersatt av `LinuxApp` (native
+  Rust/GTK4) — "`.rpm` för `bastion-gui`" är därför inte längre en giltig
+  lucka, den appen finns inte kvar att paketera.
+
+  **`.deb`-paketering av `bastion-linuxapp`** (2026-08-04,
+  `linuxapp-packaging.yml`): ✅ klart — LinuxApp-motsvarigheten till
+  `bastion-cli`s `.deb`, den faktiska nuvarande GUI-luckan efter
+  arkitekturpivoten. Till skillnad från Swift-CLI:t (statisk
+  Swift-runtime) länkas `bastion-linuxapp` DYNAMISKT mot systemets
+  GTK4/GLib/libadwaita/VTE4 — men, till skillnad från den nu rivna
+  `bastion-gui` (som behövde bunta ihop delade bibliotek + `patchelf`
+  p.g.a. ett dev-snapshot-Swift-linkningsproblem), är detta REN Rust mot
+  DISTRONS EGNA `.so`-filer, så samma enkla härledda-`Depends`-teknik som
+  `bastion-cli`s `.deb`-jobb (`readelf -d` → `dpkg -S`) räcker rakt av —
+  ingen bundling behövdes. Enda skillnaden mot mallen: `ldconfig -p`
+  listar samma bibliotek i flera arkitekturvarianter (x32 FÖRE x86-64) på
+  en Ubuntu-runner, så uppslaget måste matcha explicit mot `x86-64`-
+  taggen (annars slås fel `.so`-sökväg upp) — och `readelf`s
+  "Shared library:"-etikett är lokalberoende, så `LC_ALL=C` krävs för att
+  inte bero på skalets standardlokal (upptäckt lokalt: en sv_SE-miljö gav
+  "delat bibliotek:" i stället, vilket tystade hela beroendelistan). Ny
+  `LinuxApp/packaging/bastion-linuxapp.desktop` (minimal, generisk
+  `utilities-terminal`-ikon — ingen egen ikonresurs finns än). Installeras
+  + körs (`apt-get install ./paket.deb` + `xvfb-run`, processen lever
+  kvar efter 5s) i en HELT FRISK `ubuntu:24.04`-container, samma
+  "fel sak bevisad annars"-lärdom som `bastion-gui`s CodeRabbit-fynd gav.
+  Härledd `Depends` verifierad lokalt: `libc6, libadwaita-1-0,
+  libglib2.0-0t64, libgtk-4-1, libvte-2.91-gtk4-0`.
+
+  **Kvar**: `.rpm` för `bastion-linuxapp`, FreeBSD-bygge (Swift har
+  community-toolchains där; LinuxApp/Rust har sin egen story att
+  utreda), OpenBSD/NetBSD-undersökning (oklart om något av detta ens
+  fungerar där än — måste verifieras mot en riktig installation innan
+  något annat antas). Alla paketeringsworkflows (CLI och GUI) bygger idag
   bara `amd64` (CodeRabbit-fynd på `.deb`-jobbet för `bastion-cli`:
   föregående skrivning antydde felaktigt att ARM64/Raspberry Pi redan
   täcktes) — ARM64 kräver en egen körning på en ARM64-runner/toolchain
