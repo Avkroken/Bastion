@@ -41,9 +41,26 @@ final class SSHTerminalController {
     /// (CodeRabbit-fynd på #155: stop() stänger bara det som redan hunnit
     /// tilldelas self.chain/self.shell VID ANROPSTILLFÄLLET).
     private var isStopped = false
+    /// Garanterar att den FAKTISKA nedstängningen (stänga `shell`, stänga
+    /// `chain`) bara körs EN gång oavsett vilken av de tre vägarna som
+    /// hinner först: `stop()`, output-strömmens normala slut, eller ett
+    /// fel i `start()`s Task. Utan detta kunde två vägar råka trigga
+    /// samtidigt (t.ex. `stop()` medan output-loopen precis avslutas
+    /// naturligt) och båda anropa `shell.close()` + starta överlappande
+    /// `chain.close()`-anrop (CodeRabbit-fynd). Säkert att kolla/sätta
+    /// synkront utan lås — allt här körs på `@MainActor`, och kollen+
+    /// sättningen i `teardown()` sker ALDRIG över en `await`-punkt.
+    private var isTornDown = false
 
     /// Anropas på main med bytes att mata in i terminalvyn.
     var onData: ((ArraySlice<UInt8>) -> Void)?
+    /// Anropas EXAKT en gång när fjärrshellen stänger — antingen normalt
+    /// (`exit`/Ctrl+D, output-strömmen tar slut utan fel) eller via ett fel.
+    /// INTE vid `stop()` (använraren stängde själv, redan hanterat av
+    /// anroparen). Låter SessionView auto-stänga terminalvyn istället för
+    /// att lämna en tyst död session som kräver ett manuellt tryck på
+    /// "Klar" (TestFlight-feedback 2026-07-28).
+    var onSessionEnded: (() -> Void)?
     /// Skickas till shellen direkt efter att den öppnats (t.ex. `docker exec …`).
     var initialCommand: String?
 
@@ -55,6 +72,7 @@ final class SSHTerminalController {
     }
 
     func start(cols: Int, rows: Int) {
+        debugLog("session", "start() target=\(target.host):\(target.port) cols=\(cols) rows=\(rows)")
         Task {
             do {
                 let chain = try await SSHConnectionChain.connect(target: target, targetAuth: auth, jump: jump)
@@ -73,14 +91,18 @@ final class SSHTerminalController {
                     let bytes = chunk.bytes
                     self.onData?(bytes[...])
                 }
-                // Strömmen tar slut normalt när fjärrshellen stänger (t.ex.
-                // `exit`) — måste städas här precis som i catch-grenen
+                // Strömmen tog slut NORMALT — fjärrshellen stängde (t.ex.
+                // `exit`/Ctrl+D). Måste städas här precis som i catch-grenen
                 // nedan, annars förblir keepAlive-Task:en och den underliggande
                 // anslutningen aktiva utan att någon någonsin river ner dem
                 // (CodeRabbit-fynd: den här grenen saknade helt städning,
                 // till skillnad från LinuxApp/WindowsApp-motsvarigheterna).
-                self.shell?.close()
-                await self.chain?.close()
+                debugLog("session", "output-strömmen tog slut normalt (fjärrshellen stängde)")
+                await teardown()
+                // Inte samma sak som `isStopped` (användaren stängde vyn
+                // själv) — den vägen ska INTE trigga onSessionEnded,
+                // anroparen vet redan att den stänger.
+                if !isStopped { self.onSessionEnded?() }
             } catch {
                 // Om felet kom EFTER att chain redan var uppsatt (openShell()
                 // eller output-strömmen misslyckades, inte själva anslutningen)
@@ -88,15 +110,18 @@ final class SSHTerminalController {
                 // bara sina EGNA fel internt, inte fel som inträffar efter att
                 // den redan returnerat. Ofarligt no-op om chain fortfarande är
                 // nil (connect() self själv redan städat i den vägen).
-                // self.shell?.close() FÖRE chain?.close() — stoppar keepAlive-
-                // Task:en innan chain.close() river ner event loop-gruppen
-                // under den (CodeRabbit-fynd), samma race-klass som redan
-                // dokumenteras i SSHSession.swift.
-                self.shell?.close()
-                await self.chain?.close()
+                await teardown()
+                debugLog("session", "fel: \(error)")
                 guard !isStopped else { return }
                 let msg = Array("\r\n[bastion] fel: \(error)\r\n".utf8)
                 self.onData?(msg[...])
+                // Utan detta lämnades SessionView öppen med en död session
+                // efter ett anslutningsfel — exakt samma "måste trycka Klar
+                // manuellt"-problem som exit/Ctrl+D-fixen ovan löste för
+                // NORMAL avslutning, bara via felvägen istället
+                // (CodeRabbit-fynd). `onSessionEnded` dokumenteras nu även
+                // täcka fel, inte bara exit/Ctrl+D — se SessionView.swift.
+                self.onSessionEnded?()
             }
         }
     }
@@ -105,9 +130,25 @@ final class SSHTerminalController {
     func resize(cols: Int, rows: Int) { shell?.resize(cols: cols, rows: rows) }
     func stop() {
         isStopped = true
-        shell?.close()
+        Task { await teardown() }
+    }
+
+    /// Den ENDA platsen som faktiskt stänger `shell`/`chain` — anropad från
+    /// `stop()` OCH från båda avslutningsvägarna i `start()`s Task. Klar/
+    /// nollställ `shell`/`chain` INNAN någon `await`, så en konkurrerande
+    /// anropare (kollar `isTornDown` på samma `@MainActor`, aldrig över en
+    /// `await`-punkt) garanterat ser att jobbet redan är taget istället för
+    /// att båda stänger samma resurser/startar överlappande
+    /// `chain.close()`-anrop (CodeRabbit-fynd).
+    private func teardown() async {
+        guard !isTornDown else { return }
+        isTornDown = true
+        let shell = self.shell
         let chain = self.chain
-        Task { await chain?.close() }
+        self.shell = nil
+        self.chain = nil
+        shell?.close()
+        await chain?.close()
     }
 }
 
@@ -162,9 +203,11 @@ struct BastionTerminal: TerminalRepresentable {
     /// Se `SSHTerminalController.jump` — `nil` = direkt anslutning.
     var jump: (target: SSHTarget, auth: SSHAuth)? = nil
     var initialCommand: String? = nil
+    /// Se `SSHTerminalController.onSessionEnded`.
+    var onSessionEnded: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(target: target, auth: auth, jump: jump, initialCommand: initialCommand)
+        Coordinator(target: target, auth: auth, jump: jump, initialCommand: initialCommand, onSessionEnded: onSessionEnded)
     }
 
     private func build(_ context: Context) -> TerminalView {
@@ -193,18 +236,26 @@ struct BastionTerminal: TerminalRepresentable {
         private let controller: SSHTerminalController
         private weak var view: TerminalView?
 
-        init(target: SSHTarget, auth: SSHAuth, jump: (target: SSHTarget, auth: SSHAuth)?, initialCommand: String?) {
+        init(target: SSHTarget, auth: SSHAuth, jump: (target: SSHTarget, auth: SSHAuth)?, initialCommand: String?, onSessionEnded: (() -> Void)?) {
             self.controller = SSHTerminalController(target: target, auth: auth, jump: jump, initialCommand: initialCommand)
             super.init()
             controller.onData = { [weak self] bytes in
                 self?.view?.feed(byteArray: bytes)
             }
+            controller.onSessionEnded = onSessionEnded
         }
 
         func attach(_ view: TerminalView) {
             self.view = view
             let savedID = UserDefaults.standard.string(forKey: TerminalThemeKeys.selectedID)
             view.apply(theme: TerminalTheme.theme(id: savedID))
+            // SwiftTerms standard (true) låter fjärrprogram (vim/tmux/htop)
+            // som ber om musrapportering kapa pekskärmens svep/scroll —
+            // touch-scroll slutar då fungera tills man manuellt slår av det
+            // (TestFlight-feedback 2026-07-28: "det där borde alltid funka
+            // och inte vara något man togglar av och på"). Lokal scroll/
+            // markering ska alltid vinna på touch.
+            view.allowMouseReporting = false
             let t = view.getTerminal()
             controller.start(cols: t.cols, rows: t.rows)
         }

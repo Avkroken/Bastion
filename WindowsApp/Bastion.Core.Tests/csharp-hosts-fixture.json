@@ -1,0 +1,25 @@
+{
+  "hosts" : [
+    {
+      "alias" : "csharp-check",
+      "auth" : {
+        "keyFile" : {
+          "_0" : "\/home\/x\/.ssh\/id_ed25519"
+        }
+      },
+      "hostName" : "10.0.0.9",
+      "id" : "AE70B164-D179-41C1-B33B-960937169E95",
+      "isFavorite" : false,
+      "modifiedAt" : 807060804.038589,
+      "platform" : "posix",
+      "port" : 22,
+      "tags" : [
+
+      ],
+      "user" : "root"
+    }
+  ],
+  "tombstones" : [
+
+  ]
+}

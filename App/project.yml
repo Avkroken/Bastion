@@ -131,21 +131,28 @@ targets:
       # Manual signering kräver en UTTRYCKLIG PROVISIONING_PROFILE_
       # SPECIFIER. Namnet nedan är det VERKLIGA namnet match faktiskt
       # skapade och sparade i blixten85/bastion-certificates (omgenererat
-      # 2026-07-22 efter att alla certifikat/profiler raderades i Apple
-      # Developer-portalen) — match lägger till ett unikt tidsstämpel-
-      # suffix när ett namn utan suffix redan är upptaget. Statiskt namn
-      # är fastlanes egna rekommenderade mönster (inte en miljövariabel
-      # som `$(sigh_..._profile-name)`, trots att den också skulle
-      # fungera) — se docs.fastlane.tools/codesigning/xcode-project. Om
-      # profilen någonsin regenereras (ny `match`-bootstrap) måste den
-      # här raden uppdateras till det nya namnet.
+      # 2026-07-28 efter en cert-kris: `.gitignore` i certs-repot hade av
+      # misstag fått en `*.p12`-regel — troligen från en tidigare "remove
+      # hardcoded secret"-städning som missförstod att .p12-filerna redan
+      # är krypterade av match — vilket TYST blockerade varje `git push`
+      # av nya certifikat sedan dess. Ingen ny cert kunde någonsin sparas,
+      # så det gamla till slut blev ogiltigt utan att ett nytt kunde ta
+      # dess plats. `.gitignore`-regeln borttagen samma dag. Match namngav
+      # denna gång profilen UTAN tidsstämpel-suffix (till skillnad från
+      # tidigare bootstrap-omgångar) eftersom föregångaren nukades rent
+      # innan den nya skapades. Statiskt namn är fastlanes egna
+      # rekommenderade mönster (inte en miljövariabel som
+      # `$(sigh_..._profile-name)`, trots att den också skulle fungera) —
+      # se docs.fastlane.tools/codesigning/xcode-project. Om profilen
+      # någonsin regenereras (ny `match`-bootstrap) måste den här raden
+      # uppdateras till det nya namnet.
       configs:
         Debug:
           CODE_SIGN_IDENTITY: "Apple Development"
           PROVISIONING_PROFILE_SPECIFIER: "Bastion Development"
         Release:
           CODE_SIGN_IDENTITY: "Apple Distribution"
-          PROVISIONING_PROFILE_SPECIFIER: "match AppStore se.denied.bastion 1784708595"
+          PROVISIONING_PROFILE_SPECIFIER: "match AppStore se.denied.bastion"
     dependencies:
       - package: SwiftTerm
       - package: Bastion

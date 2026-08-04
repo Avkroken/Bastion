@@ -1,6 +1,0 @@
-module CGtk4Raw [system] {
-  header "header.h"
-  link "gtk-4"
-
-  export *
-}

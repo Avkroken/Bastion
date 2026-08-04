@@ -46,10 +46,10 @@ delvis andra, av konkreta skäl:
 | Nyckelimport i appen (Keychain) | 🧩 `HostEditView` klistra-in + validering, `HostAuth.keychainKey`, städas vid borttagning |
 | Auto-poll av dashboard | 🧩 `DashboardModel.startPolling()`, 15 s intervall, behåller data vid övergående fel |
 | App-ikon + launch screen | ✅ `App/Assets.xcassets` |
-| Linux-GUI (`bastion-gui`, SwiftCrossUI/GTK4) | ✅ byggd och körd (Xvfb) + egen CI-lane (`linux-gui.yml`, required check) på `main` idag — men se "Arkitekturbeslut" nedan: en ännu OMERGAD branch river ut hela SwiftCrossUI-spåret till förmån för native Rust/GTK4. Fram tills den branchen mergas är raden ovan fortsatt sann, inte historik. |
+| Linux-GUI (`bastion-gui`, SwiftCrossUI/GTK4) | 🗑️ RIVEN (2026-08-03) — ersatt av native Rust/GTK4-`LinuxApp`, se "Arkitekturbeslut" nedan. Raden bevaras som historik, inte aktuell status. |
 | Linux-terminal (VT100/ANSI-tolk, bestående PTY-shell) | ✅ 42 fristående parser-tester gröna (`LinuxApp/Tests/`), körd (Xvfb) — riktig tangentbordsinmatning (2026-08-02, `KeyEventBridge.swift`, se "Klart"), ingen interaktiv GUI-verifiering än; inget musstöd (ingen rå gest-position-API i SwiftCrossUI) |
 | Linux-Docker-hantering (`DockerView`) | ✅ lista/start/stopp/omstart/logg/shell — motsvarar `App/DockerView.swift` |
-| Portvidarebefordran (`PortForwardView`) | ✅ lokal/fjärr/dynamisk, starta/stoppa — LinuxApp (byggd+körd, Xvfb) OCH App/ (2026-07-08, Xcode-only) |
+| Portvidarebefordran (`PortForwardView`) | ✅ lokal/fjärr/dynamisk — LinuxApp (byggd+körd, Xvfb; interaktiv klick-genom-menyn ej gjord) OCH App/ (2026-07-08, Xcode-only) |
 | ProxyJump (`ssh -J`) | ✅ `SSHSession.connect(via:)`, `bastion-cli` läser `ProxyJump` ur ssh-config automatiskt |
 | WireGuard-profiler | ✅ parsning/serialisering + lagring — LinuxApp OCH App/-UI (2026-07-08, Xcode-only) |
 | OpenSSH-certifikat | ✅ parsning + CA-signaturverifiering + `SSHUserAuth`/`HostAuth`-wiring (`.certificateFile`) — testad mot RIKTIGA `ssh-keygen -s`-certifikat, LinuxApp+App-UI klar |
@@ -488,7 +488,47 @@ delvis andra, av konkreta skäl:
     Keychain (se `AuthResolver.swift`), så "ta bort lösenordet" betyder här
     bara att sluta FRÅGA efter det (`.askPassword` → `.keyFile`); LinuxApp
     sparade aldrig själva lösenordsvärdet till att börja med. Byggd + körd
-    (Xvfb), rent utan krasch.
+    (Xvfb), rent utan krasch. **HISTORIK, inte aktuell status** — den här
+    `KeyDeployView.swift` hörde till den gamla SwiftCrossUI/GTK4-`bastion-gui`,
+    som är RIVEN sedan arkitekturbeslutet 2026-08-03 (se "Arkitekturbeslut").
+    Motsvarigheten i den NYA Rust/GTK4-LinuxApp beskrivs separat nedan.
+  - **Rust/GTK4-LinuxApp: SSH-nyckeldistribution, backend + UI klart**
+    (2026-08-03, `LinuxApp/src/key_deploy.rs`): `generate_ed25519` (via
+    `russh::keys::key::KeyPair::generate_ed25519`) → `deploy_command`
+    (idempotent `~/.ssh/authorized_keys`-tillägg, samma logik som Swifts
+    `deployPublicKeyCommandPOSIX` — bara POSIX, `Host.platform`/Windows-
+    grenarna finns inte i LinuxApp) → `deploy_and_verify` öppnar en HELT NY,
+    separat anslutning med bara den nya nyckeln för att bevisa att den
+    fungerar, motsvarande `SSHSession.verifyKeyAuthWorks`. Nyckeln sparas
+    som PKCS8 PEM (0600, `~/.bastion/keys/bastion_ed25519_<uuid>`) — samma
+    `russh_keys::decode_secret_key` som redan läser OpenSSH-format läser
+    PKCS8 lika bra, ingen egen OpenSSH-writer behövdes. Testat genuint
+    end-to-end mot samma fristående test-sshd-mönster som `-L`/`-R`/`-D`:
+    en riktig ny nyckel genereras, deployas, och en efterföljande anslutning
+    som ENDAST litar på den nya nyckeln lyckas — plus en explicit kontroll
+    att raden verkligen landade i den (isolerade) `authorized_keys`-filen,
+    inte bara att verifieringen råkade lyckas av något annat skäl.
+    GTK4-vyn ("Nyckel"-menyposten, bakom `show_key_deploy`) har
+    Generera+deploya+verifiera i ETT klick, visar den publika raden, och en
+    separat "Använd den nya nyckeln"-knapp (bara aktiv efter lyckad
+    verifiering — opt-in, aldrig automatiskt, samma
+    [[feedback_password_removal_scope]]-princip som Swift-sidan) som byter
+    `host.auth` till den nya nyckelfilen via `HostStore::upsert`. Byggd och
+    körd under Xvfb utan krasch.
+    **"Klistra in befintlig nyckel"-flödet klart** (2026-08-04,
+    `key_deploy::import_existing`): tolkar en klistrad OpenSSH-privatnyckel-
+    PEM via `russh::keys::decode_secret_key`, motsvarande Swifts
+    `KeyGenerator.fromExisting`/`KeyDeployModel.importExisting`. Avvisar
+    tydligt lösenfras-skyddade nycklar (`Error::KeyIsEncrypted`) och
+    icke-Ed25519-nycklar (RSA/ECDSA/…) — bara Ed25519 stöds, samma
+    begränsning som Swift-sidan. Testat mot RIKTIGA `ssh-keygen`-genererade
+    nycklar (okrypterad Ed25519, lösenfras-skyddad Ed25519, RSA), inte
+    handkonstruerade PEM-strängar. GTK4-vyn fick ett textfält för att
+    klistra in nyckeln + en egen "Importera + deploya + verifiera"-knapp
+    som återanvänder samma deploy/verifiera/adoptera-flöde som
+    generera-ny-knappen. Byggd och körd under Xvfb utan krasch.
+    **Kvar**: `Host.platform`/Windows-mål (LinuxApp har inget platform-fält
+    alls än — bara POSIX-fjärrsystem stöds för `deploy_command`).
   - **App/-flödet klart** (2026-07-08, `App/KeyDeployView.swift`): samma
     generera→deploya→verifiera-ordning, men lagrar nyckeln i Keychain
     (`.keychainKey`, samma ID-schema `host-key-<uuid>` som `HostEditView`
@@ -1560,17 +1600,11 @@ alternativ hade sett ut, och slutsatsen blev ett definitivt beslut:
 > plattforms klient native. Och sammankopplingen mellan klienterna sker på
 > annat sätt än att dela kod. [...] Skriv varje klient efter dess native
 > plattform."
-**Beslut** (fattat, men ÄNNU INTE mergat till `main` — se not nedan):
+**Beslut:**
 - `LinuxApp/` (SwiftCrossUI/GTK4) och `WindowsApp/` (SwiftCrossUI/WinUIBackend,
-  commit 98f9931-portningen) ska tas bort helt, inte frysas som referens.
-  `.github/workflows/linux-gui.yml`/`windows-gui.yml` tas bort med samma
-  commit (byggde bara de paketen).
-  **Status 2026-08-03**: rivningen (commit `a6c0457`) finns bara på den
-  separata `claude/ios-multisession-swipe`-branchen (PR #216), ännu inte
-  mergad till `main`. Fram tills den mergar är `bastion-gui` FORTFARANDE den
-  levande, byggda SwiftCrossUI-implementationen på `main` (se Status-
-  tabellen ovan) — den här sektionen beskriver en fattad riktning, inte
-  redan genomförd verklighet på `main`.
+  commit 98f9931-portningen) är borttagna helt, inte frysta som referens.
+  `.github/workflows/linux-gui.yml`/`windows-gui.yml` borttagna med samma
+  commit (byggde bara de borttagna paketen).
 - Ny `WindowsApp/`: C#/.NET + WinUI 3 + SSH.NET, byggs från grunden.
 - Ny `LinuxApp/`: Rust + GTK4 (gtk4-rs) + russh/libssh2, byggs från grunden.
 - `SSHCore` delas INTE längre av Windows/Linux — samma princip som redan
@@ -1613,11 +1647,81 @@ session per flik) + touchscreen-svep mellan dem (`GestureSwipe`,
 400px/s-tröskel) — motsvarar iOS MultiSessionView. Flikstängning (manuell
 eller fjärrskalets EOF) stänger SSH-anslutningen rent.
 
-**Medvetet UPPSKJUTET, inte glömt:** Funktioner-inställningar (Docker
-valfritt m.m.) kräver att Docker/Snippets/SFTP/portvidarebefordran-vyerna
-finns FÖRST i LinuxApp — de finns inte än (bara HostList+terminal). Att
-bygga togglar för obefintliga funktioner nu vore tomt skelett. Bygg
-underliggande vyer, lägg till togglar när det finns något att gömma.
+**Medvetet UPPSKJUTET, inte glömt** (STATUS 2026-08-03, se nedan för vad som
+sedan dess faktiskt byggts): Funktioner-inställningar (Docker valfritt m.m.)
+kräver att Docker/Snippets/SFTP/portvidarebefordran-vyerna finns FÖRST i
+LinuxApp. Vid skrivandets tillfälle fanns bara HostList+terminal. **Docker-,
+Kommandobiblioteks/Snippets- och SFTP-vyerna (inkl. rättigheter/arkiv) är
+sedan dess byggda** (se `src/main.rs`: `open_docker_view`/
+`open_command_library_view`/`open_sftp_view` m.fl.) — den här texten är
+alltså delvis inaktuell historik, inte aktuell status; kvarstår korrekt bara
+för portvidarebefordran (se nästa stycke) och själva Funktioner-togglarna
+(som fortfarande saknar UI trots att `settings::FeatureToggles` redan har
+alla fälten, inklusive `show_port_forward`).
+
+**Portvidarebefordran (lokal, `-L`), backend klar — UI ÄNNU INTE byggt**
+(2026-08-03, `LinuxApp/src/port_forward.rs`): ny `spawn_local_forward`
+öppnar en `direct-tcpip`-SSH-kanal per inkommen lokal TCP-anslutning via
+russh (`channel_open_direct_tcpip` + `Channel::into_stream()` +
+`tokio::io::copy_bidirectional`) — motsvarar
+`SSHSession.openLocalPortForward` i SSHCore. Delar samma `ssh::connect()`-
+hjälpare som redan används av den interaktiva shellen och engångskommandon.
+Testat genuint end-to-end: en fristående, minimal `sshd`-instans (egen
+konfigfil på en slumpad hög port — läser INTE `/etc/ssh/sshd_config`,
+träffas alltså inte av den här kontots `DenyUsers`-restriktion, se
+`bastion-cli -J`-verifieringen ovan för samma teknik) + en separat, oberoende
+TCP-ekoserver som målet. Klientdata skickad genom den lokala vidarebefordrade
+porten kom tillbaka genom HELA kedjan (lokal socket → SSH-kanal → sshd →
+ekoserver → samma väg tillbaka), inte en kortsluten loopback-gissning.
+1/1 nytt test grönt, 45/45 totalt (8 ignorerade, kräver riktig localhost-
+sshd på port 22 specifikt — se `ssh.rs`/`sftp.rs`).
+**GTK4-vy tillagd samma dag**: ny "Tunnel"-menypost (`host.forward`,
+respekterar `show_port_forward`-togglen) öppnar en flik med fält för lokal
+port/målvärd/målport + Starta/Stoppa, kopplad direkt mot
+`spawn_local_forward`. Byggd och körd (Xvfb, riktig skärmdump) utan krasch
+— samma verifieringsnivå som Docker-/SFTP-/Kommandon-vyerna. Interaktiv
+klick-genom-menyn-verifiering (öppna tunnel-fliken på en riktig värd) INTE
+gjord än, bara app-start med den nya kodvägen länkad in.
+**Fjärr-portvidarebefordran (`-R`), backend + UI klart** (2026-08-03,
+`LinuxApp/src/port_forward.rs`): ny `spawn_remote_forward` ber servern
+lyssna åt oss via russh `Handle::tcpip_forward` (motsvarar
+`SSHSession.openRemotePortForward` i SSHCore). Inkommande
+`forwarded-tcpip`-kanaler dirigeras av en ny `ClientHandler::
+server_channel_open_forwarded_tcpip` (`ssh.rs`) mot en delad
+`RemoteForwards`-karta (port → mål), som slår upp target och bryggar en ny
+lokal TCP-anslutning — samma princip som SSHCores `remoteForwards`-fält.
+Testat genuint end-to-end mot samma fristående test-`sshd` som `-L`-testet:
+en klient som ansluter mot porten SERVERN band åt oss (inte en lokal port vi
+själva öppnade) når en oberoende TCP-ekoserver genom hela kedjan. GTK4-vyn
+("Tunnel"-fliken) fick en "Riktning"-väljare (Lokal/`-L`, Fjärr/`-R`) som
+delar samma fält och kopplar mot rätt bakomliggande funktion via ett nytt
+`ActiveForward`-enum (håller `LocalPortForward`/`RemotePortForward` bakom
+ett gemensamt handtag). Byggd och körd under Xvfb utan krasch. Interaktiv
+klick-genom-menyn-verifiering av riktningsväljaren på en riktig värd INTE
+gjord än, bara app-start med den nya kodvägen länkad in — samma
+begränsning som redan gällde för `-L`-UI:t.
+**Dynamisk portvidarebefordran (`-D`, SOCKS5), backend + UI klart**
+(2026-08-03, `LinuxApp/src/socks_proxy.rs`): ny `spawn_dynamic_forward`
+startar en lokal SOCKS5-proxy (RFC 1928, bara CONNECT/0x01) — motsvarar
+`SSHSession.openDynamicPortForward`/`SOCKSProxy.swift`. Enklare än NIO-
+versionen: tokio-strömmars sekventiella `read_exact` behöver ingen egen
+pipeline-handler/buffertackumulator för fragmenterade TCP-läsningar.
+Testat genuint end-to-end: en riktig SOCKS5-klient (handrullad på byte-
+nivå, inte en biblioteksmock) förhandlar mot proxyn, väljer en oberoende
+ekoserver SOM MÅL I FARTEN (det som gör "dynamisk" dynamisk, till skillnad
+från `-L`/`-R`s fasta mål), och når den genom samma fristående test-`sshd`
+som `-L`/`-R`-testerna. GTK4-vyn ("Tunnel"-fliken) fick en tredje
+"Dynamisk (-D, SOCKS5)"-post i riktningsväljaren — Målvärd/Målport göms
+automatiskt (meningslösa fält när målet väljs per SOCKS-anslutning), kopplad
+via samma `ActiveForward`-enum (nu tre varianter: Local/Remote/Dynamic).
+Byggd och körd under Xvfb utan krasch. Interaktiv klick-genom-menyn-
+verifiering på en riktig värd INTE gjord än, samma begränsning som
+`-L`/`-R`-UI:t.
+
+**Portvidarebefordran (`-L`/`-R`/`-D`) i LinuxApp är nu funktionsmässigt
+komplett** (bibliotek+UI, 2026-08-03) — matchar SSHCores tre lägen. Kvar
+är bara interaktiv verifiering mot en riktig fjärrvärd (inte bara Xvfb-
+uppstart) för alla tre.
 
 **Klart samma dag, fjärde pass: formellt synkprotokoll, dokumenterat OCH
 implementerat** — se [SYNC_PROTOCOL.md](SYNC_PROTOCOL.md). `LinuxApp/src/

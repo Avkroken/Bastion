@@ -1,10 +1,12 @@
 # Bastion (arbetsnamn)
 
 Fri, öppen, **fristående** SSH-klient — en app du laddar ner, inte något som
-körs i en container. Byggd på [SwiftNIO SSH](https://github.com/apple/swift-nio-ssh)
-så att **samma kärna kör på iOS, macOS, Linux och Windows**; bara det tunna
-UI-lagret är plattformsspecifikt. All affärslogik ligger i den testade kärnan
-(`SSHCore`) — verifierad på Linux, byggbar på Apple.
+körs i en container. Varje plattform är en genuint native klient, skriven i
+sitt eget språk/UI-ramverk (beslut 2026-07-29 — inget delat cross-platform
+UI-lager). `SSHCore` ([SwiftNIO SSH](https://github.com/apple/swift-nio-ssh))
+är kärnan för iOS/macOS, där Swift redan är native. Övriga plattformar har
+egna native SSH-implementationer. Klienter kopplas samman via ett synkprotokoll
+för host-databasen, inte via delad UI- eller SSH-kod.
 
 > "Docker-stöd" = appen hanterar Docker-containrar på dina *fjärrservrar* via SSH.
 > Appen själv körs aldrig i en container.
@@ -17,10 +19,13 @@ status mot den — den här filen är bara "hur man bygger och kör".
 
 | Plattform | Kärna | UI |
 |-----------|-------|----|
-| iOS/iPadOS | ✅ | SwiftUI (`App/`) — fas 1 |
-| macOS | ✅ | SwiftUI (delas med iOS) |
-| Linux | ✅ (byggd/testad här) | CLI + GUI (SwiftCrossUI/GTK4) — se toolchain-kravet nedan |
-| Windows | ✅ (Swift finns på Windows) | GUI senare (WinUIBackend, otestad) |
+| Plattform | Native stack |
+|-----------|--------------|
+| iOS/iPadOS | SwiftUI (`App/`) + SSHCore |
+| macOS | SwiftUI (`App/`, delas med iOS) + SSHCore |
+| Android | Kotlin/Gradle (`Android/`) + Apache MINA SSHD |
+| Linux | Rust + GTK4 (`LinuxApp/`, under uppbyggnad) + russh/libssh2 |
+| Windows | C#/.NET + WinUI 3 (`WindowsApp/`, under uppbyggnad) + SSH.NET |
 
 **Sync utan inloggning:** host-databasen slås ihop deterministiskt mellan enheter
 (`SyncEngine`, last-write-wins + gravstenar för raderingar). Transporten är en
@@ -131,34 +136,14 @@ App/                   XCODE-ONLY: iOS+macOS-appen (SwiftUI, delad kod) + XcodeG
   GoogleDriveSyncProvider.swift SyncProvider mot Google Drive (appDataFolder, sök+multipart-upload)
   OneDriveSyncProvider.swift    SyncProvider mot OneDrive (Graph API, path-baserad som Dropbox)
   Info.plist             Endast iOS-target (macOS genererar sin egen Info.plist)
-LinuxApp/              EGET SwiftPM-paket (se "Bygg Linux-GUI:t" — varför det inte ligger i rot-paketet)
-  Package.swift          .package(path: "..") mot roten för SSHCore, + SwiftCrossUI
-  Sources/bastion-gui/   Linux-GUI, SwiftCrossUI (GTK4)
-  BastionGUIApp.swift    @main, beror på GtkBackend direkt (se kommentar i Package.swift)
-  ContentView.swift      NavigationSplitView: värdlista + dashboard/kommando
-  HostListModel.swift    Host-databas-wrapper (samma HostStore som App/)
-  HostEditView.swift     Lägg till/ändra värd — agent/lösenord/nyckelfil (ingen Keychain här)
-  ImportConfigView.swift Klistra in ssh-config för import
-  HostDetailView.swift   Lösenordsgrind + dashboard + terminal för vald värd
-  DashboardView.swift    Samma auto-poll-modell som App/, SwiftCrossUI-vyer
-  TerminalBuffer.swift   Egen VT100/ANSI-tolk (markör, SGR-färg, radering) — 42 tester i Tests/bastion-guiTests/
-  TerminalGridView.swift Renderar buffern som hopslagna Text-körningar (ingen Canvas i SwiftCrossUI)
-  TerminalSessionView.swift Bestående PTY-shell + radvis input + kontrollknappar (piltangenter/Home/End/PgUp/PgDn/Ctrl+C/Tab/Esc)
-  DockerView.swift       Docker: lista/start/stopp/omstart/logg/shell — motsvarar App/DockerView.swift
-  SnippetListView.swift  Sparade snippets — motsvarar App/SnippetListView.swift
-  SnippetEditView.swift  Lägg till/ändra ett snippet — motsvarar App/SnippetEditView.swift
-  CommandLibraryView.swift Bläddra referensbiblioteket — motsvarar App/CommandLibraryView.swift
-  SFTPBrowserView.swift  SFTP-filhanterare (modell + vy i samma fil) — motsvarar App/SFTPBrowser{Model,View}.swift
-  PortForwardView.swift  Portvidarebefordran (lokal/fjärr/dynamisk -L/-R/-D), starta/stoppa — ingen App/-motsvarighet än
-  KeyDeployView.swift    Generera+deploya+verifiera SSH-nyckel, byt host till nyckel-auth efter grönt ljus
-  TailscaleDiscoveryView.swift Föreslå värdar ur ett tailnet (lokalt eller via en sparad fjärrvärd), lägg till som ny värd
-  S3BrowserView.swift    Bläddra S3-kompatibel objektlagring: buckets → objekt → ladda upp/ner (text)/ta bort
-  S3ConnectionEditView.swift  Lägg till/ändra en S3-anslutning (endpoint/region/nycklar)
-  AuthResolver.swift     Som App/, men `.keychainKey` ger nil (ingen Keychain på Linux)
-WindowsApp/            EGET SwiftPM-paket, samma mönster som LinuxApp/ — WinUIBackend istället för GtkBackend
-  Package.swift          .package(path: "..") mot roten för SSHCore, + SwiftCrossUI/WinUIBackend
-  Sources/bastion-gui/   Windows-GUI, SwiftCrossUI (WinUIBackend) — medvetet minimal första version
-  BastionGUIApp.swift    @main + en enkel ContentView (visar antal sparade värdar) — bevisar pipelinen, riktiga vyerna porteras hit senare
+LinuxApp/              UNDER OMBYGGNAD: Rust + GTK4 (gtk4-rs) + russh/libssh2,
+                       native GNOME-klient. Ersätter det tidigare
+                       SwiftCrossUI/GTK4-spåret (borttaget 2026-07-29, se
+                       ROADMAP.md).
+WindowsApp/            UNDER OMBYGGNAD: C#/.NET + WinUI 3 + SSH.NET, native
+                       Windows-klient. Ersätter det tidigare
+                       SwiftCrossUI/WinUIBackend-spåret (borttaget 2026-07-29,
+                       se ROADMAP.md).
 ```
 
 ## Bygga & testa (Linux eller macOS)
@@ -185,82 +170,31 @@ BASTION_ED25519_HEX='...' ./.build/debug/bastion-cli user@host "systemctl status
 Autentiseringsordning i CLI:t: `BASTION_KEY_FILE` > `BASTION_ED25519_HEX` >
 `BASTION_PASSWORD` > `IdentityFile` (ssh-config) > `~/.ssh/id_ed25519` > lösenordsfråga.
 
-## Bygg Linux-GUI:t (`bastion-gui`, i `LinuxApp/`)
+## Linux-GUI:t (`LinuxApp/`) och Windows-GUI:t (`WindowsApp/`)
 
-Eget SwiftPM-paket, medvetet skilt från roten (`.package(path: "..")` för
-`SSHCore`) — annars skulle rotens `swift build`/`swift test` dra in hela
-SwiftCrossUI-grafen och krascha på stabil toolchain (se nästa stycke).
+Native klienter (arkitekturbeslut 2026-07-29, se ROADMAP.md för motivering
+och historik): Linux är Rust + GTK4 (gtk4-rs) + russh, Windows är C#/.NET +
+WinUI 3 + SSH.NET.
 
-**Kräver en Swift-toolchain nyare än 6.1.3.** Stabila Swift 6.1.3 kraschar
-med ett bekräftat, öppet kompilatorfel
-([swiftlang/swift#80759](https://github.com/swiftlang/swift/issues/80759)) när
-den bygger SwiftCrossUIs `swift-mutex`-beroende — inget fel i den här koden.
-Verifierat löst i en Swift 6.5-dev-snapshot (2026-07-02) — se
-`.github/workflows/linux-gui.yml` för hur den hämtas (`download.swift.org`).
-(`apt install swiftlang` finns INTE på en vanlig Ubuntu 24.04 — "swift" i
-Ubuntus repon är OpenStack Swift, ett helt orelaterat paket; detta upptäcktes
-när en tidigare version av `.github/workflows/swiftpm-linux.yml` försökte
-installera paketet. Rot-paketet — SSHCore/bastion-cli — är opåverkat av
-swift-mutex-buggen; den slutgiltiga workflowen använder i stället den
-officiella `swift:6.1-noble`-Docker-avbildningen.)
+**Linux** (kräver `libgtk-4-dev`, `libadwaita-1-dev`, `libvte-2.91-gtk4-dev`,
+`pkg-config`):
 
 ```sh
-apt-get install libgtk-4-dev pkg-config   # GTK4-headers, en gång
 cd LinuxApp
-swift build --product bastion-gui         # med en toolchain där buggen är fixad
-./.build/debug/bastion-gui
+cargo build
+cargo test
+cargo run
 ```
 
-`swift test` funkar likadant (`bastion-guiTests`, `@testable import bastion_gui`
-— ett testmål kan importera ett `.executableTarget` direkt, ingen omstrukturering
-till ett bibliotekstarget krävs). Om `S3Client`/`FoundationXML` är inbyggt, se
-`-rpath-link`-tillägget nedan — det behövs för både `build` och `test`.
-
-Beror på `GtkBackend` direkt i stället för `DefaultBackend` (se kommentar i
-`LinuxApp/Package.swift`) — `DefaultBackend`s plattformsvillkorade
-`WinUIBackend`-gren byggdes ändå på en tidig SwiftPM-snapshot och krävde
-Windows-headers som saknas på Linux. `GtkBackend` beror bara på
-`SwiftCrossUI` + `Gtk` + `CGtk`.
-
-### Om din toolchain-nedladdning är byggd för en äldre Ubuntu-version
-En `ubuntu24.04`-snapshot på en nyare Ubuntu (t.ex. 26.04, som saknar
-`libxml2.so.2` — bara `libxml2-16`) ger `error while loading shared libraries:
-libxml2.so.2` VID KÖRNING. Lös genom att peka `LD_LIBRARY_PATH` på en mapp
-med den gamla `.so`:n (extraherad ur ett arkiverat `libxml2`-paket, aldrig
-`dpkg`-installerad systemvitt):
-
-```sh
-LD_LIBRARY_PATH=/path/to/compat-libs swift build --product bastion-gui
-```
-
-Sedan `S3Client.swift` (`FoundationXML`) drogs in transitivt (2026-07-07)
-misslyckas dessutom LÄNKNINGEN på samma sätt (`undefined reference to
-xmlBufferFree@LIBXML2_2.4.30` m.fl.) — `LD_LIBRARY_PATH` räcker inte
-ensamt där, GNU `ld.bfd` behöver även `-rpath-link` för att slå upp
-`libFoundationXML.so`s TRANSITIVA libxml2-beroende under själva länkningen:
-
-```sh
-LD_LIBRARY_PATH=/path/to/compat-libs swift build --product bastion-gui \
-  -Xlinker -rpath-link -Xlinker /path/to/compat-libs
-```
-
-## Bygg Windows-GUI:t (`bastion-gui`, i `WindowsApp/`)
-
-Eget SwiftPM-paket, samma mönster/skäl som `LinuxApp/`. Använder
-`WinUIBackend` istället för `GtkBackend`. Medvetet minimal första version
-(`ContentView` visar bara antal sparade värdar) — verifieras hittills
-bara via CI (`.github/workflows/windows-gui.yml`, `windows-latest`-runnern),
-ingen lokal Windows-maskin att bygga/köra på ännu.
+**Windows** (kräver Windows App SDK/WinUI 3 — bygger inte på Linux/macOS,
+se `.github/workflows/`):
 
 ```powershell
 cd WindowsApp
-swift build --product bastion-gui
+dotnet build
+dotnet test Bastion.Core.Tests
+dotnet run --project WindowsApp.csproj
 ```
-
-Kräver [Swift för Windows](https://www.swift.org/install/windows/) samt
-WinUIBackends beroenden (Windows SDK 10.0.17763 vid kompilering,
-WindowsAppSDK-runtime vid körning) — se SwiftCrossUIs egen
-["Setting up a development environment on Windows"](https://swiftpackageindex.com/stackotter/swift-cross-ui/documentation/swiftcrossui/windows-development)-guide.
 
 ## Bygg appen (på en Mac)
 

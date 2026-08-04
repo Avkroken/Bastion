@@ -125,6 +125,8 @@ struct HostListView: View {
     @State private var pendingHostFromDiscovery: Host?
     @State private var showS3 = false
     @State private var showTerminalTheme = false
+    @State private var showDebugLog = false
+    @State private var showFeatureSettings = false
     @State private var showQuickConnect = false
     @State private var pendingQuickConnectRequest: ConnectRequest?
     @State private var showTelnetConnect = false
@@ -179,11 +181,13 @@ struct HostListView: View {
                         Button { showTailscale = true } label: { Label("Tailscale-värdar", systemImage: "point.3.filled.connected.trianglepath.dotted") }
                         Button { showS3 = true } label: { Label("S3-lagring", systemImage: "externaldrive.badge.icloud") }
                         Button { showTerminalTheme = true } label: { Label("Terminaltema", systemImage: "paintpalette") }
+                        Button { showFeatureSettings = true } label: { Label("Funktioner", systemImage: "switch.2") }
                         Button { showQuickConnect = true } label: { Label("Snabbanslutning", systemImage: "bolt.horizontal") }
                         Button { showTelnetConnect = true } label: { Label("Telnet", systemImage: "terminal") }
                         #if os(macOS)
                         Button { showSerialConnect = true } label: { Label("Seriell/USB", systemImage: "cable.connector") }
                         #endif
+                        Button { showDebugLog = true } label: { Label("Debug-logg", systemImage: "ladybug") }
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
@@ -232,6 +236,12 @@ struct HostListView: View {
             }
             .sheet(isPresented: $showTerminalTheme) {
                 TerminalThemeSettingsView()
+            }
+            .sheet(isPresented: $showFeatureSettings) {
+                FeatureSettingsView()
+            }
+            .sheet(isPresented: $showDebugLog) {
+                DebugLogView()
             }
             .sheet(isPresented: $showQuickConnect, onDismiss: {
                 // Samma mönster som Tailscale-upptäckten ovan: öppna sessionen
@@ -365,6 +375,27 @@ struct HostListView: View {
                                     Button { wake(host) } label: {
                                         Label("Väck", systemImage: "bolt.fill")
                                     }.tint(.orange)
+                                }
+                            }
+                            // Långtryck som alternativ till att svepa —
+                            // touch-native mönster (Termius, Files.app m.fl.)
+                            // som TestFlight-feedback 2026-07-28 efterfrågade.
+                            // Samma handlingar som svep-menyerna ovan.
+                            .contextMenu {
+                                Button { editing = host } label: {
+                                    Label("Ändra", systemImage: "pencil")
+                                }
+                                Button { model.toggleFavorite(host) } label: {
+                                    Label(host.isFavorite ? "Ta bort favorit" : "Favorit",
+                                          systemImage: host.isFavorite ? "star.slash" : "star")
+                                }
+                                if host.macAddress != nil {
+                                    Button { wake(host) } label: {
+                                        Label("Väck", systemImage: "bolt.fill")
+                                    }
+                                }
+                                Button(role: .destructive) { model.delete(host) } label: {
+                                    Label("Ta bort", systemImage: "trash")
                                 }
                             }
                     }
