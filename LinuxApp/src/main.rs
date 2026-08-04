@@ -154,8 +154,10 @@ fn build_ui(app: &adw::Application) {
         #[weak]
         app,
         #[strong]
+        area,
+        #[strong]
         s3_store,
-        move |_| show_s3_connection_list(&app, &s3_store)
+        move |_| show_s3_connection_list(&app, &area, &s3_store)
     ));
 
     let settings_button = gtk::Button::from_icon_name("preferences-system-symbolic");
@@ -1975,13 +1977,14 @@ fn show_wireguard_profile_edit(
     win.present();
 }
 
-/// Lista över sparade S3-anslutningar — v1: hantera ANSLUTNINGAR (namn/
-/// endpoint/region/nycklar), motsvarande `App/`s (planerade) motsvarighet.
-/// **Kvar**: själva bucket-/objektbläddraren (`s3::S3Client::list_buckets`/
-/// `list_objects`/`put_object`/`get_object` är redan klara och testade,
-/// se `s3.rs`) — samma "backend klart, ytlager en avgränsad uppföljning"-
-/// mönster som synkmotorn hade innan dess UI kom på plats.
-fn show_s3_connection_list(app: &adw::Application, s3_store: &Rc<RefCell<s3::S3ConnectionStore>>) {
+/// Lista över sparade S3-anslutningar. "Bläddra" på en rad öppnar en
+/// bucket-/objektbläddare i en ny flik (`open_s3_bucket_browser`); raden
+/// själv öppnar redigeringsdialogen (namn/endpoint/region/nycklar).
+fn show_s3_connection_list(
+    app: &adw::Application,
+    area: &Rc<SessionArea>,
+    s3_store: &Rc<RefCell<s3::S3ConnectionStore>>,
+) {
     let list = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
         .css_classes(["boxed-list"])
@@ -2010,11 +2013,13 @@ fn show_s3_connection_list(app: &adw::Application, s3_store: &Rc<RefCell<s3::S3C
         .content(&content)
         .build();
 
-    refresh_s3_connection_list(app, s3_store, &list, &win);
+    refresh_s3_connection_list(app, area, s3_store, &list, &win);
 
     add_button.connect_clicked(clone!(
         #[strong]
         app,
+        #[strong]
+        area,
         #[strong]
         s3_store,
         #[weak]
@@ -2023,6 +2028,7 @@ fn show_s3_connection_list(app: &adw::Application, s3_store: &Rc<RefCell<s3::S3C
         win,
         move |_| show_s3_connection_edit(
             &app,
+            &area,
             &s3_store,
             &list,
             &win,
@@ -2041,6 +2047,7 @@ fn show_s3_connection_list(app: &adw::Application, s3_store: &Rc<RefCell<s3::S3C
 
 fn refresh_s3_connection_list(
     app: &adw::Application,
+    area: &Rc<SessionArea>,
     s3_store: &Rc<RefCell<s3::S3ConnectionStore>>,
     list: &gtk::ListBox,
     parent_win: &adw::Window,
@@ -2055,12 +2062,31 @@ fn refresh_s3_connection_list(
             .activatable(true)
             .build();
 
+        let browse_button = gtk::Button::from_icon_name("folder-open-symbolic");
+        browse_button.set_tooltip_text(Some("Bläddra"));
+        browse_button.add_css_class("flat");
+        browse_button.connect_clicked(clone!(
+            #[strong]
+            area,
+            #[weak]
+            parent_win,
+            #[strong]
+            connection,
+            move |_| {
+                open_s3_bucket_browser(&area, connection.clone());
+                parent_win.close();
+            }
+        ));
+        row.add_suffix(&browse_button);
+
         let delete_button = gtk::Button::from_icon_name("user-trash-symbolic");
         delete_button.set_tooltip_text(Some("Ta bort"));
         delete_button.add_css_class("flat");
         delete_button.connect_clicked(clone!(
             #[strong]
             app,
+            #[strong]
+            area,
             #[strong]
             s3_store,
             #[weak]
@@ -2074,7 +2100,7 @@ fn refresh_s3_connection_list(
                     eprintln!("kunde inte ta bort s3-anslutningen: {e}");
                     return;
                 }
-                refresh_s3_connection_list(&app, &s3_store, &list, &parent_win);
+                refresh_s3_connection_list(&app, &area, &s3_store, &list, &parent_win);
             }
         ));
         row.add_suffix(&delete_button);
@@ -2083,6 +2109,8 @@ fn refresh_s3_connection_list(
             #[strong]
             app,
             #[strong]
+            area,
+            #[strong]
             s3_store,
             #[weak]
             list,
@@ -2090,7 +2118,7 @@ fn refresh_s3_connection_list(
             parent_win,
             #[strong]
             connection,
-            move |_| show_s3_connection_edit(&app, &s3_store, &list, &parent_win, connection.clone())
+            move |_| show_s3_connection_edit(&app, &area, &s3_store, &list, &parent_win, connection.clone())
         ));
 
         list.append(&row);
@@ -2099,6 +2127,7 @@ fn refresh_s3_connection_list(
 
 fn show_s3_connection_edit(
     app: &adw::Application,
+    area: &Rc<SessionArea>,
     s3_store: &Rc<RefCell<s3::S3ConnectionStore>>,
     list: &gtk::ListBox,
     parent_win: &adw::Window,
@@ -2216,6 +2245,8 @@ fn show_s3_connection_edit(
         #[strong]
         app,
         #[strong]
+        area,
+        #[strong]
         s3_store,
         #[weak]
         list,
@@ -2241,8 +2272,513 @@ fn show_s3_connection_edit(
                 eprintln!("kunde inte spara s3-anslutningen: {e}");
                 return;
             }
-            refresh_s3_connection_list(&app, &s3_store, &list, &parent_win);
+            refresh_s3_connection_list(&app, &area, &s3_store, &list, &parent_win);
             win.close();
+        }
+    ));
+
+    win.present();
+}
+
+/// Bucket-/objektbläddare för en S3-anslutning — öppnas i en ny flik
+/// (samma "en flik per session/vy"-mönster som Docker/SFTP/Tunnel).
+/// `current_bucket: None` = visar bucket-listan (rot); `Some(bucket)` =
+/// visar objekten i den bucket:en. Bara EN nivå djup — S3:s `Key` är platt
+/// (en nyckel som "mapp/fil.txt" är bara en vanlig nyckel, ingen riktig
+/// katalog), samma enkla modell `s3::S3Client::list_objects` redan
+/// exponerar (inget `prefix`-baserat undermapps-UI i v1).
+fn open_s3_bucket_browser(area: &Rc<SessionArea>, connection: s3::S3Connection) {
+    let current_bucket: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(12)
+        .margin_bottom(12)
+        .build();
+    let scrolled = gtk::ScrolledWindow::builder().child(&list).vexpand(true).build();
+
+    let path_label = gtk::Label::builder().halign(gtk::Align::Start).hexpand(true).build();
+    let up_button = gtk::Button::from_icon_name("go-up-symbolic");
+    up_button.set_tooltip_text(Some("Upp en nivå"));
+    let new_bucket_button = gtk::Button::from_icon_name("folder-new-symbolic");
+    new_bucket_button.set_tooltip_text(Some("Ny bucket"));
+    let upload_button = gtk::Button::from_icon_name("document-send-symbolic");
+    upload_button.set_tooltip_text(Some("Ladda upp (i en bucket)"));
+    let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
+
+    let toolbar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(4)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .build();
+    toolbar.append(&up_button);
+    toolbar.append(&path_label);
+    toolbar.append(&new_bucket_button);
+    toolbar.append(&upload_button);
+    toolbar.append(&refresh_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&toolbar);
+    content.append(&scrolled);
+
+    let page = area.tab_view.append(&content);
+    page.set_title(&format!("S3: {}", connection.name));
+    area.tab_view.set_selected_page(&page);
+    area.update_placeholder();
+
+    up_button.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        connection,
+        #[strong]
+        current_bucket,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        move |_| {
+            if current_bucket.borrow().is_some() {
+                *current_bucket.borrow_mut() = None;
+                refresh_s3_browser(&area, connection.clone(), current_bucket.clone(), &list, &path_label);
+            }
+        }
+    ));
+
+    new_bucket_button.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        connection,
+        #[strong]
+        current_bucket,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        move |_| prompt_new_bucket_name(&area, connection.clone(), current_bucket.clone(), &list, &path_label)
+    ));
+
+    upload_button.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        connection,
+        #[strong]
+        current_bucket,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        move |_| {
+            // Bara meningsfullt inuti en bucket — ett klick vid roten (ingen
+            // vald bucket) gör ingenting, samma "guard, inte gömd knapp"-val
+            // som förenklar UI-tillståndet (inget att synka mellan
+            // knappsynlighet och `current_bucket` separat).
+            let Some(bucket) = current_bucket.borrow().clone() else { return };
+            let dialog = gtk::FileDialog::builder().title("Välj fil att ladda upp").build();
+            let parent_window = area.overlay.root().and_downcast::<gtk::Window>();
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                connection,
+                #[strong]
+                current_bucket,
+                #[strong]
+                bucket,
+                #[weak]
+                list,
+                #[weak]
+                path_label,
+                async move {
+                    let Ok(file) = dialog.open_future(parent_window.as_ref()).await else {
+                        return;
+                    };
+                    let Some(local_path) = file.path() else { return };
+                    let Some(key) = local_path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+                        return;
+                    };
+                    let data = match std::fs::read(&local_path) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            list.append(&error_row(&format!("kunde inte läsa {}: {e}", local_path.display())));
+                            return;
+                        }
+                    };
+                    let rx = s3::spawn_put_object(connection.clone(), bucket, key, data);
+                    match rx.recv().await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => list.append(&error_row(&e)),
+                        Err(_) => list.append(&error_row("kanalen stängdes oväntat")),
+                    }
+                    refresh_s3_browser(&area, connection, current_bucket, &list, &path_label);
+                }
+            ));
+        }
+    ));
+
+    refresh_button.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        connection,
+        #[strong]
+        current_bucket,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        move |_| refresh_s3_browser(&area, connection.clone(), current_bucket.clone(), &list, &path_label)
+    ));
+
+    refresh_s3_browser(area, connection, current_bucket, &list, &path_label);
+}
+
+fn refresh_s3_browser(
+    area: &Rc<SessionArea>,
+    connection: s3::S3Connection,
+    current_bucket: Rc<RefCell<Option<String>>>,
+    list: &gtk::ListBox,
+    path_label: &gtk::Label,
+) {
+    while let Some(row) = list.row_at_index(0) {
+        list.remove(&row);
+    }
+    let bucket = current_bucket.borrow().clone();
+    path_label.set_label(bucket.as_deref().unwrap_or("Buckets"));
+
+    match bucket {
+        None => {
+            let rx = s3::spawn_list_buckets(connection.clone());
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                connection,
+                #[strong]
+                current_bucket,
+                #[weak]
+                list,
+                #[weak]
+                path_label,
+                async move {
+                    match rx.recv().await {
+                        Ok(Ok(buckets)) => {
+                            for bucket in buckets {
+                                list.append(&build_s3_bucket_row(&area, &connection, &current_bucket, &list, &path_label, bucket));
+                            }
+                        }
+                        Ok(Err(e)) => list.append(&error_row(&e)),
+                        Err(_) => list.append(&error_row("kanalen stängdes oväntat")),
+                    }
+                }
+            ));
+        }
+        Some(bucket_name) => {
+            let rx = s3::spawn_list_objects(connection.clone(), bucket_name.clone());
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                connection,
+                #[strong]
+                current_bucket,
+                #[weak]
+                list,
+                #[weak]
+                path_label,
+                async move {
+                    match rx.recv().await {
+                        Ok(Ok(objects)) => {
+                            for object in objects {
+                                list.append(&build_s3_object_row(&area, &connection, &current_bucket, &list, &path_label, &bucket_name, object));
+                            }
+                        }
+                        Ok(Err(e)) => list.append(&error_row(&e)),
+                        Err(_) => list.append(&error_row("kanalen stängdes oväntat")),
+                    }
+                }
+            ));
+        }
+    }
+}
+
+fn build_s3_bucket_row(
+    area: &Rc<SessionArea>,
+    connection: &s3::S3Connection,
+    current_bucket: &Rc<RefCell<Option<String>>>,
+    list: &gtk::ListBox,
+    path_label: &gtk::Label,
+    bucket: s3::S3Bucket,
+) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
+        .title(&bucket.name)
+        .subtitle(bucket.creation_date.clone().unwrap_or_default())
+        .activatable(true)
+        .build();
+
+    let delete_button = gtk::Button::from_icon_name("user-trash-symbolic");
+    delete_button.set_tooltip_text(Some("Ta bort bucket"));
+    delete_button.add_css_class("flat");
+    delete_button.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        connection,
+        #[strong]
+        current_bucket,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        #[strong(rename_to = bucket_name)]
+        bucket.name,
+        move |_| {
+            let rx = s3::spawn_delete_bucket(connection.clone(), bucket_name.clone());
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                connection,
+                #[strong]
+                current_bucket,
+                #[weak]
+                list,
+                #[weak]
+                path_label,
+                async move {
+                    if let Err(e) = rx.recv().await.unwrap_or_else(|_| Err("kanalen stängdes oväntat".to_string())) {
+                        list.append(&error_row(&e));
+                        return;
+                    }
+                    refresh_s3_browser(&area, connection, current_bucket, &list, &path_label);
+                }
+            ));
+        }
+    ));
+    row.add_suffix(&delete_button);
+
+    row.connect_activated(clone!(
+        #[strong]
+        area,
+        #[strong]
+        connection,
+        #[strong]
+        current_bucket,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        #[strong(rename_to = bucket_name)]
+        bucket.name,
+        move |_| {
+            *current_bucket.borrow_mut() = Some(bucket_name.clone());
+            refresh_s3_browser(&area, connection.clone(), current_bucket.clone(), &list, &path_label);
+        }
+    ));
+
+    row
+}
+
+fn build_s3_object_row(
+    area: &Rc<SessionArea>,
+    connection: &s3::S3Connection,
+    current_bucket: &Rc<RefCell<Option<String>>>,
+    list: &gtk::ListBox,
+    path_label: &gtk::Label,
+    bucket_name: &str,
+    object: s3::S3Object,
+) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
+        .title(&object.key)
+        .subtitle(format!("{} bytes", object.size))
+        .build();
+
+    let download_button = gtk::Button::from_icon_name("document-save-symbolic");
+    download_button.set_tooltip_text(Some("Ladda ner"));
+    download_button.add_css_class("flat");
+    download_button.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        connection,
+        #[strong(rename_to = bucket_name)]
+        bucket_name.to_string(),
+        #[strong]
+        list,
+        #[strong(rename_to = key)]
+        object.key,
+        move |_| {
+            let dialog = gtk::FileDialog::builder()
+                .title("Spara som")
+                .initial_name(&key)
+                .build();
+            let parent_window = area.overlay.root().and_downcast::<gtk::Window>();
+            glib::spawn_future_local(clone!(
+                #[strong]
+                connection,
+                #[strong]
+                bucket_name,
+                #[strong]
+                list,
+                #[strong]
+                key,
+                async move {
+                    let Ok(file) = dialog.save_future(parent_window.as_ref()).await else {
+                        return;
+                    };
+                    let Some(local_path) = file.path() else { return };
+                    let rx = s3::spawn_get_object(connection, bucket_name, key);
+                    match rx.recv().await {
+                        Ok(Ok(data)) => {
+                            if let Err(e) = std::fs::write(&local_path, data) {
+                                list.append(&error_row(&format!("kunde inte skriva {}: {e}", local_path.display())));
+                            }
+                        }
+                        Ok(Err(e)) => list.append(&error_row(&e)),
+                        Err(_) => list.append(&error_row("kanalen stängdes oväntat")),
+                    }
+                }
+            ));
+        }
+    ));
+    row.add_suffix(&download_button);
+
+    let delete_button = gtk::Button::from_icon_name("user-trash-symbolic");
+    delete_button.set_tooltip_text(Some("Ta bort"));
+    delete_button.add_css_class("flat");
+    delete_button.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        connection,
+        #[strong]
+        current_bucket,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        #[strong(rename_to = bucket_name)]
+        bucket_name.to_string(),
+        #[strong(rename_to = key)]
+        object.key,
+        move |_| {
+            let rx = s3::spawn_delete_object(connection.clone(), bucket_name.clone(), key.clone());
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                connection,
+                #[strong]
+                current_bucket,
+                #[weak]
+                list,
+                #[weak]
+                path_label,
+                async move {
+                    if let Err(e) = rx.recv().await.unwrap_or_else(|_| Err("kanalen stängdes oväntat".to_string())) {
+                        list.append(&error_row(&e));
+                        return;
+                    }
+                    refresh_s3_browser(&area, connection, current_bucket, &list, &path_label);
+                }
+            ));
+        }
+    ));
+    row.add_suffix(&delete_button);
+
+    row
+}
+
+fn prompt_new_bucket_name(
+    area: &Rc<SessionArea>,
+    connection: s3::S3Connection,
+    current_bucket: Rc<RefCell<Option<String>>>,
+    list: &gtk::ListBox,
+    path_label: &gtk::Label,
+) {
+    let name_row = adw::EntryRow::builder().title("Bucket-namn").build();
+    let group = adw::PreferencesGroup::new();
+    group.add(&name_row);
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+
+    let create_button = gtk::Button::with_label("Skapa");
+    create_button.add_css_class("suggested-action");
+    let cancel_button = gtk::Button::with_label("Avbryt");
+    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    header.pack_start(&cancel_button);
+    header.pack_end(&create_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&page);
+
+    let win = adw::Window::builder()
+        .transient_for(
+            &area
+                .overlay
+                .root()
+                .and_downcast::<gtk::Window>()
+                .expect("inget fönster"),
+        )
+        .modal(true)
+        .default_width(360)
+        .default_height(160)
+        .title("Ny bucket")
+        .content(&content)
+        .build();
+
+    cancel_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        move |_| win.close()
+    ));
+    create_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        #[strong]
+        area,
+        #[strong]
+        connection,
+        #[strong]
+        current_bucket,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        move |_| {
+            let name = name_row.text().to_string();
+            if name.is_empty() {
+                return;
+            }
+            win.close();
+            let rx = s3::spawn_create_bucket(connection.clone(), name);
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                connection,
+                #[strong]
+                current_bucket,
+                #[weak]
+                list,
+                #[weak]
+                path_label,
+                async move {
+                    if let Err(e) = rx.recv().await.unwrap_or_else(|_| Err("kanalen stängdes oväntat".to_string())) {
+                        list.append(&error_row(&e));
+                        return;
+                    }
+                    refresh_s3_browser(&area, connection, current_bucket, &list, &path_label);
+                }
+            ));
         }
     ));
 

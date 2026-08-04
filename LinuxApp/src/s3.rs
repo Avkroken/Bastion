@@ -319,13 +319,6 @@ impl S3Client {
         Ok(parse_buckets(&data))
     }
 
-    // `create_bucket`/`delete_bucket`/`list_objects`/`put_object`/
-    // `get_object`/`delete_object` nedan är inte anropade av UI:t än (bara
-    // `list_buckets`, via "Testa anslutning") — grunden för den planerade
-    // bucket-/objektbläddraren (se `show_s3_connection_list`s doc-kommentar
-    // i `main.rs`). Var och en är genuint end-to-end-testad mot en riktig
-    // (fejkad men riktig-HTTP) server redan, se testerna längst ner.
-    #[allow(dead_code)]
     pub async fn create_bucket(&self, name: &str) -> Result<(), S3Error> {
         let (data, status) = self
             .request(reqwest::Method::PUT, &[name.to_string()], &[], Vec::new(), None)
@@ -333,7 +326,6 @@ impl S3Client {
         Self::require_success(&data, status)
     }
 
-    #[allow(dead_code)]
     pub async fn delete_bucket(&self, name: &str) -> Result<(), S3Error> {
         let (data, status) = self
             .request(reqwest::Method::DELETE, &[name.to_string()], &[], Vec::new(), None)
@@ -341,7 +333,6 @@ impl S3Client {
         Self::require_success(&data, status)
     }
 
-    #[allow(dead_code)]
     pub async fn list_objects(
         &self,
         bucket: &str,
@@ -358,7 +349,6 @@ impl S3Client {
         Ok(parse_objects(&data))
     }
 
-    #[allow(dead_code)]
     pub async fn put_object(
         &self,
         bucket: &str,
@@ -378,7 +368,6 @@ impl S3Client {
         Self::require_success(&response_data, status)
     }
 
-    #[allow(dead_code)]
     pub async fn get_object(&self, bucket: &str, key: &str) -> Result<Vec<u8>, S3Error> {
         let (data, status) = self
             .request(
@@ -393,7 +382,6 @@ impl S3Client {
         Ok(data)
     }
 
-    #[allow(dead_code)]
     pub async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), S3Error> {
         let (data, status) = self
             .request(
@@ -599,20 +587,82 @@ impl S3Connection {
 pub fn spawn_test_connection(
     connection: S3Connection,
 ) -> async_channel::Receiver<Result<Vec<S3Bucket>, String>> {
+    spawn(connection, |client| async move {
+        client.list_buckets().await
+    })
+}
+
+/// Kör `op` mot en nyansluten `S3Client` för `connection` på en egen
+/// bakgrundstråd med egen tokio-runtime — det delade mönstret bakom ALLA
+/// `spawn_*`-hjälpare nedan (och `spawn_test_connection` ovan). Samma skäl
+/// som `ssh::spawn_shell`/`wake_on_lan::spawn_send`: `reqwest`s async-API
+/// kräver en tokio-reaktor, som GTK:s huvudloop inte har.
+fn spawn<F, Fut, T>(
+    connection: S3Connection,
+    op: F,
+) -> async_channel::Receiver<Result<T, String>>
+where
+    F: FnOnce(S3Client) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<T, S3Error>>,
+    T: Send + 'static,
+{
     let (tx, rx) = async_channel::bounded(1);
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .expect("kunde inte starta tokio-runtimen för s3-testtråden");
+            .expect("kunde inte starta tokio-runtimen för s3-tråden");
         let result = rt.block_on(async move {
             let client = S3Client::new(&connection.endpoint, connection.region.clone(), connection.credentials())
                 .map_err(|e| e.to_string())?;
-            client.list_buckets().await.map_err(|e| e.to_string())
+            op(client).await.map_err(|e| e.to_string())
         });
         let _ = tx.send_blocking(result);
     });
     rx
+}
+
+pub fn spawn_list_buckets(connection: S3Connection) -> async_channel::Receiver<Result<Vec<S3Bucket>, String>> {
+    spawn(connection, |client| async move { client.list_buckets().await })
+}
+
+pub fn spawn_create_bucket(connection: S3Connection, name: String) -> async_channel::Receiver<Result<(), String>> {
+    spawn(connection, move |client| async move { client.create_bucket(&name).await })
+}
+
+pub fn spawn_delete_bucket(connection: S3Connection, name: String) -> async_channel::Receiver<Result<(), String>> {
+    spawn(connection, move |client| async move { client.delete_bucket(&name).await })
+}
+
+pub fn spawn_list_objects(connection: S3Connection, bucket: String) -> async_channel::Receiver<Result<Vec<S3Object>, String>> {
+    spawn(connection, move |client| async move { client.list_objects(&bucket, None).await })
+}
+
+pub fn spawn_put_object(
+    connection: S3Connection,
+    bucket: String,
+    key: String,
+    data: Vec<u8>,
+) -> async_channel::Receiver<Result<(), String>> {
+    spawn(connection, move |client| async move {
+        client.put_object(&bucket, &key, data, None).await
+    })
+}
+
+pub fn spawn_get_object(
+    connection: S3Connection,
+    bucket: String,
+    key: String,
+) -> async_channel::Receiver<Result<Vec<u8>, String>> {
+    spawn(connection, move |client| async move { client.get_object(&bucket, &key).await })
+}
+
+pub fn spawn_delete_object(
+    connection: S3Connection,
+    bucket: String,
+    key: String,
+) -> async_channel::Receiver<Result<(), String>> {
+    spawn(connection, move |client| async move { client.delete_object(&bucket, &key).await })
 }
 
 /// Persistent S3-anslutningsdatabas, `~/.bastion/s3connections.json` —
