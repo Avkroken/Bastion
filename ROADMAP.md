@@ -355,6 +355,41 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **S3 bucket-/objektbläddare i UI:t** (2026-08-04, `LinuxApp/src/main.rs`):
+  slutförde "Kvar"-punkten från S3-kompatibel objektlagring nedan (samma
+  dag) — resten av `S3Client`s redan portade+testade metoder
+  (`create_bucket`/`delete_bucket`/`list_objects`/`put_object`/
+  `get_object`/`delete_object`) kopplades in i en riktig bläddare, nådd
+  via en ny "Bläddra"-knapp per rad i S3-anslutningslistan.
+  - En flik per anslutning (samma "en flik per session/vy"-mönster som
+    Docker/SFTP/Tunnel). `Rc<RefCell<Option<String>>>` håller "aktuell
+    bucket" — `None` visar bucket-listan (rot), `Some(namn)` visar
+    objekten i den bucket:en. Bara EN nivå djup — S3:s `Key` är platt
+    (en nyckel som `mapp/fil.txt` är bara en vanlig nyckel, ingen riktig
+    katalog), inget `prefix`-baserat undermapps-UI i v1.
+  - Ny bucket/uppladdning/nedladdning använder `gtk::FileDialog`
+    (`open_future`/`save_future`, GTK4:s moderna async-filväljare) —
+    uppladdning läser den valda lokala filen och skickar den som ett
+    objekt med samma filnamn som nyckel; nedladdning föreslår objektets
+    nyckel som standardfilnamn.
+  - `s3.rs` fick en generisk `spawn`-hjälpare (`FnOnce(S3Client) ->
+    impl Future`) som ALLA `spawn_list_buckets`/`spawn_create_bucket`/
+    `spawn_delete_bucket`/`spawn_list_objects`/`spawn_put_object`/
+    `spawn_get_object`/`spawn_delete_object` bygger på — samma "egen
+    bakgrundstråd med egen tokio-runtime, `reqwest` har ingen egen
+    reaktor på GTK:s huvudloop"-mönster som resten av appen, men utan
+    att duplicera tråd-uppstartskoden sju gånger. `spawn_test_connection`
+    (redan klar) skrevs om att använda samma hjälpare.
+  - Byggd och testad — inga nya varningar (`cargo build`/`cargo clippy`
+    helt tysta för `s3.rs`, alla sju `S3Client`-metoder samt `S3Object`/
+    `S3ConnectionStore::get` nu genuint använda, inga `#[allow(dead_code)]`
+    kvar att motivera). 128/128 `cargo test` fortsatt gröna (ingen ny
+    testkod i det här passet — bläddar-UI:t är GTK-kablage ovanpå redan
+    testad backend, inte ny logik att testa isolerat).
+  - **Kvar**: interaktiv klick-genom-bläddaren mot en riktig S3-tjänst
+    (Xvfb-byggd+körd, inte klick-för-klick manuellt testad) — samma
+    begränsning som redan dokumenterad för portvidarebefordran/SOCKS-UI:t.
+
 - **S3-kompatibel objektlagring i den NYA Rust/GTK4-`LinuxApp`**
   (2026-08-04, `LinuxApp/src/s3.rs`): helt saknades i den nya
   Rust-omskrivningen. Byte-för-byte-port av `Sources/SSHCore/S3Client.swift`
@@ -406,11 +441,11 @@ delvis andra, av konkreta skäl:
     live-testet, som kräver riktiga kontouppgifter i miljön — samma skäl
     Swift-sidans motsvarighet hoppas över i CI). 128/128 `cargo test`
     gröna totalt.
-  - **Kvar**: en riktig bucket-/objektbläddare i UI:t (skapa/ta bort
-    bucket, lista/ladda upp/ladda ner/ta bort objekt) — backend är redo
-    och testad, bara ytlagret saknas, samma "backend klart, UI en
-    avgränsad uppföljning"-mönster som synkmotorn hade innan dess UI kom
-    på plats.
+  - **Kvar (ursprunglig text, historik)**: "en riktig bucket-/
+    objektbläddare i UI:t — backend är redo och testad, bara ytlagret
+    saknas, samma 'backend klart, UI en avgränsad uppföljning'-mönster
+    som synkmotorn hade innan dess UI kom på plats." — ✅ KLART SAMMA DAG,
+    se "S3 bucket-/objektbläddare i UI:t" ovan.
 
 - **WireGuard-profiler i den NYA Rust/GTK4-`LinuxApp`** (2026-08-04,
   `LinuxApp/src/wireguard.rs`): helt saknades i den nya Rust-omskrivningen.
