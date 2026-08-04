@@ -2013,7 +2013,13 @@ för att bekräfta att XAML:en faktiskt kompilerar och renderar rätt.
 
 Kvar för full WindowsApp-paritet med LinuxApp: SFTP-bläddrare (inkl.
 chmod/chown/arkiv), Funktioner-inställningar (dölj flikar via toggles),
-rå tangentbordsinput, fler HostAuth-typer (SSH.NET saknar agent-protokoll).
+fler HostAuth-typer (SSH.NET saknar agent-protokoll). "Rå tangentbordsinput"
+togs tidigare upp här som en lucka men är det inte — `Assets/xterm/
+terminal.html` använder redan xterm.js` `onData`-API, som internt
+producerar KORREKTA byte-sekvenser för piltangenter/Ctrl-kombinationer/
+funktionstangenter (samma väletablerade terminal-emulator som VS Code/
+Hyper använder), inte en handskriven `onkeydown`-hantering som riskerar
+att missa specialtangenter.
 
 **WindowsApp: SFTP-bläddrare, grundpasset (skrivet, INTE visuellt
 verifierat).** Port av `App/SFTPBrowserModel.swift`/`LinuxApp/src/sftp.rs`
@@ -2143,9 +2149,11 @@ det ovan var faktiskt bekräftat innan den här omgången.
      packa-upp gjorde det redan rätt. Samma inkonsekvens-mönster som #1,
      fixat på alla fyra ställen.
 
-**Kvar**: rå tangentbordsinput, fler HostAuth-typer (SSH.NET saknar
-agent-protokoll), och — det enda som faktiskt kräver Windows-hårdvara/en
-VM för att stänga helt — en RIKTIG kompilering+körning av
+**Kvar**: fler HostAuth-typer (SSH.NET saknar agent-protokoll) — se
+motiveringen ovan om varför "rå tangentbordsinput" INTE längre räknas som
+en lucka (xterm.js `onData` hanterar det redan korrekt) — och, det enda
+som faktiskt kräver Windows-hårdvara/en VM för att stänga helt, en RIKTIG
+kompilering+körning av
 `MainWindow.xaml`/`.xaml.cs` (WinUI3s XAML-kompilator finns bara på
 Windows). Med Bastion.Core-lagret verifierat och UI-lagret manuellt
 granskat rad för rad är risken låg, men "manuellt granskad" är inte
