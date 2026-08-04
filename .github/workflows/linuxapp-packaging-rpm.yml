@@ -66,18 +66,27 @@ jobs:
           set -euo pipefail
           docker run --rm -v "$PWD/dist-out:/dist-out:ro" fedora:40 bash -euo pipefail -c '
             dnf install -y -q /dist-out/*.rpm
-            dnf install -y -q xorg-x11-server-Xvfb
-            Xvfb :99 -screen 0 1280x800x24 &
+            # `xorg-x11-server-Xvfb` för displayen; `dbus-x11` för
+            # `dbus-run-session` (annars kraschar GTK — "Cannot spawn a
+            # message bus without a machine-id" i en helt tom container,
+            # CI-fynd); `mesa-libGLES` för `libGLESv2.so.2` (samma
+            # CI-fynd — GTK4s renderare letar efter den även med mjukvaru-
+            # rendering).
+            dnf install -y -q xorg-x11-server-Xvfb dbus-x11 mesa-libGLES
+            Xvfb :99 -screen 0 1280x800x24 >/tmp/xvfb.log 2>&1 &
+            XVFB_PID=$!
             export DISPLAY=:99
             sleep 1
-            bastion-linuxapp &
-            PID=$!
+            dbus-run-session -- bastion-linuxapp >/tmp/app.log 2>&1 &
+            APP_PID=$!
             sleep 5
-            if ! kill -0 "$PID" 2>/dev/null; then
+            if ! kill -0 "$APP_PID" 2>/dev/null; then
               echo "::error::bastion-linuxapp dog inom 5s efter start (troligen ett olöst runtime-beroende)"
+              cat /tmp/app.log
               exit 1
             fi
-            kill "$PID"
+            kill "$APP_PID" 2>/dev/null || true
+            kill "$XVFB_PID" 2>/dev/null || true
           '
 
       - name: Ladda upp .rpm-artefakt
