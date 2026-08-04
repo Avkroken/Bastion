@@ -32,20 +32,7 @@ public sealed class SshSession : IDisposable
         var auth = BuildAuthenticationMethod(host, password);
         var connectionInfo = new ConnectionInfo(host.HostName, (int)host.Port, host.User, auth);
         var client = new SshClient(connectionInfo);
-
-        client.HostKeyReceived += (_, e) =>
-        {
-            var keyString = $"{e.HostKeyName} {Convert.ToBase64String(e.HostKey)}";
-            var result = knownHosts.Check(host.HostName, (int)host.Port, keyString);
-            e.CanTrust = result.Verdict != KnownHostVerdict.Changed;
-            if (result.Verdict == KnownHostVerdict.Changed)
-            {
-                throw new SshHostKeyChangedException(
-                    $"VÄRDNYCKELN FÖR {host.HostName}:{host.Port} HAR ÄNDRATS — möjlig man-i-mitten-attack " +
-                    $"eller en ombyggd server. Lagrad: \"{result.StoredKey}\" Ny: \"{keyString}\". Om ändringen " +
-                    "är väntad, ta bort motsvarande rad i ~/.bastion/known_hosts manuellt.");
-            }
-        };
+        client.HostKeyReceived += MakeHostKeyHandler(host, knownHosts, throwOnChange: true);
 
         // `client` (och dess underliggande socket) läcker annars om
         // `Connect()`/`CreateShellStream()` kastar — inklusive det
@@ -72,7 +59,8 @@ public sealed class SshSession : IDisposable
         }
     }
 
-    private static AuthenticationMethod BuildAuthenticationMethod(Host host, string? password) => host.Auth switch
+    /// <summary>Delas med <see cref="SftpBrowserSession"/> — samma auth-uppslagning för SFTP-anslutningar.</summary>
+    internal static AuthenticationMethod BuildAuthenticationMethod(Host host, string? password) => host.Auth switch
     {
         HostAuth.KeyFile kf => new PrivateKeyAuthenticationMethod(host.User, new PrivateKeyFile(kf.Path)),
         HostAuth.AskPassword => new PasswordAuthenticationMethod(host.User, password
@@ -80,18 +68,35 @@ public sealed class SshSession : IDisposable
         var other => throw new NotSupportedException($"autentiseringstypen {other.GetType().Name} stöds inte i WindowsApp ännu"),
     };
 
+    /// <summary>
+    /// Delad TOFU-verifiering (samma <see cref="KnownHosts"/>-fil) för SshClient/SftpClient
+    /// — båda ärver Renci.SshNet.BaseClient och exponerar samma HostKeyReceived-event.
+    /// <paramref name="throwOnChange"/> avgör om en ändrad värdnyckel avbryter anslutningen
+    /// direkt (interaktiva sessioner) eller bara nekar tillit (engångskommandon/SFTP, där
+    /// SSH.NET själv kastar ett anslutningsfel om <c>CanTrust</c> är false).
+    /// </summary>
+    internal static EventHandler<HostKeyEventArgs> MakeHostKeyHandler(Host host, KnownHosts knownHosts, bool throwOnChange) =>
+        (_, e) =>
+        {
+            var keyString = $"{e.HostKeyName} {Convert.ToBase64String(e.HostKey)}";
+            var result = knownHosts.Check(host.HostName, (int)host.Port, keyString);
+            e.CanTrust = result.Verdict != KnownHostVerdict.Changed;
+            if (throwOnChange && result.Verdict == KnownHostVerdict.Changed)
+            {
+                throw new SshHostKeyChangedException(
+                    $"VÄRDNYCKELN FÖR {host.HostName}:{host.Port} HAR ÄNDRATS — möjlig man-i-mitten-attack " +
+                    $"eller en ombyggd server. Lagrad: \"{result.StoredKey}\" Ny: \"{keyString}\". Om ändringen " +
+                    "är väntad, ta bort motsvarande rad i ~/.bastion/known_hosts manuellt.");
+            }
+        };
+
     /// <summary>Kör ETT kommando över en fristående anslutning (motsvarar ssh::run_command).</summary>
     public static string RunCommand(Host host, string? password, KnownHosts knownHosts, string command)
     {
         var auth = BuildAuthenticationMethod(host, password);
         var connectionInfo = new ConnectionInfo(host.HostName, (int)host.Port, host.User, auth);
         using var client = new SshClient(connectionInfo);
-        client.HostKeyReceived += (_, e) =>
-        {
-            var keyString = $"{e.HostKeyName} {Convert.ToBase64String(e.HostKey)}";
-            var result = knownHosts.Check(host.HostName, (int)host.Port, keyString);
-            e.CanTrust = result.Verdict != KnownHostVerdict.Changed;
-        };
+        client.HostKeyReceived += MakeHostKeyHandler(host, knownHosts, throwOnChange: false);
         client.Connect();
         using var cmd = client.CreateCommand(command);
         // Utan detta kan en hängande/ovanligt långsam fjärrprocess (samma

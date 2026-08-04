@@ -1,10 +1,14 @@
 using System.Collections.ObjectModel;
 using Bastion.Core;
 using Microsoft.UI.Dispatching;
+using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Renci.SshNet.Common;
+using System.Text;
 using Windows.Storage.Pickers;
+using Windows.System;
 using WinRT.Interop;
 
 namespace Bastion;
@@ -16,25 +20,23 @@ public sealed class HostRow
     public required string Subtitle { get; init; }
 }
 
+/// <summary>
+/// En session/vy per flik i <see cref="MainWindow.SessionTabView"/> — motsvarar
+/// LinuxApps <c>AdwTabView</c> (en flik per SSH-session eller Docker-vy) och
+/// iOS <c>MultiSessionView</c>. Terminalflikar bär sin <see cref="SshSession"/>
+/// i <see cref="TabViewItem.Tag"/> så den kan städas när fliken stängs; Docker-
+/// flikar har inget beständigt Tag (varje åtgärd kör ett eget engångskommando
+/// via <see cref="SshSession.RunCommand"/>, samma modell som LinuxApp/src/docker.rs).
+/// </summary>
 public sealed partial class MainWindow : Window
 {
     private readonly HostStore _store = new(HostStore.DefaultPath);
     private readonly KnownHosts _knownHosts = new(Bastion.Core.KnownHosts.DefaultPath);
     private readonly ObservableCollection<HostRow> _rows = new();
     private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
-    private SshSession? _activeSession;
+    private readonly SnippetStore _snippetStore = new(SnippetStore.DefaultPath);
+    private readonly AppSettingsStore _settingsStore = new();
     private SyncConfig _syncConfig = SyncConfig.Load(SyncConfig.DefaultPath);
-    /// <summary>
-    /// Handtaget till DEN AKTUELLA sessionens <c>WebMessageReceived</c>-
-    /// handler — måste kopplas bort INNAN en ny läggs till vid ett
-    /// värdbyte, annars staplas en handler per anslutning på samma
-    /// <c>CoreWebView2</c>-instans. Varje kvarvarande gammal handler
-    /// fångar sin EGEN (redan disponerade) <c>session</c>, så ett
-    /// tangenttryck efter ett värdbyte skrev tidigare till ALLA
-    /// tidigare sessioner samtidigt — inklusive ett skrivförsök mot en
-    /// redan stängd <c>ShellStream</c> (CodeRabbit-fynd).
-    /// </summary>
-    private EventHandler<Microsoft.Web.WebView2.Core.CoreWebView2WebMessageReceivedEventArgs>? _terminalInputHandler;
 
     public MainWindow()
     {
@@ -57,6 +59,8 @@ public sealed partial class MainWindow : Window
             });
         }
     }
+
+    private Host? FindHost(Guid id) => _store.All().FirstOrDefault(h => h.Id == id);
 
     /// <summary>
     /// Auth-alternativ som faktiskt FUNGERAR i WindowsApp (se SshSession.cs).
@@ -204,11 +208,10 @@ public sealed partial class MainWindow : Window
                 provider = new FolderSyncProvider(Path.Combine(_syncConfig.FolderPath, "hosts.json"));
             }
 
-            // Filens I/O (kan vara en molnsynkad mapp — Dropbox/Drive/
-            // OneDrive — som stallar) och, för den krypterade varianten,
-            // PBKDF2-nyckelhärledningen är för tunga för att köras rakt av
-            // på UI-tråden — samma resonemang/fix som SshSession.Connect
-            // redan fick nedan (CodeRabbit-fynd).
+            // Filens I/O (kan vara en molnsynkad mapp — Dropbox/Drive/OneDrive
+            // — som stallar) och, för den krypterade varianten, PBKDF2-
+            // nyckelhärledningen är för tunga för att köras rakt av på
+            // UI-tråden — samma fix som redan gjorts i LinuxApp/src/main.rs.
             statusLabel.Text = "Synkar…";
             syncButton.IsEnabled = false;
             try
@@ -233,7 +236,7 @@ public sealed partial class MainWindow : Window
     private async void OnHostItemClicked(object sender, ItemClickEventArgs e)
     {
         if (e.ClickedItem is not HostRow row) return;
-        var host = _store.All().FirstOrDefault(h => h.Id == row.Id);
+        var host = FindHost(row.Id);
         if (host is null) return;
 
         string? password = null;
@@ -243,7 +246,96 @@ public sealed partial class MainWindow : Window
             if (password is null) return; // avbrutet
         }
 
-        await ConnectAndShowTerminalAsync(host, password);
+        await OpenTerminalTabAsync(host, password);
+    }
+
+    /// <summary>
+    /// Värdradens "Mer"-knapp — bygger menyn dynamiskt utifrån aktuella
+    /// Funktioner-togglar (motsvarar LinuxApps <c>gio_menu_for</c>, som
+    /// utesluter hela menyposten när en toggle är av, inte bara döljer/
+    /// inaktiverar en statisk post).
+    /// </summary>
+    private void OnHostMoreButtonClicked(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: HostRow row } button) return;
+        var toggles = _settingsStore.Current();
+
+        var menu = new MenuFlyout();
+        if (toggles.ShowDocker)
+        {
+            var item = new MenuFlyoutItem { Text = "Docker" };
+            item.Click += (_, _) => _ = OpenHostFeatureTabAsync(row, OpenDockerTabAsync);
+            menu.Items.Add(item);
+        }
+        if (toggles.ShowCommandLibrary || toggles.ShowSnippets)
+        {
+            var item = new MenuFlyoutItem { Text = "Kommandon" };
+            item.Click += (_, _) => _ = OpenHostFeatureTabAsync(row, OpenCommandsTabAsync);
+            menu.Items.Add(item);
+        }
+        if (toggles.ShowSftpBrowser)
+        {
+            var item = new MenuFlyoutItem { Text = "Filer" };
+            item.Click += (_, _) => _ = OpenHostFeatureTabAsync(row, OpenFilesTabAsync);
+            menu.Items.Add(item);
+        }
+
+        button.Flyout = menu;
+        menu.ShowAt(button);
+    }
+
+    /// <summary>Slår upp värden för raden, frågar om lösenord om värden kräver det, öppnar sedan den valda fliken.</summary>
+    private async Task OpenHostFeatureTabAsync(HostRow row, Func<Host, string?, Task> openTab)
+    {
+        var host = FindHost(row.Id);
+        if (host is null) return;
+
+        string? password = null;
+        if (host.Auth is HostAuth.AskPassword)
+        {
+            password = await PromptPasswordAsync(host);
+            if (password is null) return;
+        }
+
+        await openTab(host, password);
+    }
+
+    /// <summary>Funktioner-knappen i värdlistans verktygsfält (motsvarar LinuxApps Funktioner-inställningsdialog).</summary>
+    private async void OnSettingsClicked(object sender, RoutedEventArgs e)
+    {
+        var current = _settingsStore.Current();
+        var dockerToggle = new ToggleSwitch { Header = "Docker", IsOn = current.ShowDocker };
+        var commandsToggle = new ToggleSwitch { Header = "Kommandobibliotek + Snippets", IsOn = current.ShowCommandLibrary };
+        var sftpToggle = new ToggleSwitch { Header = "Filer (SFTP)", IsOn = current.ShowSftpBrowser };
+
+        var panel = new StackPanel { Spacing = 8 };
+        panel.Children.Add(dockerToggle);
+        panel.Children.Add(commandsToggle);
+        panel.Children.Add(sftpToggle);
+
+        var dialog = new ContentDialog
+        {
+            Title = "Funktioner",
+            Content = panel,
+            CloseButtonText = "Klar",
+            XamlRoot = Content.XamlRoot,
+        };
+
+        void Save()
+        {
+            _settingsStore.Update(current with
+            {
+                ShowDocker = dockerToggle.IsOn,
+                ShowCommandLibrary = commandsToggle.IsOn,
+                ShowSnippets = commandsToggle.IsOn,
+                ShowSftpBrowser = sftpToggle.IsOn,
+            });
+        }
+        dockerToggle.Toggled += (_, _) => Save();
+        commandsToggle.Toggled += (_, _) => Save();
+        sftpToggle.Toggled += (_, _) => Save();
+
+        await dialog.ShowAsync();
     }
 
     private async Task<string?> PromptPasswordAsync(Host host)
@@ -262,31 +354,34 @@ public sealed partial class MainWindow : Window
         return result == ContentDialogResult.Primary ? passwordBox.Password : null;
     }
 
-    private async Task ConnectAndShowTerminalAsync(Host host, string? password)
+    // MARK: - Terminalflikar
+
+    private async Task OpenTerminalTabAsync(Host host, string? password, string? titleOverride = null)
     {
-        _activeSession?.Dispose();
-        _activeSession = null;
-        if (_terminalInputHandler is not null && TerminalView.CoreWebView2 is not null)
+        var webView = new WebView2();
+        var tab = new TabViewItem
         {
-            TerminalView.CoreWebView2.WebMessageReceived -= _terminalInputHandler;
-            _terminalInputHandler = null;
-        }
+            Header = titleOverride ?? host.Alias,
+            IconSource = new FontIconSource { FontFamily = new FontFamily("Segoe MDL2 Assets"), Glyph = "" },
+            Content = webView,
+        };
+        SessionTabView.TabItems.Add(tab);
+        SessionTabView.SelectedItem = tab;
+        UpdateSessionAreaVisibility();
 
-        ContentPlaceholder.Text = $"Ansluter till {host.Alias}…";
-
-        // Både `EnsureCoreWebView2Async` (WebView2-runtimen kan saknas) och
-        // navigeringen (kunde tidigare "lyckas" tyst även vid ett faktiskt
-        // navigeringsfel — `a.IsSuccess` lästes aldrig) låg tidigare UTANFÖR
-        // `async void OnHostItemClicked`s enda skyddsnät, så ett fel här kunde
-        // krascha appen istället för att visa platshållaren (CodeRabbit-fynd).
+        // Både EnsureCoreWebView2Async (WebView2-runtimen kan saknas) och
+        // navigeringen (a.IsSuccess lästes tidigare aldrig, så ett faktiskt
+        // navigeringsfel "lyckades" tyst) låg tidigare oskyddade — ett fel
+        // här kunde krascha appen istället för att visa ett tydligt
+        // felmeddelande i fliken.
         var htmlPath = Path.Combine(AppContext.BaseDirectory, "Assets", "xterm", "terminal.html");
         var navigated = new TaskCompletionSource<bool>();
         void OnNavigationCompleted(WebView2 s, Microsoft.Web.WebView2.Core.CoreWebView2NavigationCompletedEventArgs a) => navigated.TrySetResult(a.IsSuccess);
         try
         {
-            await TerminalView.EnsureCoreWebView2Async();
-            TerminalView.NavigationCompleted += OnNavigationCompleted;
-            TerminalView.CoreWebView2.Navigate(new Uri(htmlPath).AbsoluteUri);
+            await webView.EnsureCoreWebView2Async();
+            webView.NavigationCompleted += OnNavigationCompleted;
+            webView.CoreWebView2.Navigate(new Uri(htmlPath).AbsoluteUri);
             if (!await navigated.Task)
             {
                 throw new InvalidOperationException("terminalsidan gick inte att ladda");
@@ -294,14 +389,12 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            ContentPlaceholder.Text = $"Kunde inte initiera terminalvyn: {ex.Message}";
-            PlaceholderPanel.Visibility = Visibility.Visible;
-            TerminalView.Visibility = Visibility.Collapsed;
+            ShowTabError(tab, $"Kunde inte initiera terminalvyn: {ex.Message}");
             return;
         }
         finally
         {
-            TerminalView.NavigationCompleted -= OnNavigationCompleted;
+            webView.NavigationCompleted -= OnNavigationCompleted;
         }
 
         SshSession session;
@@ -311,58 +404,897 @@ public sealed partial class MainWindow : Window
         }
         catch (SshHostKeyChangedException ex)
         {
-            ContentPlaceholder.Text = ex.Message;
-            PlaceholderPanel.Visibility = Visibility.Visible;
-            TerminalView.Visibility = Visibility.Collapsed;
+            ShowTabError(tab, ex.Message);
             return;
         }
         catch (Exception ex)
         {
-            ContentPlaceholder.Text = $"Anslutning misslyckades: {ex.Message}";
-            PlaceholderPanel.Visibility = Visibility.Visible;
-            TerminalView.Visibility = Visibility.Collapsed;
+            ShowTabError(tab, $"Anslutning misslyckades: {ex.Message}");
             return;
         }
 
-        _activeSession = session;
-        PlaceholderPanel.Visibility = Visibility.Collapsed;
-        TerminalView.Visibility = Visibility.Visible;
+        tab.Tag = session;
 
-        _terminalInputHandler = (_, args) =>
+        webView.CoreWebView2.WebMessageReceived += (_, args) =>
         {
-            // Skriv bara till DEN HÄR anropets session — utan denna kontroll
-            // skulle en handler som (mot förmodan) överlevde en avprenumeration
-            // fortfarande kunna skriva till en redan disponerad ShellStream.
-            if (!ReferenceEquals(_activeSession, session)) return;
             var text = args.TryGetWebMessageAsString();
             session.Shell.Write(text);
         };
-        TerminalView.CoreWebView2.WebMessageReceived += _terminalInputHandler;
 
-        session.Shell.DataReceived += (_, args) => FeedTerminal(session, args);
-        session.Shell.Closed += (_, _) => _dispatcher.TryEnqueue(() => OnSessionClosed(session));
+        session.Shell.DataReceived += (_, args) => FeedTerminal(webView, args);
+        session.Shell.Closed += (_, _) => _dispatcher.TryEnqueue(() => OnSessionClosed(tab, session));
     }
 
-    private void FeedTerminal(SshSession session, ShellDataEventArgs args)
+    private void ShowTabError(TabViewItem tab, string message)
+    {
+        tab.Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(16), Opacity = 0.7 };
+    }
+
+    private void FeedTerminal(WebView2 webView, ShellDataEventArgs args)
     {
         var base64 = Convert.ToBase64String(args.Data);
-        _dispatcher.TryEnqueue(() =>
-        {
-            // Måste matcha DEN HÄR specifika sessionen, inte bara "någon"
-            // session — annars kan utdata från en gammal session (om dess
-            // DataReceived mot förmodan fyrar efter ett värdbyte) hamna i
-            // en nyare terminal (CodeRabbit-fynd).
-            if (!ReferenceEquals(_activeSession, session)) return;
-            _ = TerminalView.CoreWebView2.ExecuteScriptAsync($"window.feed('{base64}')");
-        });
+        _dispatcher.TryEnqueue(() => _ = webView.CoreWebView2.ExecuteScriptAsync($"window.feed('{base64}')"));
     }
 
-    private void OnSessionClosed(SshSession session)
+    /// <summary>
+    /// Fjärrskalet stängde SIG SJÄLVT (exit/Ctrl+D, inte användaren som
+    /// stängde fliken) — måste disponera sessionen HÄR, den disponeras
+    /// ALDRIG av avsändaren annars (ShellStream.Closed-eventet i sig gör
+    /// ingen städning, bara signalerar). `ReferenceEquals`-kollen mot
+    /// `tab.Tag` skyddar mot en race med <see cref="OnTabCloseRequested"/>:
+    /// vilken av de två som hinner först nollställer `tab.Tag`, så den
+    /// andra ser att jobbet redan är taget istället för att dubbeldisponera
+    /// samma <see cref="SshSession"/> och skriva över en redan borttagen
+    /// flikes innehåll.
+    /// </summary>
+    private void OnSessionClosed(TabViewItem tab, SshSession session)
     {
-        if (!ReferenceEquals(_activeSession, session)) return; // en nyare session har redan tagit över
-        _activeSession = null;
-        TerminalView.Visibility = Visibility.Collapsed;
-        PlaceholderPanel.Visibility = Visibility.Visible;
-        ContentPlaceholder.Text = "Sessionen avslutades — välj en värd i listan.";
+        if (!ReferenceEquals(tab.Tag, session)) return;
+        tab.Tag = null;
+        session.Dispose();
+        tab.Content = new TextBlock { Text = "Sessionen avslutades.", Margin = new Thickness(16), Opacity = 0.7 };
+    }
+
+    private void OnTabCloseRequested(TabView sender, TabViewTabCloseRequestedEventArgs args)
+    {
+        if (args.Tab.Tag is IDisposable disposable)
+        {
+            disposable.Dispose();
+            args.Tab.Tag = null;
+        }
+        sender.TabItems.Remove(args.Tab);
+        UpdateSessionAreaVisibility();
+    }
+
+    private void UpdateSessionAreaVisibility()
+    {
+        var hasTabs = SessionTabView.TabItems.Count > 0;
+        SessionTabView.Visibility = hasTabs ? Visibility.Visible : Visibility.Collapsed;
+        PlaceholderPanel.Visibility = hasTabs ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    // MARK: - Docker-flik (port av LinuxApps open_docker_view/refresh_docker_list)
+
+    private async Task OpenDockerTabAsync(Host host, string? password)
+    {
+        var containerList = new StackPanel { Spacing = 0 };
+        var scrolled = new ScrollViewer { Content = containerList, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        var refreshButton = new Button { Content = "", FontFamily = new FontFamily("Segoe MDL2 Assets") };
+        ToolTipService.SetToolTip(refreshButton, "Uppdatera");
+
+        var toolbar = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Padding = new Thickness(12, 8, 12, 8),
+        };
+        toolbar.Children.Add(new TextBlock
+        {
+            Text = $"Docker: {host.Alias}",
+            VerticalAlignment = VerticalAlignment.Center,
+            FontWeight = FontWeights.SemiBold,
+        });
+        toolbar.Children.Add(refreshButton);
+
+        var content = new Grid();
+        content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        content.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        Grid.SetRow(toolbar, 0);
+        Grid.SetRow(scrolled, 1);
+        content.Children.Add(toolbar);
+        content.Children.Add(scrolled);
+
+        var tab = new TabViewItem
+        {
+            Header = $"Docker: {host.Alias}",
+            IconSource = new FontIconSource { FontFamily = new FontFamily("Segoe MDL2 Assets"), Glyph = "" },
+            Content = content,
+        };
+        SessionTabView.TabItems.Add(tab);
+        SessionTabView.SelectedItem = tab;
+        UpdateSessionAreaVisibility();
+
+        refreshButton.Click += (_, _) => _ = RefreshDockerListAsync(host, password, containerList);
+        await RefreshDockerListAsync(host, password, containerList);
+    }
+
+    private async Task RefreshDockerListAsync(Host host, string? password, StackPanel list)
+    {
+        list.Children.Clear();
+        list.Children.Add(StatusText("Laddar…"));
+
+        IReadOnlyList<DockerContainer> containers;
+        try
+        {
+            containers = await Task.Run(() => DockerService.List(host, password, _knownHosts));
+        }
+        catch (Exception ex)
+        {
+            list.Children.Clear();
+            list.Children.Add(StatusText($"Fel: {ex.Message}"));
+            return;
+        }
+
+        list.Children.Clear();
+        if (containers.Count == 0)
+        {
+            list.Children.Add(StatusText("Inga containrar hittades."));
+            return;
+        }
+
+        foreach (var container in containers)
+        {
+            list.Children.Add(BuildContainerRow(host, password, list, container));
+        }
+    }
+
+    private static TextBlock StatusText(string text) => new() { Text = text, Opacity = 0.7, Margin = new Thickness(12) };
+
+    private FrameworkElement BuildContainerRow(Host host, string? password, StackPanel list, DockerContainer container)
+    {
+        var textPanel = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        textPanel.Children.Add(new TextBlock { Text = container.Name, FontWeight = FontWeights.SemiBold });
+        textPanel.Children.Add(new TextBlock { Text = $"{container.Image} — {container.Status}", Opacity = 0.7, FontSize = 12 });
+
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+
+        async void RunAndRefresh(Action action)
+        {
+            try
+            {
+                await Task.Run(action);
+            }
+            catch
+            {
+                // felet syns naturligt genom att statusen inte ändras vid nästa uppdatering
+            }
+            await RefreshDockerListAsync(host, password, list);
+        }
+
+        if (container.IsRunning)
+        {
+            var stopBtn = IconButton("", "Stoppa");
+            stopBtn.Click += (_, _) => RunAndRefresh(() => DockerService.Stop(host, password, _knownHosts, container.Id));
+            var restartBtn = IconButton("", "Starta om");
+            restartBtn.Click += (_, _) => RunAndRefresh(() => DockerService.Restart(host, password, _knownHosts, container.Id));
+            var shellBtn = IconButton("", "Shell");
+            shellBtn.Click += (_, _) =>
+            {
+                var shellHost = CloneHostForShell(host, container);
+                _ = OpenTerminalTabAsync(shellHost, password, $"{host.Alias}: {container.Name}");
+            };
+            buttons.Children.Add(stopBtn);
+            buttons.Children.Add(restartBtn);
+            buttons.Children.Add(shellBtn);
+        }
+        else
+        {
+            var startBtn = IconButton("", "Starta");
+            startBtn.Click += (_, _) => RunAndRefresh(() => DockerService.Start(host, password, _knownHosts, container.Id));
+            buttons.Children.Add(startBtn);
+        }
+
+        var logsBtn = IconButton("", "Loggar");
+        logsBtn.Click += (_, _) => _ = ShowDockerLogsAsync(host, password, container);
+        buttons.Children.Add(logsBtn);
+
+        var row = new Grid { Padding = new Thickness(8, 6, 8, 6) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(textPanel, 0);
+        Grid.SetColumn(buttons, 1);
+        row.Children.Add(textPanel);
+        row.Children.Add(buttons);
+
+        return new Border
+        {
+            Child = row,
+            BorderBrush = Application.Current.Resources["CardStrokeColorDefaultBrush"] as Brush,
+            BorderThickness = new Thickness(0, 0, 0, 1),
+        };
+    }
+
+    private static Button IconButton(string glyph, string toolTip)
+    {
+        var button = new Button { Content = glyph, FontFamily = new FontFamily("Segoe MDL2 Assets") };
+        ToolTipService.SetToolTip(button, toolTip);
+        return button;
+    }
+
+    /// <summary>
+    /// Egen kopia av värden med <c>docker exec</c> som startkommando — samma
+    /// mönster som LinuxApps <c>shell_host.startup_command</c>/<c>shell_host.alias</c>;
+    /// muterar ALDRIG den delade <see cref="Host"/>-instansen från <see cref="_store"/>.
+    /// </summary>
+    private static Host CloneHostForShell(Host host, DockerContainer container) =>
+        CloneHostWithStartupCommand(host, $"{host.Alias}: {container.Name}", DockerService.ExecShellCommand(container.Id));
+
+    private async Task ShowDockerLogsAsync(Host host, string? password, DockerContainer container)
+    {
+        string logs;
+        try
+        {
+            logs = await Task.Run(() => DockerService.Logs(host, password, _knownHosts, container.Id));
+        }
+        catch (Exception ex)
+        {
+            logs = $"Fel: {ex.Message}";
+        }
+
+        var textBlock = new TextBlock
+        {
+            Text = logs,
+            FontFamily = new FontFamily("Consolas"),
+            IsTextSelectionEnabled = true,
+        };
+        var scroll = new ScrollViewer
+        {
+            Content = textBlock,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            Width = 700,
+            Height = 500,
+        };
+        var dialog = new ContentDialog
+        {
+            Title = $"Loggar: {container.Name}",
+            Content = scroll,
+            CloseButtonText = "Stäng",
+            XamlRoot = Content.XamlRoot,
+        };
+        await dialog.ShowAsync();
+    }
+
+    // MARK: - Kommandon-flik (port av LinuxApps open_command_library_view/refresh_command_library_list)
+
+    private async Task OpenCommandsTabAsync(Host host, string? password)
+    {
+        var list = new StackPanel { Spacing = 0 };
+        var scrolled = new ScrollViewer { Content = list, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        var addButton = IconButton("", "Ny snippet");
+
+        var toolbar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Padding = new Thickness(12, 8, 12, 8) };
+        toolbar.Children.Add(new TextBlock
+        {
+            Text = $"Kommandon: {host.Alias}",
+            VerticalAlignment = VerticalAlignment.Center,
+            FontWeight = FontWeights.SemiBold,
+        });
+        toolbar.Children.Add(addButton);
+
+        var content = new Grid();
+        content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        content.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        Grid.SetRow(toolbar, 0);
+        Grid.SetRow(scrolled, 1);
+        content.Children.Add(toolbar);
+        content.Children.Add(scrolled);
+
+        var tab = new TabViewItem
+        {
+            Header = $"Kommandon: {host.Alias}",
+            IconSource = new FontIconSource { FontFamily = new FontFamily("Segoe MDL2 Assets"), Glyph = "" },
+            Content = content,
+        };
+        SessionTabView.TabItems.Add(tab);
+        SessionTabView.SelectedItem = tab;
+        UpdateSessionAreaVisibility();
+
+        addButton.Click += (_, _) => _ = ShowSnippetEditDialogAsync(host, password, list, existing: null);
+
+        RefreshCommandsList(host, password, list);
+    }
+
+    private void RefreshCommandsList(Host host, string? password, StackPanel list)
+    {
+        list.Children.Clear();
+        foreach (var snippet in _snippetStore.All())
+        {
+            list.Children.Add(BuildSnippetRow(host, password, list, snippet));
+        }
+        foreach (var entry in CommandLibrary.All)
+        {
+            list.Children.Add(BuildLibraryEntryRow(host, password, entry));
+        }
+    }
+
+    private FrameworkElement BuildSnippetRow(Host host, string? password, StackPanel list, Snippet snippet)
+    {
+        var textPanel = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        textPanel.Children.Add(new TextBlock { Text = snippet.Name, FontWeight = FontWeights.SemiBold });
+        textPanel.Children.Add(new TextBlock { Text = snippet.Template, Opacity = 0.7, FontSize = 12 });
+
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+
+        var runBtn = IconButton("", "Kör");
+        runBtn.Click += (_, _) => _ = RunSnippetAsync(host, password, snippet);
+        var editBtn = IconButton("", "Redigera");
+        editBtn.Click += (_, _) => _ = ShowSnippetEditDialogAsync(host, password, list, existing: snippet);
+        var deleteBtn = IconButton("", "Ta bort");
+        deleteBtn.Click += (_, _) =>
+        {
+            _snippetStore.Delete(snippet.Id);
+            RefreshCommandsList(host, password, list);
+        };
+        buttons.Children.Add(runBtn);
+        buttons.Children.Add(editBtn);
+        buttons.Children.Add(deleteBtn);
+
+        return CommandRow(textPanel, buttons);
+    }
+
+    private FrameworkElement BuildLibraryEntryRow(Host host, string? password, CommandLibraryEntry entry)
+    {
+        var subtitle = $"[{entry.Category}] {entry.Summary}" + (entry.Example is { } ex ? $" — t.ex. {ex}" : "");
+        var textPanel = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        textPanel.Children.Add(new TextBlock { Text = entry.Command, FontWeight = FontWeights.SemiBold });
+        textPanel.Children.Add(new TextBlock { Text = subtitle, Opacity = 0.7, FontSize = 12, TextWrapping = TextWrapping.Wrap });
+
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+
+        if (entry.DocsUrl is { } docsUrl)
+        {
+            var docsBtn = IconButton("", "Dokumentation");
+            docsBtn.Click += (_, _) => _ = Launcher.LaunchUriAsync(new Uri(docsUrl));
+            buttons.Children.Add(docsBtn);
+        }
+
+        var runBtn = IconButton("", "Kör");
+        runBtn.Click += (_, _) => _ = RunSnippetAsync(host, password, entry.AsSnippet);
+        buttons.Children.Add(runBtn);
+
+        return CommandRow(textPanel, buttons);
+    }
+
+    private static Border CommandRow(FrameworkElement textPanel, FrameworkElement buttons)
+    {
+        var row = new Grid { Padding = new Thickness(8, 6, 8, 6) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(textPanel, 0);
+        Grid.SetColumn(buttons, 1);
+        row.Children.Add(textPanel);
+        row.Children.Add(buttons);
+
+        return new Border
+        {
+            Child = row,
+            BorderBrush = Application.Current.Resources["CardStrokeColorDefaultBrush"] as Brush,
+            BorderThickness = new Thickness(0, 0, 0, 1),
+        };
+    }
+
+    private async Task RunSnippetAsync(Host host, string? password, Snippet snippet)
+    {
+        var variableNames = snippet.VariableNames();
+        var values = variableNames.Count == 0
+            ? new Dictionary<string, string>()
+            : await PromptSnippetVariablesAsync(snippet, variableNames);
+        if (values is null) return; // avbrutet
+
+        var shellHost = CloneHostWithStartupCommand(host, $"{host.Alias}: {snippet.Name}", snippet.Rendered(values));
+        await OpenTerminalTabAsync(shellHost, password, shellHost.Alias);
+    }
+
+    private async Task<Dictionary<string, string>?> PromptSnippetVariablesAsync(Snippet snippet, IReadOnlyList<string> variableNames)
+    {
+        var panel = new StackPanel { Spacing = 8 };
+        panel.Children.Add(new TextBlock { Text = snippet.Template, Opacity = 0.7, TextWrapping = TextWrapping.Wrap });
+        var boxes = variableNames.ToDictionary(name => name, name => new TextBox { PlaceholderText = name });
+        foreach (var box in boxes.Values) panel.Children.Add(box);
+
+        var dialog = new ContentDialog
+        {
+            Title = snippet.Name,
+            Content = panel,
+            PrimaryButtonText = "Kör",
+            CloseButtonText = "Avbryt",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = Content.XamlRoot,
+        };
+        var result = await dialog.ShowAsync();
+        if (result != ContentDialogResult.Primary) return null;
+
+        return boxes.ToDictionary(kv => kv.Key, kv => kv.Value.Text);
+    }
+
+    private async Task ShowSnippetEditDialogAsync(Host host, string? password, StackPanel list, Snippet? existing)
+    {
+        var nameBox = new TextBox { PlaceholderText = "Namn", Text = existing?.Name ?? "" };
+        var templateBox = new TextBox { PlaceholderText = "Kommando (t.ex. docker restart {{service}})", Text = existing?.Template ?? "" };
+        var panel = new StackPanel { Spacing = 8 };
+        panel.Children.Add(nameBox);
+        panel.Children.Add(templateBox);
+
+        var dialog = new ContentDialog
+        {
+            Title = "Snippet",
+            Content = panel,
+            PrimaryButtonText = existing is null ? "Lägg till" : "Spara",
+            CloseButtonText = "Avbryt",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = Content.XamlRoot,
+        };
+        var result = await dialog.ShowAsync();
+        if (result != ContentDialogResult.Primary) return;
+
+        var name = nameBox.Text.Trim();
+        var template = templateBox.Text.Trim();
+        if (name.Length == 0 || template.Length == 0) return;
+
+        var snippet = existing ?? Snippet.Create(name, template);
+        snippet.Name = name;
+        snippet.Template = template;
+        _snippetStore.Upsert(snippet);
+        RefreshCommandsList(host, password, list);
+    }
+
+    /// <summary>
+    /// Egen kopia av värden med ett annat startkommando — samma mönster som
+    /// <see cref="CloneHostForShell"/>/LinuxApps launch_rendered_command,
+    /// muterar ALDRIG den delade Host-instansen från _store.
+    /// </summary>
+    private static Host CloneHostWithStartupCommand(Host host, string alias, string startupCommand) => new()
+    {
+        Id = host.Id,
+        Alias = alias,
+        HostName = host.HostName,
+        User = host.User,
+        Port = host.Port,
+        Tags = host.Tags,
+        Auth = host.Auth,
+        IsFavorite = host.IsFavorite,
+        ColorTag = host.ColorTag,
+        Platform = host.Platform,
+        StartupCommand = startupCommand,
+        JumpHostId = host.JumpHostId,
+        MacAddress = host.MacAddress,
+        ModifiedAt = host.ModifiedAt,
+    };
+
+    // MARK: - Filer-flik (port av App/SFTPBrowserModel.swift / LinuxApps open_sftp_view)
+
+    private sealed class FilesTabState
+    {
+        public required SftpBrowserSession Sftp { get; init; }
+        public required Host Host { get; init; }
+        public required string? Password { get; init; }
+        public string CurrentPath { get; set; } = ".";
+    }
+
+    /// <summary>
+    /// Faktisk absolut sökväg via ett engångskommando (motsvarar Swiftsidans
+    /// <c>SFTPClient.realpath</c>/Rusts samma anrop) — SSH.NETs SftpClient
+    /// saknar en egen realpath-motsvarighet (verifierat mot API:t). SFTP:s
+    /// currentPath och exec-kanalens arbetskatalog delar typiskt startkatalog
+    /// men är INTE garanterat samma sak, samma kommentar som Swift/Rust-sidan.
+    /// </summary>
+    private string ResolveRealPath(FilesTabState state, string relativePath) =>
+        SshSession.RunCommand(state.Host, state.Password, _knownHosts, $"cd {ArchiveOperations.ShellQuote(relativePath)} && pwd").Trim();
+
+    private async Task OpenFilesTabAsync(Host host, string? password)
+    {
+        SftpBrowserSession sftp;
+        try
+        {
+            sftp = await Task.Run(() => SftpBrowserSession.Connect(host, password, _knownHosts));
+        }
+        catch (Exception ex)
+        {
+            var errorTab = new TabViewItem
+            {
+                Header = $"Filer: {host.Alias}",
+                Content = new TextBlock { Text = $"Anslutning misslyckades: {ex.Message}", Margin = new Thickness(16), TextWrapping = TextWrapping.Wrap },
+            };
+            SessionTabView.TabItems.Add(errorTab);
+            SessionTabView.SelectedItem = errorTab;
+            UpdateSessionAreaVisibility();
+            return;
+        }
+
+        var state = new FilesTabState { Sftp = sftp, Host = host, Password = password };
+        var list = new StackPanel { Spacing = 0 };
+        var scrolled = new ScrollViewer { Content = list, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        var pathLabel = new TextBlock { VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Stretch };
+        var upButton = IconButton("", "Upp en nivå");
+        var mkdirButton = IconButton("", "Ny mapp");
+        var refreshButton = IconButton("", "Uppdatera");
+
+        var toolbar = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, Padding = new Thickness(12, 8, 12, 8) };
+        toolbar.Children.Add(upButton);
+        toolbar.Children.Add(pathLabel);
+        toolbar.Children.Add(mkdirButton);
+        toolbar.Children.Add(refreshButton);
+
+        var content = new Grid();
+        content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        content.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        Grid.SetRow(toolbar, 0);
+        Grid.SetRow(scrolled, 1);
+        content.Children.Add(toolbar);
+        content.Children.Add(scrolled);
+
+        var tab = new TabViewItem
+        {
+            Header = $"Filer: {host.Alias}",
+            IconSource = new FontIconSource { FontFamily = new FontFamily("Segoe MDL2 Assets"), Glyph = "" },
+            Content = content,
+            Tag = sftp,
+        };
+        SessionTabView.TabItems.Add(tab);
+        SessionTabView.SelectedItem = tab;
+        UpdateSessionAreaVisibility();
+
+        upButton.Click += (_, _) =>
+        {
+            if (state.CurrentPath == ".") return;
+            var slash = state.CurrentPath.LastIndexOf('/');
+            state.CurrentPath = slash >= 0 ? state.CurrentPath[..slash] : ".";
+            _ = RefreshFilesListAsync(state, list, pathLabel);
+        };
+        mkdirButton.Click += (_, _) => _ = PromptNewFolderAsync(state, list, pathLabel);
+        refreshButton.Click += (_, _) => _ = RefreshFilesListAsync(state, list, pathLabel);
+
+        await RefreshFilesListAsync(state, list, pathLabel);
+    }
+
+    private static string JoinedPath(string basePath, string name) => basePath == "." ? name : $"{basePath}/{name}";
+
+    private async Task RefreshFilesListAsync(FilesTabState state, StackPanel list, TextBlock pathLabel)
+    {
+        pathLabel.Text = state.CurrentPath;
+        list.Children.Clear();
+        list.Children.Add(StatusText("Laddar…"));
+
+        IReadOnlyList<SftpEntry> entries;
+        try
+        {
+            entries = await Task.Run(() => state.Sftp.List(state.CurrentPath));
+        }
+        catch (Exception ex)
+        {
+            list.Children.Clear();
+            list.Children.Add(StatusText($"Fel: {ex.Message}"));
+            return;
+        }
+
+        list.Children.Clear();
+        foreach (var entry in entries)
+        {
+            list.Children.Add(BuildFileRow(state, list, pathLabel, entry));
+        }
+    }
+
+    private FrameworkElement BuildFileRow(FilesTabState state, StackPanel list, TextBlock pathLabel, SftpEntry entry)
+    {
+        var textPanel = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        textPanel.Children.Add(new TextBlock { Text = entry.Name, FontWeight = FontWeights.SemiBold });
+        textPanel.Children.Add(new TextBlock { Text = entry.IsDirectory ? "Mapp" : $"{entry.Size} bytes", Opacity = 0.7, FontSize = 12 });
+
+        var openButton = new Button { Content = textPanel, Background = null, BorderThickness = new Thickness(0), HorizontalContentAlignment = HorizontalAlignment.Left };
+        openButton.Click += (_, _) =>
+        {
+            var fullPath = JoinedPath(state.CurrentPath, entry.Name);
+            if (entry.IsDirectory)
+            {
+                state.CurrentPath = fullPath;
+                _ = RefreshFilesListAsync(state, list, pathLabel);
+            }
+            else
+            {
+                _ = OpenFileEditorAsync(state, fullPath);
+            }
+        };
+
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+
+        var renameBtn = IconButton("", "Döp om");
+        renameBtn.Click += (_, _) => _ = PromptRenameAsync(state, list, pathLabel, entry);
+        var deleteBtn = IconButton("", "Ta bort");
+        deleteBtn.Click += (_, _) => _ = DeleteEntryAsync(state, list, pathLabel, entry);
+        var permissionsBtn = IconButton("", "Rättigheter/ägare");
+        permissionsBtn.Click += (_, _) => _ = PromptPermissionsAsync(state, list, pathLabel, entry);
+        buttons.Children.Add(permissionsBtn);
+        buttons.Children.Add(renameBtn);
+        buttons.Children.Add(deleteBtn);
+
+        if (entry.IsDirectory)
+        {
+            var compressBtn = IconButton("", "Komprimera (tar.gz)");
+            compressBtn.Click += (_, _) => _ = CompressEntryAsync(state, list, entry);
+            buttons.Children.Add(compressBtn);
+        }
+        else if (entry.Name.EndsWith(".tar.gz") || entry.Name.EndsWith(".tgz") || entry.Name.EndsWith(".zip"))
+        {
+            var extractBtn = IconButton("", "Packa upp");
+            extractBtn.Click += (_, _) => _ = ExtractEntryAsync(state, list, pathLabel, entry);
+            buttons.Children.Add(extractBtn);
+        }
+
+        var row = new Grid { Padding = new Thickness(8, 6, 8, 6) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        Grid.SetColumn(openButton, 0);
+        Grid.SetColumn(buttons, 1);
+        row.Children.Add(openButton);
+        row.Children.Add(buttons);
+
+        return new Border
+        {
+            Child = row,
+            BorderBrush = Application.Current.Resources["CardStrokeColorDefaultBrush"] as Brush,
+            BorderThickness = new Thickness(0, 0, 0, 1),
+        };
+    }
+
+    private async Task OpenFileEditorAsync(FilesTabState state, string path)
+    {
+        byte[] bytes;
+        try
+        {
+            bytes = await Task.Run(() => state.Sftp.ReadFile(path));
+        }
+        catch (Exception ex)
+        {
+            var errorDialog = new ContentDialog
+            {
+                Title = path,
+                Content = $"Fel: {ex.Message}",
+                CloseButtonText = "Stäng",
+                XamlRoot = Content.XamlRoot,
+            };
+            await errorDialog.ShowAsync();
+            return;
+        }
+
+        var isBinary = !SftpBrowserSession.TryDecodeUtf8(bytes, out var text);
+        var textBox = new TextBox
+        {
+            Text = isBinary ? $"(binärt innehåll, {bytes.Length} bytes — kan inte visas eller redigeras som text)" : text,
+            AcceptsReturn = true,
+            IsReadOnly = isBinary,
+            FontFamily = new FontFamily("Consolas"),
+            TextWrapping = TextWrapping.NoWrap,
+            Height = 400,
+        };
+        var scroll = new ScrollViewer { Content = textBox, Width = 700 };
+
+        var dialog = new ContentDialog
+        {
+            Title = path,
+            Content = scroll,
+            PrimaryButtonText = isBinary ? null : "Spara",
+            CloseButtonText = "Stäng",
+            XamlRoot = Content.XamlRoot,
+        };
+        var result = await dialog.ShowAsync();
+        if (result != ContentDialogResult.Primary || isBinary) return;
+
+        try
+        {
+            await Task.Run(() => state.Sftp.WriteFile(path, Encoding.UTF8.GetBytes(textBox.Text)));
+        }
+        catch (Exception ex)
+        {
+            var errorDialog = new ContentDialog
+            {
+                Title = "Kunde inte spara",
+                Content = ex.Message,
+                CloseButtonText = "Stäng",
+                XamlRoot = Content.XamlRoot,
+            };
+            await errorDialog.ShowAsync();
+        }
+    }
+
+    private async Task PromptNewFolderAsync(FilesTabState state, StackPanel list, TextBlock pathLabel)
+    {
+        var nameBox = new TextBox { PlaceholderText = "Mappnamn" };
+        var dialog = new ContentDialog
+        {
+            Title = "Ny mapp",
+            Content = nameBox,
+            PrimaryButtonText = "Skapa",
+            CloseButtonText = "Avbryt",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = Content.XamlRoot,
+        };
+        var result = await dialog.ShowAsync();
+        if (result != ContentDialogResult.Primary) return;
+
+        var name = nameBox.Text.Trim();
+        if (name.Length == 0) return;
+
+        try
+        {
+            await Task.Run(() => state.Sftp.CreateDirectory(JoinedPath(state.CurrentPath, name)));
+        }
+        catch (Exception ex)
+        {
+            list.Children.Add(StatusText($"Fel: {ex.Message}"));
+        }
+        await RefreshFilesListAsync(state, list, pathLabel);
+    }
+
+    /// <summary>
+    /// Alla SFTP-åtgärder i den här fliken körs via <see cref="Task.Run"/> —
+    /// mkdir/döp om/rättigheter/borttagning gjorde det tidigare INTE (bara
+    /// läs/skriv/lista/komprimera/packa-upp gjorde), och blockerade UI-
+    /// tråden under hela nätverksrundturen.
+    /// </summary>
+    private async Task DeleteEntryAsync(FilesTabState state, StackPanel list, TextBlock pathLabel, SftpEntry entry)
+    {
+        var fullPath = JoinedPath(state.CurrentPath, entry.Name);
+        try
+        {
+            await Task.Run(() =>
+            {
+                if (entry.IsDirectory) state.Sftp.RemoveDirectory(fullPath);
+                else state.Sftp.RemoveFile(fullPath);
+            });
+        }
+        catch (Exception ex)
+        {
+            list.Children.Add(StatusText($"Fel: {ex.Message}"));
+            return;
+        }
+        await RefreshFilesListAsync(state, list, pathLabel);
+    }
+
+    private async Task PromptRenameAsync(FilesTabState state, StackPanel list, TextBlock pathLabel, SftpEntry entry)
+    {
+        var nameBox = new TextBox { Text = entry.Name };
+        var dialog = new ContentDialog
+        {
+            Title = "Döp om",
+            Content = nameBox,
+            PrimaryButtonText = "Döp om",
+            CloseButtonText = "Avbryt",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = Content.XamlRoot,
+        };
+        var result = await dialog.ShowAsync();
+        if (result != ContentDialogResult.Primary) return;
+
+        var newName = nameBox.Text.Trim();
+        if (newName.Length == 0 || newName == entry.Name) return;
+
+        try
+        {
+            await Task.Run(() => state.Sftp.Rename(JoinedPath(state.CurrentPath, entry.Name), JoinedPath(state.CurrentPath, newName)));
+        }
+        catch (Exception ex)
+        {
+            list.Children.Add(StatusText($"Fel: {ex.Message}"));
+        }
+        await RefreshFilesListAsync(state, list, pathLabel);
+    }
+
+    /// <summary>mode: oktal sträng utan 0-prefix, t.ex. "644"/"755" — samma notation som chmod på kommandoraden. uid/gid: numeriska ID:n, SFTP v3 känner bara till UID/GID, aldrig namn.</summary>
+    private async Task PromptPermissionsAsync(FilesTabState state, StackPanel list, TextBlock pathLabel, SftpEntry entry)
+    {
+        var modeBox = new TextBox { PlaceholderText = "Behörighet (oktalt, t.ex. 644)" };
+        var uidBox = new TextBox { PlaceholderText = "UID (t.ex. 1000)" };
+        var gidBox = new TextBox { PlaceholderText = "GID (t.ex. 1000)" };
+        var panel = new StackPanel { Spacing = 8 };
+        panel.Children.Add(modeBox);
+        panel.Children.Add(uidBox);
+        panel.Children.Add(gidBox);
+
+        var dialog = new ContentDialog
+        {
+            Title = $"Rättigheter/ägare: {entry.Name}",
+            Content = panel,
+            PrimaryButtonText = "Verkställ",
+            CloseButtonText = "Avbryt",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = Content.XamlRoot,
+        };
+        var result = await dialog.ShowAsync();
+        if (result != ContentDialogResult.Primary) return;
+
+        var fullPath = JoinedPath(state.CurrentPath, entry.Name);
+
+        // Parsning/validering är billig och synkron — görs FÖRE Task.Run,
+        // bara de faktiska SFTP-anropen (nätverksrundturer) behöver köras
+        // där.
+        short? mode = null;
+        if (!string.IsNullOrWhiteSpace(modeBox.Text))
+        {
+            if (!TryParseOctalMode(modeBox.Text, out var parsedMode))
+            {
+                list.Children.Add(StatusText("Ogiltig behörighet — ange tre oktala siffror, t.ex. 644."));
+                return;
+            }
+            mode = parsedMode;
+        }
+        (int Uid, int Gid)? owner = null;
+        if (!string.IsNullOrWhiteSpace(uidBox.Text) && !string.IsNullOrWhiteSpace(gidBox.Text))
+        {
+            if (!int.TryParse(uidBox.Text, out var uid) || !int.TryParse(gidBox.Text, out var gid))
+            {
+                list.Children.Add(StatusText("Ogiltigt UID/GID — ange numeriska ID:n, t.ex. 1000."));
+                return;
+            }
+            owner = (uid, gid);
+        }
+
+        try
+        {
+            await Task.Run(() =>
+            {
+                if (mode is { } m) state.Sftp.SetPermissions(fullPath, m);
+                if (owner is { } o) state.Sftp.SetOwner(fullPath, o.Uid, o.Gid);
+            });
+        }
+        catch (Exception ex)
+        {
+            list.Children.Add(StatusText($"Fel: {ex.Message}"));
+        }
+        await RefreshFilesListAsync(state, list, pathLabel);
+    }
+
+    private static bool TryParseOctalMode(string text, out short mode)
+    {
+        mode = 0;
+        if (text.Length != 3 || !text.All(c => c is >= '0' and <= '7')) return false;
+        mode = Convert.ToInt16(text, 8);
+        return true;
+    }
+
+    /// <summary>Komprimerar mappens INNEHÅLL (. inifrån mappen själv), arkivet hamnar bredvid mappen (i state.CurrentPath, inte inuti den) — samma mönster som LinuxApps compress_button.</summary>
+    private async Task CompressEntryAsync(FilesTabState state, StackPanel list, SftpEntry entry)
+    {
+        try
+        {
+            var fullDir = JoinedPath(state.CurrentPath, entry.Name);
+            var absoluteDir = await Task.Run(() => ResolveRealPath(state, fullDir));
+            var archiveName = $"../{entry.Name}.tar.gz";
+            var command = ArchiveOperations.CreateTarGzCommand(new[] { "." }, archiveName, absoluteDir);
+            await Task.Run(() => SshSession.RunCommand(state.Host, state.Password, _knownHosts, command));
+        }
+        catch (Exception ex)
+        {
+            list.Children.Add(StatusText($"Fel: {ex.Message}"));
+        }
+    }
+
+    /// <summary>Packar upp ett arkiv i SAMMA katalog det ligger i. Formatet avgörs av filändelsen.</summary>
+    private async Task ExtractEntryAsync(FilesTabState state, StackPanel list, TextBlock pathLabel, SftpEntry entry)
+    {
+        try
+        {
+            var absoluteDir = await Task.Run(() => ResolveRealPath(state, state.CurrentPath));
+            var command = entry.Name.EndsWith(".zip")
+                ? ArchiveOperations.ExtractZipCommand(entry.Name, absoluteDir)
+                : ArchiveOperations.ExtractTarGzCommand(entry.Name, absoluteDir);
+            await Task.Run(() => SshSession.RunCommand(state.Host, state.Password, _knownHosts, command));
+        }
+        catch (Exception ex)
+        {
+            list.Children.Add(StatusText($"Fel: {ex.Message}"));
+            return;
+        }
+        await RefreshFilesListAsync(state, list, pathLabel);
     }
 }
