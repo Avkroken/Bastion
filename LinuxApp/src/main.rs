@@ -2568,6 +2568,58 @@ fn open_sftp_view(area: &Rc<SessionArea>, host: host::Host, password: Option<Str
         }
     ));
 
+    // Drag & drop-uppladdning: släpp filer/mappar från filhanteraren rakt
+    // in i den aktuella katalogen — samma funktion som App/, tidigare
+    // uteslutande dokumenterad som en LinuxApp-lucka (se ROADMAP.md,
+    // motiveringen i sftp::upload_path_recursive).
+    let drop_target = gtk::DropTarget::new(gtk::gdk::FileList::static_type(), gtk::gdk::DragAction::COPY);
+    drop_target.connect_drop(clone!(
+        #[strong]
+        area,
+        #[strong]
+        ctx,
+        #[strong]
+        current_path,
+        #[strong]
+        list,
+        #[strong]
+        path_label,
+        move |_, value, _, _| {
+            let Ok(file_list) = value.get::<gtk::gdk::FileList>() else { return false };
+            let paths: Vec<std::path::PathBuf> = file_list.files().into_iter().filter_map(|f| f.path()).collect();
+            if paths.is_empty() {
+                return false;
+            }
+            let base_path = current_path.borrow().clone();
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                ctx,
+                #[strong]
+                current_path,
+                #[strong]
+                list,
+                #[strong]
+                path_label,
+                async move {
+                    for local_path in &paths {
+                        let Some(name) = local_path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+                            continue;
+                        };
+                        let remote_path = joined_path(&base_path, &name);
+                        if let Err(e) = sftp::upload_path_recursive(&ctx.handle, local_path, &remote_path).await {
+                            list.append(&error_row(&format!("Kunde inte ladda upp {name}: {e}")));
+                        }
+                    }
+                    refresh_sftp_list(&area, ctx, current_path, base_path, &list, &path_label);
+                }
+            ));
+            true
+        }
+    ));
+    scrolled.add_controller(drop_target);
+
     let initial_path = current_path.borrow().clone();
     refresh_sftp_list(area, ctx, current_path, initial_path, &list, &path_label);
 }
@@ -2619,6 +2671,7 @@ fn joined_path(base: &str, name: &str) -> String {
         format!("{base}/{name}")
     }
 }
+
 
 fn build_sftp_entry_row(
     area: &Rc<SessionArea>,

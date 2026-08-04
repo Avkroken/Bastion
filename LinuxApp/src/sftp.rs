@@ -95,6 +95,42 @@ impl SftpHandle {
     }
 }
 
+/// Laddar upp en lokal fil ELLER mapp REKURSIVT till `remote_path` —
+/// motsvarar App/:s drag & drop-uppladdning, en lucka som var dokumenterad
+/// som LinuxApp-specifik (SwiftCrossUIs `Gtk`-paket saknade en färdig
+/// `GtkDropTarget`-omslag; gtk4-rs, den nya native Rust-porten, har det
+/// direkt). Mappar blir `mkdir` + samma funktion per barn i tur och
+/// ordning; filer blir läs+skriv. `Box::pin` krävs eftersom en `async fn`
+/// inte kan vara rekursiv rakt av (obestämd storlek vid kompilering).
+///
+/// `mkdir`-fel ignoreras medvetet (samma SFTP v3-begränsning som redan
+/// dokumenterats för mapp-skapande på andra ställen: ingen egen "finns
+/// redan"-statuskod förrän v6) — om katalogen redan finns fortsätter
+/// uppladdningen ändå in i den; ett EKTA behörighetsfel avslöjas istället
+/// av den efterföljande skrivningen, som INTE ignoreras.
+pub fn upload_path_recursive<'a>(
+    handle: &'a SftpHandle,
+    local_path: &'a std::path::Path,
+    remote_path: &'a str,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(async move {
+        if local_path.is_dir() {
+            let _ = handle.mkdir(remote_path.to_string()).await;
+            let entries = std::fs::read_dir(local_path).map_err(|e| e.to_string())?;
+            for entry in entries {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let child_remote = if remote_path == "." { name.clone() } else { format!("{remote_path}/{name}") };
+                upload_path_recursive(handle, &entry.path(), &child_remote).await?;
+            }
+            Ok(())
+        } else {
+            let data = std::fs::read(local_path).map_err(|e| e.to_string())?;
+            handle.write(remote_path.to_string(), data).await
+        }
+    })
+}
+
 /// Startar SFTP-anslutningen på en ny bakgrundstråd. Om själva anslutningen
 /// misslyckas svarar handtaget med samma fel på varje efterföljande
 /// kommando istället för att panika eller hänga tyst.
@@ -352,5 +388,135 @@ mod tests {
 
         let cleanup_rx = crate::ssh::run_command(host, None, format!("rm -rf {dir}"));
         cleanup_rx.recv_blocking().ok();
+    }
+
+    /// Fristående test-sshd (egen konfig/port, INTE systemtjänsten) — samma
+    /// teknik som `port_forward`/`socks_proxy`/`key_deploy`, används här så
+    /// `upload_path_recursive` kan verifieras utan manuell
+    /// `authorized_keys`-uppsättning (ovanstående tester i den här filen är
+    /// alla `#[ignore]`-gatade mot just det kravet).
+    struct TestSshd {
+        child: std::process::Child,
+        port: u16,
+        dir: std::path::PathBuf,
+    }
+
+    impl TestSshd {
+        fn start() -> Option<Self> {
+            let dir = std::env::temp_dir().join(format!("bastion-sftp-upload-sshd-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).ok()?;
+
+            let host_key = dir.join("hostkey");
+            let status = std::process::Command::new("ssh-keygen")
+                .args(["-q", "-N", "", "-t", "ed25519", "-f"])
+                .arg(&host_key)
+                .status()
+                .ok()?;
+            if !status.success() {
+                return None;
+            }
+            let client_key = dir.join("client_key");
+            let status = std::process::Command::new("ssh-keygen")
+                .args(["-q", "-N", "", "-t", "ed25519", "-f"])
+                .arg(&client_key)
+                .status()
+                .ok()?;
+            if !status.success() {
+                return None;
+            }
+            let client_pub = std::fs::read_to_string(dir.join("client_key.pub")).ok()?;
+            std::fs::write(dir.join("authorized_keys"), client_pub).ok()?;
+
+            let port = {
+                let l = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
+                l.local_addr().ok()?.port()
+            };
+            let config_path = dir.join("sshd_config");
+            std::fs::write(
+                &config_path,
+                format!(
+                    "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\n\
+                     PubkeyAuthentication yes\nPasswordAuthentication no\nUsePAM no\nStrictModes no\n\
+                     Subsystem sftp internal-sftp\nPidFile {}\n",
+                    host_key.display(),
+                    dir.join("authorized_keys").display(),
+                    dir.join("pid").display()
+                ),
+            )
+            .ok()?;
+
+            let child = std::process::Command::new("/usr/sbin/sshd")
+                .args(["-f"])
+                .arg(&config_path)
+                .args(["-D", "-e"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .ok()?;
+
+            for _ in 0..50 {
+                if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                    return Some(TestSshd { child, port, dir });
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            None
+        }
+
+        fn client_key_path(&self) -> String {
+            self.dir.join("client_key").to_string_lossy().into_owned()
+        }
+    }
+
+    impl Drop for TestSshd {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// Skapar en lokal katalogstruktur (en fil i roten + en underkatalog med
+    /// en egen fil) och laddar upp den REKURSIVT mot en riktig, fristående
+    /// sshd — bevisar att både mapp-rekursionen och fil-innehållet överlever
+    /// hela resan, inte bara ett enskilt plant fall.
+    #[test]
+    fn upload_path_recursive_uploads_a_nested_directory_tree() {
+        let Some(sshd) = TestSshd::start() else {
+            eprintln!("hoppar: kunde inte starta en test-sshd i den här miljön");
+            return;
+        };
+        let mut host = Host::new("upload-test".into(), "127.0.0.1".into(), whoami_user());
+        host.port = sshd.port as i64;
+        host.auth = HostAuth::KeyFile(sshd.client_key_path());
+
+        let local_dir = std::env::temp_dir().join(format!("bastion-upload-local-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(local_dir.join("subdir")).unwrap();
+        std::fs::write(local_dir.join("root.txt"), b"hej-fran-roten").unwrap();
+        std::fs::write(local_dir.join("subdir/child.txt"), b"hej-fran-undermappen").unwrap();
+
+        let remote_dir = format!("/tmp/bastion-upload-remote-{}", uuid::Uuid::new_v4());
+        let handle = spawn(host, None);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            upload_path_recursive(&handle, &local_dir, &remote_dir).await.expect("uppladdning misslyckades");
+
+            let root_content = handle.read(format!("{remote_dir}/root.txt")).await.expect("kunde inte läsa root.txt");
+            assert_eq!(root_content, b"hej-fran-roten");
+
+            let child_content =
+                handle.read(format!("{remote_dir}/subdir/child.txt")).await.expect("kunde inte läsa subdir/child.txt");
+            assert_eq!(child_content, b"hej-fran-undermappen");
+
+            let root_entries = handle.list(remote_dir.clone()).await.expect("list misslyckades");
+            assert_eq!(root_entries.len(), 2, "väntade root.txt + subdir, fick {root_entries:?}");
+        });
+
+        std::fs::remove_dir_all(&local_dir).ok();
+    }
+
+    fn whoami_user() -> String {
+        std::env::var("USER").unwrap_or_else(|_| "test".into())
     }
 }

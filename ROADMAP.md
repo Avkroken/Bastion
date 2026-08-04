@@ -1399,12 +1399,22 @@ Inget nytt att bygga, bara verifiera/lansera:
   omuppladdning ignoreras medvetet (SFTP v3 saknar en egen "finns
   redan"-statuskod, den kom i v6 — se kodkommentar). Kan inte byggas/
   verifieras här (Xcode-only), verifierad av `xcode.yml`-CI:t.
-  **Kvar**: LinuxApp-motsvarigheten (SwiftCrossUIs `Gtk`-paket saknar en
-  färdig Swift-omslag för GTK4:s `GtkDropTarget`, till skillnad från
-  `CSSProvider` — skulle kräva rå GObject/C-interop-kod, medvetet
-  avvaktat tills det känns värt tiden), flerval för komprimering,
-  förhandsvisning (t.ex. bilder), syntax highlighting (se separat post
-  nedan).
+  **LinuxApp-motsvarigheten klar** (2026-08-04, `sftp::upload_path_recursive`
+  + `gtk::DropTarget` i `open_sftp_view`): den ursprungliga blockeraren
+  (SwiftCrossUIs `Gtk`-paket saknade en färdig omslag för GTK4:s
+  `GtkDropTarget`) gäller inte längre — gtk4-rs (den nya, native
+  Rust-porten) har `DropTarget`/`gdk::FileList` direkt, ingen egen
+  GObject/C-interop behövdes. Släpp av filer/mappar från filhanteraren rakt
+  in i SFTP-vyns aktuella katalog laddar upp dem via SAMMA `SftpHandle`
+  som resten av vyn använder; mappar laddas upp REKURSIVT (`mkdir` +
+  rekursiv katalogvandring, samma `mkdir`-fel-ignoreras-medvetet-motivering
+  som Swift-sidan — SFTP v3 saknar en "finns redan"-statuskod). Testat
+  genuint end-to-end mot en fristående test-sshd: en lokal katalogstruktur
+  (rot-fil + underkatalog med egen fil) laddas upp och läses tillbaka,
+  bevisar både rekursionen och att innehållet överlever hela resan — inte
+  bara ett plant enfilsfall. Byggd och körd under Xvfb utan krasch.
+  **Kvar**: flerval för komprimering, förhandsvisning (t.ex. bilder),
+  syntax highlighting (se separat post nedan).
 - Inbyggd editor med syntax highlighting
 - Plugin-system (Proxmox, TrueNAS, Unraid, Cloudflare, GitHub, Kubernetes)
 - **Agent Forwarding**: ✅ agent-PROTOKOLLKLIENTEN klar (2026-07-07,
@@ -2003,7 +2013,13 @@ för att bekräfta att XAML:en faktiskt kompilerar och renderar rätt.
 
 Kvar för full WindowsApp-paritet med LinuxApp: SFTP-bläddrare (inkl.
 chmod/chown/arkiv), Funktioner-inställningar (dölj flikar via toggles),
-rå tangentbordsinput, fler HostAuth-typer (SSH.NET saknar agent-protokoll).
+fler HostAuth-typer (SSH.NET saknar agent-protokoll). "Rå tangentbordsinput"
+togs tidigare upp här som en lucka men är det inte — `Assets/xterm/
+terminal.html` använder redan xterm.js` `onData`-API, som internt
+producerar KORREKTA byte-sekvenser för piltangenter/Ctrl-kombinationer/
+funktionstangenter (samma väletablerade terminal-emulator som VS Code/
+Hyper använder), inte en handskriven `onkeydown`-hantering som riskerar
+att missa specialtangenter.
 
 **WindowsApp: SFTP-bläddrare, grundpasset (skrivet, INTE visuellt
 verifierat).** Port av `App/SFTPBrowserModel.swift`/`LinuxApp/src/sftp.rs`
@@ -2133,9 +2149,11 @@ det ovan var faktiskt bekräftat innan den här omgången.
      packa-upp gjorde det redan rätt. Samma inkonsekvens-mönster som #1,
      fixat på alla fyra ställen.
 
-**Kvar**: rå tangentbordsinput, fler HostAuth-typer (SSH.NET saknar
-agent-protokoll), och — det enda som faktiskt kräver Windows-hårdvara/en
-VM för att stänga helt — en RIKTIG kompilering+körning av
+**Kvar**: fler HostAuth-typer (SSH.NET saknar agent-protokoll) — se
+motiveringen ovan om varför "rå tangentbordsinput" INTE längre räknas som
+en lucka (xterm.js `onData` hanterar det redan korrekt) — och, det enda
+som faktiskt kräver Windows-hårdvara/en VM för att stänga helt, en RIKTIG
+kompilering+körning av
 `MainWindow.xaml`/`.xaml.cs` (WinUI3s XAML-kompilator finns bara på
 Windows). Med Bastion.Core-lagret verifierat och UI-lagret manuellt
 granskat rad för rad är risken låg, men "manuellt granskad" är inte
