@@ -355,6 +355,59 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **Seriell/USB-anslutning i den NYA Rust/GTK4-`LinuxApp`** (2026-08-05,
+  `LinuxApp/src/serial.rs`): helt saknades — Termius har detta, Bastion
+  saknade det helt (samma gap-lista Swift-sidans `Serial.swift`
+  dokumenterar). Port av `Sources/SSHCore/Serial.swift`: rått termios-läge
+  (`cfmakeraw`) mot t.ex. `/dev/ttyUSB*`/`/dev/ttyACM*` — mest relevant för
+  hemmalabb-/nätverksutrustnings-konsolportar (samma "nätverkstekniker"-
+  persona som Telnet).
+  - Till skillnad från `ssh.rs`/`telnet.rs` (en bakgrundstråd,
+    `tokio::select!`) används HÄR två separata trådar UTAN tokio alls:
+    en seriell filbeskrivare är en vanlig blockerande syscall-baserad
+    I/O-primitiv (`std::fs::File::read`/`write` fungerar direkt när
+    porten är konfigurerad) — en dedikerad blockerande läs-tråd är
+    enklare OCH effektivare än Swift-sidans `NIOPipeBootstrap`-väg (som
+    behöver icke-blockerande I/O för att passa NIOs event-loop-modell,
+    ett behov som inte finns här). Ren `libc`-FFI (`open`/`tcgetattr`/
+    `cfmakeraw`/`cfsetispeed`/`cfsetospeed`/`tcsetattr`/`dup`) — samma
+    raka syscall-nivå som Swift-sidan, inget mellanliggande
+    `serialport`-kratbibliotek.
+  - En delad `Arc<AtomicBool>`-flagga signalerar läs-tråden att avsluta
+    när skriv-tråden märker att `input`-kanalen stängts (fliken stängd)
+    — att stänga filbeskrivaren direkt från en ANNAN tråd medan en
+    blockerande `read()` pågår på samma fd-nummer är odefinierat
+    beteende i praktiken (fd-återanvändningsrisk), så cancellering görs
+    kooperativt istället.
+  - Ny "Seriell/USB"-knapp i sidopanelens header: ad-hoc
+    anslutningsdialog (sökväg + baudhastighet, ingen auth — en fysisk
+    port är inte en användarkontobar resurs, samma resonemang som
+    Telnet/Quick Connect), motsvarar `App/SerialConnectView.swift`.
+    `serial::available_paths()` föreslår kandidater
+    (`/dev/ttyUSB*`/`/dev/ttyACM*`/`/dev/ttyS*`) i en väljare, men ett
+    fritextfält tar alltid över om ifyllt.
+  - **Testat GENUINT mot en riktig pseudo-terminal (PTY)**, inte en mock
+    — `posix_openpt`/`grantpt`/`unlockpt`/`ptsname` (samma teknik som
+    Swift-sidans `SerialPTYTests`, där begränsad till Darwin av ett
+    lokalt toolchain-skäl, inte för att Linux saknar syscallen): en
+    PTY-slav beter sig som en äkta seriell tty ur `open()`/
+    `tcsetattr()`s perspektiv, så testet bevisar att hela vägen —
+    öppna, konfigurera rått läge, läsa OCH skriva — fungerar mot en
+    riktig enhet. **En genuin race hittades och fixades under
+    verifieringen** (inte antagen i förväg): skrev testet till PTY-
+    mastern INNAN bakgrundstrådens `configure_termios` hunnit köra,
+    landade data i kärnans DEFAULT cooked-läge (eko/radbuffring
+    påslagna) istället för det avsedda rå läget — synligt som en extra
+    `\r` inskjuten framför `\n`. Fixat genom att testet väntar in
+    `SerialEvent::Connected` innan något skrivs, körd 5 gånger i rad
+    utan flakighet efteråt. Plus 3 enhetstester (icke-existerande
+    sökväg, ogiltig/alla giltiga baudhastigheter). Port av
+    `SerialTests.swift`/`SerialPTYTests.swift` rakt av. 132/132
+    `cargo test` gröna totalt, `cargo build`/`clippy` helt tysta.
+  - **Kvar**: Windows har en helt annan seriell-API (`SetCommState`, inte
+    POSIX-termios) — medvetet inte täckt, samma avgränsning som Swift-
+    sidan.
+
 - **Snabbanslutning ("Quick Connect") i den NYA Rust/GTK4-`LinuxApp`**
   (2026-08-04, `LinuxApp/src/main.rs`): helt saknades — ingen väg att
   ansluta till en ad-hoc värd UTAN att först spara den i värdlistan.

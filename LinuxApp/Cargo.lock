@@ -153,6 +153,7 @@ dependencies = [
  "gtk4",
  "hmac 0.13.0",
  "libadwaita",
+ "libc",
  "pbkdf2 0.13.0",
  "quick-xml",
  "rand 0.10.2",

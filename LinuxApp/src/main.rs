@@ -14,6 +14,7 @@ mod key_deploy;
 mod known_hosts;
 mod port_forward;
 mod s3;
+mod serial;
 mod settings;
 mod sftp;
 mod snippet;
@@ -123,6 +124,16 @@ fn build_ui(app: &adw::Application) {
         move |_| show_telnet_connect_dialog(&app, &area)
     ));
 
+    let serial_button = gtk::Button::from_icon_name("cable-modem-symbolic");
+    serial_button.set_tooltip_text(Some("Seriell/USB"));
+    serial_button.connect_clicked(clone!(
+        #[weak]
+        app,
+        #[strong]
+        area,
+        move |_| show_serial_connect_dialog(&app, &area)
+    ));
+
     let tailscale_button = gtk::Button::from_icon_name("network-workgroup-symbolic");
     tailscale_button.set_tooltip_text(Some("Tailscale"));
     tailscale_button.connect_clicked(clone!(
@@ -202,6 +213,7 @@ fn build_ui(app: &adw::Application) {
     sidebar_header.pack_end(&add_button);
     sidebar_header.pack_end(&quick_connect_button);
     sidebar_header.pack_end(&telnet_button);
+    sidebar_header.pack_end(&serial_button);
     sidebar_header.pack_end(&tailscale_button);
     sidebar_header.pack_end(&wireguard_button);
     sidebar_header.pack_end(&s3_button);
@@ -1536,6 +1548,151 @@ fn show_telnet_connect_dialog(app: &adw::Application, area: &Rc<SessionArea>) {
             }
             win.close();
             start_telnet_session(&area, host, port);
+        }
+    ));
+
+    win.present();
+}
+
+fn start_serial_session(area: &Rc<SessionArea>, path: String, baud_rate: u32) {
+    let terminal = vte::Terminal::builder().vexpand(true).hexpand(true).build();
+    let handle = serial::spawn(serial::SerialConfig { path: path.clone(), baud_rate });
+
+    unsafe {
+        terminal.set_data("bastion-ssh-input", handle.input.clone());
+    }
+
+    let page = area.tab_view.append(&terminal);
+    page.set_title(&format!("{path} ({baud_rate} baud)"));
+    area.tab_view.set_selected_page(&page);
+    area.update_placeholder();
+
+    terminal.connect_commit(clone!(
+        #[strong(rename_to = input)]
+        handle.input,
+        move |_, text, _| {
+            let _ = input.try_send(text.as_bytes().to_vec());
+        }
+    ));
+
+    glib::spawn_future_local(clone!(
+        #[weak]
+        terminal,
+        #[strong]
+        area,
+        #[weak]
+        page,
+        #[strong(rename_to = output)]
+        handle.output,
+        async move {
+            while let Ok(event) = output.recv().await {
+                match event {
+                    serial::SerialEvent::Data(bytes) => terminal.feed(&bytes),
+                    serial::SerialEvent::Error(msg) => {
+                        terminal.feed(
+                            format!("\r\n\x1b[31m[bastion] fel: {msg}\x1b[0m\r\n").as_bytes(),
+                        );
+                    }
+                    serial::SerialEvent::Connected => {}
+                    serial::SerialEvent::Closed => {
+                        if area.tab_view.page_position(&page) >= 0 {
+                            area.tab_view.close_page(&page);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    ));
+}
+
+/// Ad-hoc anslutningsdialog för en seriell/USB-port — inget sparande i
+/// värdlistan, motsvarar `App/SerialConnectView.swift` (bara sökväg+
+/// baudhastighet, ingen auth — en fysisk port är inte en användarkontobar
+/// resurs). `serial::available_paths()` föreslår kandidater
+/// (`/dev/ttyUSB*`/`/dev/ttyACM*`/`/dev/ttyS*`) men fältet är fritext —
+/// listan är best-effort, inte en spärr mot att skriva en annan sökväg.
+fn show_serial_connect_dialog(app: &adw::Application, area: &Rc<SessionArea>) {
+    let path_row = adw::ComboRow::builder().title("Port").build();
+    let available = serial::available_paths();
+    let path_model = gtk::StringList::new(&available.iter().map(String::as_str).collect::<Vec<_>>());
+    path_row.set_model(Some(&path_model));
+    path_row.set_enable_search(true);
+
+    let path_entry_row = adw::EntryRow::builder()
+        .title("Egen sökväg (t.ex. /dev/ttyUSB0)")
+        .build();
+    let baud_row = adw::ComboRow::builder().title("Baudhastighet").build();
+    let baud_labels: Vec<String> = serial::COMMON_BAUD_RATES.iter().map(|b| b.to_string()).collect();
+    let baud_model = gtk::StringList::new(&baud_labels.iter().map(String::as_str).collect::<Vec<_>>());
+    baud_row.set_model(Some(&baud_model));
+    // 9600 är den vanligaste standardhastigheten för konsolportar — sätt
+    // den som förval om den finns i listan, annars lämna OS-förvalet (index 0).
+    if let Some(idx) = serial::COMMON_BAUD_RATES.iter().position(|&b| b == 9600) {
+        baud_row.set_selected(idx as u32);
+    }
+
+    let group = adw::PreferencesGroup::new();
+    if !available.is_empty() {
+        group.add(&path_row);
+    }
+    group.add(&path_entry_row);
+    group.add(&baud_row);
+
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+
+    let connect_button = gtk::Button::with_label("Anslut");
+    connect_button.add_css_class("suggested-action");
+    let cancel_button = gtk::Button::with_label("Avbryt");
+    let header = adw::HeaderBar::builder()
+        .show_end_title_buttons(false)
+        .build();
+    header.pack_start(&cancel_button);
+    header.pack_end(&connect_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&page);
+
+    let win = adw::Window::builder()
+        .transient_for(&app.active_window().expect("inget aktivt fönster"))
+        .modal(true)
+        .default_width(380)
+        .default_height(260)
+        .title("Seriell/USB-anslutning")
+        .content(&content)
+        .build();
+
+    cancel_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        move |_| win.close()
+    ));
+    connect_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        #[strong]
+        area,
+        #[strong]
+        available,
+        move |_| {
+            // Fritextfältet vinner om det är ifyllt — annars den valda
+            // posten ur den föreslagna listan (om listan visades alls).
+            let typed = path_entry_row.text().trim().to_string();
+            let path = if !typed.is_empty() {
+                typed
+            } else if let Some(p) = available.get(path_row.selected() as usize) {
+                p.clone()
+            } else {
+                return;
+            };
+            let baud_rate = serial::COMMON_BAUD_RATES
+                .get(baud_row.selected() as usize)
+                .copied()
+                .unwrap_or(9600);
+            win.close();
+            start_serial_session(&area, path, baud_rate);
         }
     ));
 
