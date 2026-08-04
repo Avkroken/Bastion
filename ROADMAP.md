@@ -52,7 +52,7 @@ delvis andra, av konkreta skäl:
 | Portvidarebefordran (`PortForwardView`) | ✅ lokal/fjärr/dynamisk — LinuxApp (byggd+körd, Xvfb; interaktiv klick-genom-menyn ej gjord) OCH App/ (2026-07-08, Xcode-only) |
 | ProxyJump (`ssh -J`) | ✅ `SSHSession.connect(via:)`, `bastion-cli` läser `ProxyJump` ur ssh-config automatiskt — ✅ (2026-08-04) LinuxApp Rust (`ssh::connect_via_jump`), testat mot två oberoende riktiga `sshd`-instanser, ingen egen UI-väljare i LinuxApps host-dialog än (se "Klart") |
 | WireGuard-profiler | ✅ parsning/serialisering + lagring — LinuxApp OCH App/-UI (2026-07-08, Xcode-only) |
-| OpenSSH-certifikat | ✅ parsning + CA-signaturverifiering + `SSHUserAuth`/`HostAuth`-wiring (`.certificateFile`) — testad mot RIKTIGA `ssh-keygen -s`-certifikat, LinuxApp+App-UI klar |
+| OpenSSH-certifikat | ✅ parsning + CA-signaturverifiering + `SSHUserAuth`/`HostAuth`-wiring (`.certificateFile`) — testad mot RIKTIGA `ssh-keygen -s`-certifikat, App/-UI (Xcode-only) — ✅ (2026-08-05) LinuxApp Rust (`ssh::authenticate`, `russh::keys::load_openssh_certificate`), permanent CI-test mot en RIKTIG `sshd` med `TrustedUserCAKeys` (går längre än Swift-sidans engångsverifiering, se "Klart") |
 | ssh-agent-protokollklient | ✅ `SSHAgentClient.swift`, testad mot en RIKTIG `ssh-agent` — 🚫 kanal-forwarding till fjärrserver BLOCKERAD (se ROADMAP) |
 | Tailscale-värdförslag | ✅ `TailscaleStatus.swift` (fetch/fetchLocal) — LinuxApp OCH App/-UI (2026-07-08, Xcode-only; `fetchLocal` villkorsstyrd bort på iOS, `Foundation.Process` saknas där) |
 | S3-kompatibel objektlagring | ✅ `S3Client.swift` + `S3ConnectionStore` — LinuxApp OCH App/-UI (2026-07-08, Xcode-only) |
@@ -354,6 +354,42 @@ delvis andra, av konkreta skäl:
    — se "Uppskjutet med avsikt"-beslutet nedan.)
 
 ## Klart
+
+- **OpenSSH-certifikatautentisering i den NYA Rust/GTK4-`LinuxApp`**
+  (2026-08-05, `LinuxApp/src/ssh.rs` + auth-väljare i `main.rs`):
+  `HostAuth::CertificateFile` fanns redan som fält i datamodellen (wire-
+  kompatibelt med Swift-sidans `certificateFile`) men föll i praktiken
+  igenom till "autentiseringstypen stöds inte på Linux ännu" i
+  `ssh.rs`s `authenticate`-matchning — precis samma gap-mönster som
+  Tailscale/WireGuard/S3/Telnet/ssh-config-import, fast tidigare
+  odokumenterat eftersom fältet redan fanns och SÅG portat ut.
+  - russh har, till skillnad från swift-nio-ssh (vars SERVER-roll
+    upptäcktes att INTE kunna ta emot cert-auth alls, se statusraden
+    ovans notering — irrelevant för Bastion som alltid är klient, men
+    det gjorde att Swift-sidans egna tester aldrig kunde bevisa en
+    fullständig nätverksrundtur), FÖRSTKLASSIGT klientstöd:
+    `Handle::authenticate_openssh_cert` + `russh::keys::
+    load_openssh_certificate` — inget eget protokoll- eller
+    ASN.1/binärformatarbete behövdes.
+  - **Genuint bevisat mot en RIKTIG `sshd`** (`TrustedUserCAKeys`), inte
+    bara en offline-verifiering av att erbjudandet byggs rätt — till
+    skillnad från Swift-sidans engångsverifiering (som krävde en manuellt
+    startad lokal `sshd` och aldrig byggdes in permanent, se statusraden
+    ovan) är detta ett PERMANENT test i CI: tre riktiga
+    `ssh-keygen -s`-signerade certifikat, tre utfall (giltigt cert mot
+    betrodd CA + rätt principal → lyckas, fel principal → avvisas trots
+    betrodd CA, obetrodd CA → avvisas trots giltig principal).
+  - Ny auth-väljare i värdredigeringsdialogen (`show_host_dialog`) —
+    fanns tidigare INGEN uttrycklig väg att sätta `KeyFile`/
+    `CertificateFile` där alls (bara nyckeldistributionsflödet satte
+    `KeyFile`, implicit); ett mindre, sidoupptäckt gap som stängdes
+    samtidigt. Fyra lägen (SSH-agent/lösenord/nyckelfil/certifikat) med
+    filväljare (`gtk::FileDialog`) för sökvägsfälten. `KeychainKey`/
+    `BitwardenItem` (Apple-bara, synkade från en Apple-enhet) bevaras
+    uttryckligen om värden redigeras utan att auth-läget ändras — samma
+    opt-in-princip som nyckeldistributionens lösenordsborttagning.
+  - 3 nya tester (`ssh::tests::certificate_auth_*`), 147/147 `cargo test`
+    gröna totalt, `cargo build`/`clippy` helt tysta.
 
 - **Importera `~/.ssh/config` i den NYA Rust/GTK4-`LinuxApp`** (2026-08-05,
   `LinuxApp/src/ssh_config.rs`): fanns redan i Swift/CLI-sidan

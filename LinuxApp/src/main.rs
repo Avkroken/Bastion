@@ -774,6 +774,69 @@ fn show_host_dialog(
         .visible(false)
         .build();
 
+    // Auth-metod: bara de FYRA Linux-representerbara `HostAuth`-varianterna
+    // (`KeychainKey`/`BitwardenItem` är Apple/Keychain- respektive
+    // Bitwarden-specifika, se `ssh.rs`s modulkommentar) — motsvarar
+    // App/HostEditView.swifts auth-väljare. Tidigare fanns INGEN väg att
+    // uttryckligen sätta en nyckelfil eller ett certifikat i den här
+    // dialogen alls (bara nyckeldistributionsflödet kunde sätta `KeyFile`,
+    // implicit) — ett eget, mindre gap som upptäcktes samtidigt som
+    // certifikatauth-portningen.
+    let auth_row = adw::ComboRow::builder().title("Autentisering").build();
+    let auth_model = gtk::StringList::new(&[
+        "SSH-agent (standard)",
+        "Lösenord vid anslutning",
+        "Nyckelfil",
+        "OpenSSH-certifikat",
+    ]);
+    auth_row.set_model(Some(&auth_model));
+    let key_file_row = adw::EntryRow::builder().title("Sökväg till privat nyckel").build();
+    let key_file_browse = gtk::Button::from_icon_name("document-open-symbolic");
+    key_file_browse.add_css_class("flat");
+    key_file_browse.set_valign(gtk::Align::Center);
+    key_file_row.add_suffix(&key_file_browse);
+    let cert_file_row = adw::EntryRow::builder()
+        .title("Sökväg till certifikatfil (…-cert.pub)")
+        .build();
+    let cert_file_browse = gtk::Button::from_icon_name("document-open-symbolic");
+    cert_file_browse.add_css_class("flat");
+    cert_file_browse.set_valign(gtk::Align::Center);
+    cert_file_row.add_suffix(&cert_file_browse);
+    let auth_error_label = gtk::Label::builder()
+        .label("Ange sökväg(ar) för den valda auth-metoden")
+        .margin_start(12)
+        .margin_end(12)
+        .halign(gtk::Align::Start)
+        .css_classes(["error", "caption"])
+        .visible(false)
+        .build();
+
+    let update_auth_rows_visibility = clone!(
+        #[weak]
+        key_file_row,
+        #[weak]
+        cert_file_row,
+        move |selected: u32| {
+            key_file_row.set_visible(selected == 2 || selected == 3);
+            cert_file_row.set_visible(selected == 3);
+        }
+    );
+    update_auth_rows_visibility(0);
+    auth_row.connect_selected_notify(clone!(
+        #[strong]
+        update_auth_rows_visibility,
+        move |row| update_auth_rows_visibility(row.selected())
+    ));
+
+    // Bevaras uttryckligen om värden synkats in med Keychain-/Bitwarden-auth
+    // från en Apple-enhet — Linux har ingen motsvarighet, så dialogen ska
+    // varken kunna VÄLJA dem eller av misstag SKRIVA ÖVER dem bara för att
+    // användaren redigerade alias/värdnamn (samma opt-in-princip som
+    // nyckeldistributionens lösenordsborttagning, se `key_deploy.rs`).
+    let preserve_apple_only_auth = existing
+        .as_ref()
+        .is_some_and(|h| matches!(h.auth, host::HostAuth::KeychainKey(_) | host::HostAuth::BitwardenItem(_)));
+
     if let Some(h) = &existing {
         alias_row.set_text(&h.alias);
         host_row.set_text(&h.host_name);
@@ -787,7 +850,69 @@ fn show_host_dialog(
         if let Some(mac) = &h.mac_address {
             mac_row.set_text(mac);
         }
+        match &h.auth {
+            host::HostAuth::AgentDefault => auth_row.set_selected(0),
+            host::HostAuth::AskPassword => auth_row.set_selected(1),
+            host::HostAuth::KeyFile(path) => {
+                auth_row.set_selected(2);
+                key_file_row.set_text(path);
+            }
+            host::HostAuth::CertificateFile { key_path, cert_path } => {
+                auth_row.set_selected(3);
+                key_file_row.set_text(key_path);
+                cert_file_row.set_text(cert_path);
+            }
+            // Apple-bara — visas som agent-standard men rörs inte vid
+            // spara, se `preserve_apple_only_auth` ovan.
+            host::HostAuth::KeychainKey(_) | host::HostAuth::BitwardenItem(_) => {
+                auth_row.set_selected(0);
+            }
+        }
+        update_auth_rows_visibility(auth_row.selected());
     }
+
+    key_file_browse.connect_clicked(clone!(
+        #[weak]
+        app,
+        #[weak]
+        key_file_row,
+        move |_| {
+            let dialog = gtk::FileDialog::builder().title("Välj privat nyckel").build();
+            let parent_window = app.active_window();
+            glib::spawn_future_local(clone!(
+                #[weak]
+                key_file_row,
+                async move {
+                    if let Ok(file) = dialog.open_future(parent_window.as_ref()).await
+                        && let Some(path) = file.path()
+                    {
+                        key_file_row.set_text(&path.to_string_lossy());
+                    }
+                }
+            ));
+        }
+    ));
+    cert_file_browse.connect_clicked(clone!(
+        #[weak]
+        app,
+        #[weak]
+        cert_file_row,
+        move |_| {
+            let dialog = gtk::FileDialog::builder().title("Välj certifikatfil").build();
+            let parent_window = app.active_window();
+            glib::spawn_future_local(clone!(
+                #[weak]
+                cert_file_row,
+                async move {
+                    if let Ok(file) = dialog.open_future(parent_window.as_ref()).await
+                        && let Some(path) = file.path()
+                    {
+                        cert_file_row.set_text(&path.to_string_lossy());
+                    }
+                }
+            ));
+        }
+    ));
 
     let group = adw::PreferencesGroup::new();
     group.add(&alias_row);
@@ -796,6 +921,9 @@ fn show_host_dialog(
     group.add(&port_row);
     group.add(&platform_row);
     group.add(&mac_row);
+    group.add(&auth_row);
+    group.add(&key_file_row);
+    group.add(&cert_file_row);
 
     let page = adw::PreferencesPage::new();
     page.add(&group);
@@ -815,6 +943,7 @@ fn show_host_dialog(
     content.append(&header);
     content.append(&page);
     content.append(&mac_error_label);
+    content.append(&auth_error_label);
 
     let win = adw::Window::builder()
         .transient_for(&app.active_window().expect("inget aktivt fönster"))
@@ -851,6 +980,14 @@ fn show_host_dialog(
         mac_row,
         #[strong]
         mac_error_label,
+        #[strong]
+        auth_row,
+        #[strong]
+        key_file_row,
+        #[strong]
+        cert_file_row,
+        #[strong]
+        auth_error_label,
         move |_| {
             let alias = alias_row.text().to_string();
             let host_name = host_row.text().to_string();
@@ -878,6 +1015,31 @@ fn show_host_dialog(
                 2 => host::RemotePlatform::WindowsStandard,
                 _ => host::RemotePlatform::Posix,
             };
+            // Sökvägarna trimmas men rörs INTE i övrigt — de kan peka på
+            // vilken plats som helst, inte bara `~/.ssh` (samma
+            // resonemang som `ssh_config.rs`s `IdentityFile`-hantering).
+            let key_file = key_file_row.text().trim().to_string();
+            let cert_file = cert_file_row.text().trim().to_string();
+            let new_auth = match auth_row.selected() {
+                1 => Ok(host::HostAuth::AskPassword),
+                2 if !key_file.is_empty() => Ok(host::HostAuth::KeyFile(key_file)),
+                3 if !key_file.is_empty() && !cert_file.is_empty() => {
+                    Ok(host::HostAuth::CertificateFile {
+                        key_path: key_file,
+                        cert_path: cert_file,
+                    })
+                }
+                2 | 3 => Err(()),
+                _ => Ok(host::HostAuth::AgentDefault),
+            };
+            let new_auth = match new_auth {
+                Ok(a) => a,
+                Err(()) => {
+                    auth_error_label.set_visible(true);
+                    return;
+                }
+            };
+            auth_error_label.set_visible(false);
             let host = if let Some(mut h) = existing.clone() {
                 h.alias = alias;
                 h.host_name = host_name;
@@ -885,12 +1047,16 @@ fn show_host_dialog(
                 h.port = port;
                 h.platform = platform;
                 h.mac_address = mac_address;
+                if !preserve_apple_only_auth {
+                    h.auth = new_auth;
+                }
                 h
             } else {
                 let mut h = Host::new(alias, host_name, user);
                 h.port = port;
                 h.platform = platform;
                 h.mac_address = mac_address;
+                h.auth = new_auth;
                 h
             };
             // Se motiveringen vid `delete_action` ovan — en I/O-miss ska

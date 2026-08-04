@@ -8,10 +8,20 @@
 //! HostKeyValidator.swift.
 //!
 //! KÄND BEGRÄNSNING: bara `HostAuth::KeyFile` (utan lösenfras),
-//! `HostAuth::AgentDefault` (ssh-agent) och `HostAuth::AskPassword`
-//! (lösenord) stöds. `KeychainKey`/`CertificateFile`/`BitwardenItem` är
-//! Apple/Keychain- respektive Bitwarden-specifika och saknar en Linux-
-//! motsvarighet ännu.
+//! `HostAuth::AgentDefault` (ssh-agent), `HostAuth::AskPassword`
+//! (lösenord) och `HostAuth::CertificateFile` (OpenSSH-certifikat, se
+//! nedan) stöds. `KeychainKey`/`BitwardenItem` är Apple/Keychain-
+//! respektive Bitwarden-specifika och saknar en Linux-motsvarighet ännu.
+//!
+//! Certifikatautentisering (`HostAuth::CertificateFile`): russh har,
+//! till skillnad från swift-nio-ssh (se `ROADMAP.md`s notering om att
+//! NIOSSH-SERVERrollen inte kan TA EMOT cert-auth — irrelevant för oss
+//! som alltid är klient, men det gjorde att Swift-sidans egna tester
+//! aldrig kunde bevisa en fullständig nätverksrundtur), FÖRSTKLASSIGT
+//! stöd för att en klient ERBJUDER ett OpenSSH-certifikat
+//! (`Handle::authenticate_openssh_cert`, `russh::keys::
+//! load_openssh_certificate`) — inget eget protokollarbete behövs här
+//! heller.
 
 use crate::host::{Host, HostAuth};
 use crate::known_hosts::{KnownHosts, Verdict};
@@ -557,6 +567,17 @@ async fn authenticate(
                 .await
                 .map_err(|e| format!("lösenordsautentisering misslyckades: {e}"))?
         }
+        HostAuth::CertificateFile { key_path, cert_path } => {
+            let key = load_secret_key(key_path, None).map_err(|e| {
+                format!("kunde inte läsa nyckelfilen {key_path}: {e} (lösenfraser stöds inte än)")
+            })?;
+            let cert = russh::keys::load_openssh_certificate(cert_path)
+                .map_err(|e| format!("kunde inte läsa certifikatfilen {cert_path}: {e}"))?;
+            session
+                .authenticate_openssh_cert(&host.user, Arc::new(key), cert)
+                .await
+                .map_err(|e| format!("certifikat-autentisering misslyckades: {e}"))?
+        }
         other => {
             return Err(format!(
                 "autentiseringstypen {other:?} stöds inte på Linux ännu"
@@ -1005,5 +1026,255 @@ mod tests {
             !err.contains("jump-hosten"),
             "felet ska INTE felaktigt tillskrivas jump-hosten (den autentiserade rent), fick: {err}"
         );
+    }
+
+    /// Test-sshd konfigurerad för OpenSSH-certifikatautentisering
+    /// (`TrustedUserCAKeys`) i stället för `TestSshd`s `AuthorizedKeysFile`
+    /// — en helt annan sshd-konfiguration, så en egen struct i stället för
+    /// att grena `TestSshd`s `start()` på ett flaggargument.
+    struct TestCertSshd {
+        child: std::process::Child,
+        port: u16,
+        dir: std::path::PathBuf,
+    }
+
+    impl TestCertSshd {
+        /// `trusted_ca_pub`: den CA-publiknyckel sshd litar på. Ingen
+        /// `AuthorizedKeysFile` alls — bara certifikat signerade av denna
+        /// CA (och med en principal som matchar den efterfrågade
+        /// inloggningsanvändaren, sshds standardbeteende utan en
+        /// `AuthorizedPrincipalsFile`) accepteras.
+        fn start(trusted_ca_pub: &std::path::Path) -> Option<Self> {
+            let dir = std::env::temp_dir().join(format!(
+                "bastion-ssh-cert-sshd-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&dir).ok()?;
+
+            let host_key = dir.join("hostkey");
+            let status = std::process::Command::new("ssh-keygen")
+                .args(["-q", "-N", "", "-t", "ed25519", "-f"])
+                .arg(&host_key)
+                .status()
+                .ok()?;
+            if !status.success() {
+                return None;
+            }
+
+            let port = {
+                let l = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
+                l.local_addr().ok()?.port()
+            };
+            let config_path = dir.join("sshd_config");
+            std::fs::write(
+                &config_path,
+                format!(
+                    "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nTrustedUserCAKeys {}\n\
+                     PubkeyAuthentication yes\nPasswordAuthentication no\nUsePAM no\nStrictModes no\n\
+                     PidFile {}\n",
+                    host_key.display(),
+                    trusted_ca_pub.display(),
+                    dir.join("pid").display()
+                ),
+            )
+            .ok()?;
+
+            let child = std::process::Command::new("/usr/sbin/sshd")
+                .args(["-f"])
+                .arg(&config_path)
+                .args(["-D", "-e"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .ok()?;
+
+            for _ in 0..50 {
+                if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                    return Some(TestCertSshd { child, port, dir });
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            None
+        }
+    }
+
+    impl Drop for TestCertSshd {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// Genererar ett CA-nyckelpar + ett användarnyckelpar i `dir` och
+    /// signerar det senare med det förra (`ssh-keygen -s`, RIKTIGA
+    /// nycklar/signaturer — samma verktyg riktig OpenSSH-drift använder,
+    /// inget eget certifikatbygge). Returnerar
+    /// `(ca_pub_path, user_key_path, user_cert_path)`.
+    fn make_ca_and_signed_cert(
+        dir: &std::path::Path,
+        principal: &str,
+    ) -> Option<(std::path::PathBuf, std::path::PathBuf, std::path::PathBuf)> {
+        let ca_key = dir.join("ca_key");
+        if !std::process::Command::new("ssh-keygen")
+            .args(["-q", "-N", "", "-t", "ed25519", "-f"])
+            .arg(&ca_key)
+            .status()
+            .ok()?
+            .success()
+        {
+            return None;
+        }
+        let user_key = dir.join("user_key");
+        if !std::process::Command::new("ssh-keygen")
+            .args(["-q", "-N", "", "-t", "ed25519", "-f"])
+            .arg(&user_key)
+            .status()
+            .ok()?
+            .success()
+        {
+            return None;
+        }
+        let user_pub = dir.join("user_key.pub");
+        // OBS: `always:forever` (u64::MAX-sentinel) avvisas av `ssh-key`-
+        // kratet ("invalid time" — det representerar bara giltiga
+        // tidsstämplar upp till `i64::MAX` sekunder). "-5m:+1h" räcker
+        // gott och gällt för ett test som körs på sekunder, och undviker
+        // klockskevhet mot `-5m`.
+        if !std::process::Command::new("ssh-keygen")
+            .arg("-s")
+            .arg(&ca_key)
+            .args(["-I", "bastion-test-cert", "-n", principal, "-V", "-5m:+1h"])
+            .arg(&user_pub)
+            .status()
+            .ok()?
+            .success()
+        {
+            return None;
+        }
+        Some((dir.join("ca_key.pub"), user_key, dir.join("user_key-cert.pub")))
+    }
+
+    /// GENUIN certifikatautentisering mot en RIKTIG sshd (inte en offline-
+    /// verifiering av att erbjudandet byggs rätt, som Swift-sidans
+    /// `OpenSSHCertificateAuthTests` var tvungna att nöja sig med — se
+    /// `ROADMAP.md`s notering om att swift-nio-ssh SERVER-rollen inte kan ta
+    /// emot cert-auth alls. Ett riktigt `sshd` hanterar det fullt ut, så
+    /// hela vägen — signera certifikatet, erbjud det, sshd verifierar CA +
+    /// principal — bevisas här, som ett permanent CI-test.
+    #[tokio::test]
+    async fn certificate_auth_succeeds_with_a_valid_cert_and_trusted_ca() {
+        let dir = std::env::temp_dir().join(format!("bastion-cert-ok-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let user = whoami_user();
+        let Some((ca_pub, key_path, cert_path)) = make_ca_and_signed_cert(&dir, &user) else {
+            eprintln!("hoppar: ssh-keygen ej tillgängligt i den här miljön");
+            return;
+        };
+        let Some(sshd) = TestCertSshd::start(&ca_pub) else {
+            eprintln!("hoppar: kunde inte starta en test-sshd i den här miljön");
+            return;
+        };
+
+        let mut host = Host::new("cert-ok".into(), "127.0.0.1".into(), user);
+        host.port = sshd.port as i64;
+        host.auth = HostAuth::CertificateFile {
+            key_path: key_path.to_string_lossy().into_owned(),
+            cert_path: cert_path.to_string_lossy().into_owned(),
+        };
+
+        let output = run_command(host, None, "echo bastion-cert-auth-ok".to_string(), None)
+            .recv_blocking()
+            .expect("kanalen stängdes utan svar")
+            .expect("certifikatautentiseringen skulle ha lyckats mot en betrodd CA + rätt principal");
+        assert_eq!(output.trim(), "bastion-cert-auth-ok");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Ett certifikat vars principal INTE matchar inloggningsanvändaren ska
+    /// avvisas, trots att CA:n i sig är betrodd — sshd matchar principal
+    /// mot den efterfrågade användaren (ingen `AuthorizedPrincipalsFile`
+    /// konfigurerad här, så standardbeteendet gäller).
+    #[tokio::test]
+    async fn certificate_auth_fails_with_a_wrong_principal() {
+        let dir = std::env::temp_dir().join(format!("bastion-cert-wrongp-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let user = whoami_user();
+        let Some((ca_pub, key_path, cert_path)) =
+            make_ca_and_signed_cert(&dir, "nagon-annan-anvandare")
+        else {
+            eprintln!("hoppar: ssh-keygen ej tillgängligt i den här miljön");
+            return;
+        };
+        let Some(sshd) = TestCertSshd::start(&ca_pub) else {
+            eprintln!("hoppar: kunde inte starta en test-sshd i den här miljön");
+            return;
+        };
+
+        let mut host = Host::new("cert-wrong-principal".into(), "127.0.0.1".into(), user);
+        host.port = sshd.port as i64;
+        host.auth = HostAuth::CertificateFile {
+            key_path: key_path.to_string_lossy().into_owned(),
+            cert_path: cert_path.to_string_lossy().into_owned(),
+        };
+
+        let err = run_command(host, None, "echo ska-aldrig-koras".to_string(), None)
+            .recv_blocking()
+            .expect("kanalen stängdes utan svar")
+            .expect_err("certifikat med fel principal ska avvisas, inte accepteras");
+        assert!(
+            err.contains("misslyckades") || err.contains("avvisade"),
+            "felet ska vara tydligt, fick: {err}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Ett certifikat signerat av en CA sshd INTE litar på ska avvisas,
+    /// trots giltig principal — annars vore `TrustedUserCAKeys` verkningslös.
+    #[tokio::test]
+    async fn certificate_auth_fails_with_an_untrusted_ca() {
+        let dir = std::env::temp_dir().join(format!("bastion-cert-untrusted-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let user = whoami_user();
+        // Certifikatet signeras med en ANNAN CA än den sshd konfigureras
+        // att lita på (nedan) — bara `trusted_dir`s ca_key.pub hamnar i
+        // `TrustedUserCAKeys`.
+        let untrusted_dir = dir.join("untrusted-ca");
+        std::fs::create_dir_all(&untrusted_dir).unwrap();
+        let Some((_untrusted_ca_pub, key_path, cert_path)) =
+            make_ca_and_signed_cert(&untrusted_dir, &user)
+        else {
+            eprintln!("hoppar: ssh-keygen ej tillgängligt i den här miljön");
+            return;
+        };
+        let trusted_dir = dir.join("trusted-ca");
+        std::fs::create_dir_all(&trusted_dir).unwrap();
+        let Some((trusted_ca_pub, _unused_key, _unused_cert)) =
+            make_ca_and_signed_cert(&trusted_dir, &user)
+        else {
+            eprintln!("hoppar: ssh-keygen ej tillgängligt i den här miljön");
+            return;
+        };
+        let Some(sshd) = TestCertSshd::start(&trusted_ca_pub) else {
+            eprintln!("hoppar: kunde inte starta en test-sshd i den här miljön");
+            return;
+        };
+
+        let mut host = Host::new("cert-untrusted-ca".into(), "127.0.0.1".into(), user);
+        host.port = sshd.port as i64;
+        host.auth = HostAuth::CertificateFile {
+            key_path: key_path.to_string_lossy().into_owned(),
+            cert_path: cert_path.to_string_lossy().into_owned(),
+        };
+
+        let err = run_command(host, None, "echo ska-aldrig-koras".to_string(), None)
+            .recv_blocking()
+            .expect("kanalen stängdes utan svar")
+            .expect_err("certifikat från en obetrodd CA ska avvisas, inte accepteras");
+        assert!(
+            err.contains("misslyckades") || err.contains("avvisade"),
+            "felet ska vara tydligt, fick: {err}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
