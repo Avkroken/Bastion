@@ -33,7 +33,7 @@ delvis andra, av konkreta skäl:
 | known_hosts / TOFU (SHA256-fingeravtryck, MITM-skydd) | ✅ testad, `~/.bastion/known_hosts` |
 | ssh-config-parsing (`Host`-alias, jokertecken, `IdentityFile`) | ✅ testad, CLI slår upp alias |
 | Host-databas (JSON, taggar, CRUD) | ✅ testad, `~/.bastion/hosts.json` |
-| Dashboard-data (last/minne/disk/uptime/OS/Docker via SSH) | ✅ parser testad, ett kommando |
+| Dashboard-data (last/minne/disk/uptime/OS/Docker via SSH) | ✅ parser testad, ett kommando — App/-UI (Xcode-only) — ✅ (2026-08-05) LinuxApp Rust (`dashboard.rs`), egen flik, ingen auto-poll än (se "Klart") |
 | Docker-åtgärder (lista/start/stopp/omstart/logg) | ✅ testad, injektionssäker referens |
 | Sync mellan enheter (LWW-merge + gravstenar, mapp-transport) | ✅ testad, konvergens bevisad |
 | E2E-krypterad sync (AES-256-GCM + PBKDF2, testvektorer) | ✅ testad, chiffertext läcker inget |
@@ -354,6 +354,34 @@ delvis andra, av konkreta skäl:
    — se "Uppskjutet med avsikt"-beslutet nedan.)
 
 ## Klart
+
+- **Systemöversikt (dashboard) i den NYA Rust/GTK4-`LinuxApp`**
+  (2026-08-05, `LinuxApp/src/dashboard.rs`): fanns i Swift-sidan
+  (`Sources/SSHCore/SystemProbe.swift` + `App/DashboardView.swift`) men
+  aldrig porterad — genuint SAKNAD funktion (`grep`-sökning på
+  "dashboard" i `LinuxApp/src/*.rs` gav noll träffar innan denna PR),
+  till skillnad från cert-auth/terminalteman som var mer subtila luckor.
+  - Samma agentlösa teknik som Swift-sidan: ETT sammansatt kommando
+    (`echo @@SEKTION; kommando; …`) ger en hel ögonblicksbild (last,
+    minne, disk, drifttid, OS, kärna, värdnamn, kärnantal, Docker) i EN
+    round-trip — `@@`-markörer skiljer utdata åt, parsad med rena
+    funktioner (sträng → struct), inte regex.
+    `df -kP`/`/proc/loadavg`/`/proc/meminfo`/`/etc/os-release` läses
+    rakt av, exakt samma källor som `SystemProbe.swift`.
+    Docker-containrar sväljs tyst (`2>/dev/null`) om verktyget saknas —
+    ingen felrad för det som förväntas kunna saknas.
+    4 tester porterade rakt av från `Tests/SSHCoreTests/
+    SystemProbeTests.swift` (samma fixtur, verklig Ubuntu-utdata).
+  - Ny "Systemöversikt"-post i värdmenyn (host-åtgärder) — till skillnad
+    från Docker/Snippets/SFTP/Tunnel/Nyckel har Swift-sidans
+    `AppSettings.swift` INGEN `showDashboard`-togglingsbar inställning,
+    så posten är alltid synlig, inte styrd av `FeatureToggles`. Öppnas
+    som en egen flik (samma mönster som Docker-vyn) med en
+    uppdateringsknapp.
+  - **Kvar**: ingen auto-poll (Swift-sidans `DashboardModel.
+    startPolling()`, 15 s intervall) än — bara manuell uppdatering via
+    knappen. 156/156 `cargo test` gröna totalt, `cargo build`/`clippy`
+    helt tysta.
 
 - **Terminalfärgteman i den NYA Rust/GTK4-`LinuxApp`** (2026-08-05,
   `LinuxApp/src/terminal_theme.rs`): fanns i Swift-sidan
