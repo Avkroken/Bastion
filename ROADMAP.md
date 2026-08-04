@@ -1399,12 +1399,22 @@ Inget nytt att bygga, bara verifiera/lansera:
   omuppladdning ignoreras medvetet (SFTP v3 saknar en egen "finns
   redan"-statuskod, den kom i v6 — se kodkommentar). Kan inte byggas/
   verifieras här (Xcode-only), verifierad av `xcode.yml`-CI:t.
-  **Kvar**: LinuxApp-motsvarigheten (SwiftCrossUIs `Gtk`-paket saknar en
-  färdig Swift-omslag för GTK4:s `GtkDropTarget`, till skillnad från
-  `CSSProvider` — skulle kräva rå GObject/C-interop-kod, medvetet
-  avvaktat tills det känns värt tiden), flerval för komprimering,
-  förhandsvisning (t.ex. bilder), syntax highlighting (se separat post
-  nedan).
+  **LinuxApp-motsvarigheten klar** (2026-08-04, `sftp::upload_path_recursive`
+  + `gtk::DropTarget` i `open_sftp_view`): den ursprungliga blockeraren
+  (SwiftCrossUIs `Gtk`-paket saknade en färdig omslag för GTK4:s
+  `GtkDropTarget`) gäller inte längre — gtk4-rs (den nya, native
+  Rust-porten) har `DropTarget`/`gdk::FileList` direkt, ingen egen
+  GObject/C-interop behövdes. Släpp av filer/mappar från filhanteraren rakt
+  in i SFTP-vyns aktuella katalog laddar upp dem via SAMMA `SftpHandle`
+  som resten av vyn använder; mappar laddas upp REKURSIVT (`mkdir` +
+  rekursiv katalogvandring, samma `mkdir`-fel-ignoreras-medvetet-motivering
+  som Swift-sidan — SFTP v3 saknar en "finns redan"-statuskod). Testat
+  genuint end-to-end mot en fristående test-sshd: en lokal katalogstruktur
+  (rot-fil + underkatalog med egen fil) laddas upp och läses tillbaka,
+  bevisar både rekursionen och att innehållet överlever hela resan — inte
+  bara ett plant enfilsfall. Byggd och körd under Xvfb utan krasch.
+  **Kvar**: flerval för komprimering, förhandsvisning (t.ex. bilder),
+  syntax highlighting (se separat post nedan).
 - Inbyggd editor med syntax highlighting
 - Plugin-system (Proxmox, TrueNAS, Unraid, Cloudflare, GitHub, Kubernetes)
 - **Agent Forwarding**: ✅ agent-PROTOKOLLKLIENTEN klar (2026-07-07,
