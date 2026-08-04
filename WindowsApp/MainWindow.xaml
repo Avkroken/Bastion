@@ -18,16 +18,26 @@
             <StackPanel Grid.Row="0" Orientation="Horizontal" Padding="12,8" Spacing="8">
                 <TextBlock Text="Värdar" FontSize="18" VerticalAlignment="Center" HorizontalAlignment="Stretch" />
                 <Button x:Name="SyncButton" Content="&#xE895;" FontFamily="Segoe MDL2 Assets" Click="OnSyncClicked" ToolTipService.ToolTip="Synk" />
+                <Button x:Name="SettingsButton" Content="&#xE713;" FontFamily="Segoe MDL2 Assets" Click="OnSettingsClicked" ToolTipService.ToolTip="Funktioner" />
                 <Button x:Name="AddHostButton" Content="+" Click="OnAddHostClicked" HorizontalAlignment="Right" />
             </StackPanel>
 
             <ListView x:Name="HostListView" Grid.Row="1" SelectionMode="None" ItemClick="OnHostItemClicked" IsItemClickEnabled="True">
                 <ListView.ItemTemplate>
                     <DataTemplate>
-                        <StackPanel Margin="8,4">
-                            <TextBlock Text="{Binding Alias}" FontWeight="SemiBold" />
-                            <TextBlock Text="{Binding Subtitle}" Opacity="0.7" FontSize="12" />
-                        </StackPanel>
+                        <Grid Margin="8,4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding Alias}" FontWeight="SemiBold" />
+                                <TextBlock Text="{Binding Subtitle}" Opacity="0.7" FontSize="12" />
+                            </StackPanel>
+                            <Button Grid.Column="1" Content="&#xE712;" FontFamily="Segoe MDL2 Assets"
+                                    VerticalAlignment="Center" ToolTipService.ToolTip="Mer"
+                                    Click="OnHostMoreButtonClicked" Tag="{Binding}" />
+                        </Grid>
                     </DataTemplate>
                 </ListView.ItemTemplate>
             </ListView>
@@ -37,11 +47,15 @@
             <StackPanel x:Name="PlaceholderPanel" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8">
                 <TextBlock Text="Bastion" FontSize="28" HorizontalAlignment="Center" />
                 <TextBlock x:Name="ContentPlaceholder"
-                           Text="Ingen session öppen — välj en värd i listan."
+                           Text="Inga sessioner öppna — välj en värd i listan."
                            Opacity="0.7"
                            HorizontalAlignment="Center" />
             </StackPanel>
-            <WebView2 x:Name="TerminalView" Visibility="Collapsed" />
+            <TabView x:Name="SessionTabView"
+                     Visibility="Collapsed"
+                     TabWidthMode="Equal"
+                     CanReorderTabs="True"
+                     TabCloseRequested="OnTabCloseRequested" />
         </Grid>
     </Grid>
 </Window>

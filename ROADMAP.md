@@ -2087,10 +2087,56 @@ verifierat).** Stänger gapet mot LinuxApps femtonde pass.
 
 69/69 `dotnet test` gröna totalt.
 
-**Kvar för full WindowsApp-paritet med LinuxApp**: rå tangentbordsinput,
-fler HostAuth-typer (SSH.NET saknar agent-protokoll). Med detta har
-WindowsApp samma FUNKTIONSYTA som LinuxApp (Docker/Kommandon/Snippets/
-SFTP+chmod/chown/arkiv/Sync+kryptering/Funktioner-toggles) — men **hela
-UI-lagret (`MainWindow.xaml`/`.xaml.cs`, TabView-skalet) har ännu INTE
-kompilerats eller renderats en enda gång**, se separat verifieringsarbete
-nedan.
+**WindowsApp: hela ovanstående (SFTP/Funktioner/Docker/Snippets/
+Kommandobibliotek/arkiv + multi-flik-UI) hämtat in, granskat, fixat och
+delvis verifierat** (2026-08-04). Låg tidigare oreviderat och otestat på
+en parkerad lokal gren (`wip/windowsapp-csharp`, aldrig pushad) — inget av
+det ovan var faktiskt bekräftat innan den här omgången.
+
+- **Bastion.Core-lagret (SftpBrowserSession/AppSettings/DockerService/
+  Snippet/CommandLibrary/ArchiveOperations)**: byggt och `dotnet test`-
+  verifierat GRÖNT (82/82), inklusive FYRA genuina end-to-end-tester mot
+  en riktig, fristående `sshd`-process (ny `TestSshd`-hjälpare, samma
+  teknik som `LinuxApp/src/port_forward.rs::TestSshd` — kringgår samma
+  `DenyUsers claude`-spärr som redan dokumenterats för `ssh.rs`/`sftp.rs`s
+  ignorerade tester). Fixat INNAN commit (fanns i den parkerade koden,
+  aldrig tidigare granskat): `AppSettingsStore`/`SnippetStore` skrev
+  icke-atomärt och kollapsade en korrupt fil till tysta standardvärden —
+  samma mönster som redan fixats i `HostStore`/LinuxApp:s host.rs/
+  settings.rs tidigare i PR #216, applicerat här också nu (ny delad
+  `FsUtil.AtomicWrite`).
+- **`MainWindow.xaml`/`.xaml.cs`-UI-lagret**: skrivet om till en riktig
+  multi-flik-arkitektur (`TabView`, en `WebView2`/session per flik —
+  ersätter den gamla enda-delad-`WebView2`-modellen helt, se `git log`
+  för den commit som gjorde det). Manuellt granskad rad för rad (kan INTE
+  byggas/köras här — `XamlCompiler.exe` är en Windows-binär, bekräftat
+  `Exec format error` vid försök). Fyra buggar hittade och fixade under
+  granskningen (ingen av dem tidigare känd/dokumenterad, upptäckta HÄR):
+  1. "Synka nu" körde `_store.Sync(...)` synkront på UI-tråden — samma
+     GTK/WinUI-frysningsbugg som redan fixats i LinuxApp/den gamla
+     MainWindow.xaml.cs. Flyttad till `Task.Run`.
+  2. Terminalflikens `EnsureCoreWebView2Async`/`Navigate` hade inget
+     try/catch och läste aldrig `NavigationCompletedEventArgs.IsSuccess`
+     — samma bugg som redan fixats i den gamla enda-session-koden,
+     återintroducerad av omskrivningen. Samma fix (try/catch/finally,
+     kollar IsSuccess) applicerad igen.
+  3. En session som stängdes NORMALT (fjärrskalet avslutade sig självt,
+     inte användaren som stängde fliken) disponerade ALDRIG den
+     underliggande `SshSession`/socketen trots en kommentar som påstod
+     motsatsen — en riktig resursläcka per avslutad session. Fixat:
+     `OnSessionClosed` disponerar nu explicit, med en `ReferenceEquals`-
+     kontroll mot `tab.Tag` (nollställs av BÅDA vägarna) som skydd mot en
+     dubbeldisponering-race mot `OnTabCloseRequested`.
+  4. Fyra av sex SFTP-skrivåtgärder i Filer-fliken (ny mapp/döp om/
+     rättigheter/ta bort) körde SSH.NET-anropen direkt på UI-tråden
+     istället för via `Task.Run` — bara läsa/skriva/lista/komprimera/
+     packa-upp gjorde det redan rätt. Samma inkonsekvens-mönster som #1,
+     fixat på alla fyra ställen.
+
+**Kvar**: rå tangentbordsinput, fler HostAuth-typer (SSH.NET saknar
+agent-protokoll), och — det enda som faktiskt kräver Windows-hårdvara/en
+VM för att stänga helt — en RIKTIG kompilering+körning av
+`MainWindow.xaml`/`.xaml.cs` (WinUI3s XAML-kompilator finns bara på
+Windows). Med Bastion.Core-lagret verifierat och UI-lagret manuellt
+granskat rad för rad är risken låg, men "manuellt granskad" är inte
+samma sak som "körd".
