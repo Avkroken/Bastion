@@ -355,6 +355,22 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **Numrerade fliktitlar för flera samtidiga sessioner mot SAMMA värd i
+  den NYA Rust/GTK4-`LinuxApp`** (2026-08-05, `main.rs`,
+  `unique_session_tab_title`): `AdwTabView` gav redan LinuxApp hela
+  grundfunktionen `App/MultiSessionView.swift` beskriver (flera samtidigt
+  anslutna sessioner, bakgrundsflikar rivs inte ner, flikbyte) — den enda
+  verkliga luckan var `displayLabel`s specifika UX-regel: en andra/tredje
+  session mot SAMMA värd (t.ex. via "Ny flik" i SFTP-/nyckeldistributions-
+  vyerna, eller att dubbelklicka samma rad igen) fick tidigare en flik med
+  EXAKT samma titel som den första, omöjlig att skilja åt i flikraden.
+  - Räknar befintliga flikar (`AdwTabView::pages()`) vars titel är
+    `alias` eller `alias (N)` innan en ny flik döps — första sessionen
+    mot en värd förblir odekorerad, andra blir "(2)", tredje "(3)" osv.,
+    samma numreringsprincip som Swift-sidans `displayLabel`.
+  - Ingen ny modul/inga nya tester — ren GTK-limkod, verifierad via
+    `cargo build` (156/156 `cargo test` fortsatt gröna, `clippy` tyst).
+
 - **Systemöversikt (dashboard) i den NYA Rust/GTK4-`LinuxApp`**
   (2026-08-05, `LinuxApp/src/dashboard.rs`): fanns i Swift-sidan
   (`Sources/SSHCore/SystemProbe.swift` + `App/DashboardView.swift`) men
