@@ -152,7 +152,25 @@ jobs:
         # prompten, se kommentaren nedan) åt upp hela jobbets 20-minuters-
         # tak innan felet syntes någonstans (CI-fynd) — ett kort steg-eget
         # tak ger ett snabbt, tydligt fel i stället.
-        timeout-minutes: 5
+        #
+        # CI-fynd (2026-08-04, tredje körningen på PR #241): steget tog
+        # fortfarande hela 5-minuterstaket EFTER DEBIAN_FRONTEND/
+        # NEEDRESTART_MODE-fixen ovan (`-qq` dolde all output, så det gick
+        # inte att se om det satt fast eller bara var långsamt). Troligaste
+        # förklaringen: den fräscha `ubuntu:24.04`-containern har ingen
+        # apt-cache/proxy (till skillnad från byggvärdens EGEN
+        # apt-get-installation två steg upp, som tar ~25 s för en jämförbar
+        # GTK4-paketmängd tack vare runnerns paketcache) — ett fullt
+        # GTK4/libadwaita/VTE4+X11-skrivbordsträd över öppna internet kan
+        # rimligen ta längre än 5 minuter, inte bara hänga. Åtgärdat med:
+        # (1) `--no-install-recommends` för att undvika onödiga extra-paket,
+        # (2) `</dev/null` på varje apt-get-anrop som ett billigt skydd om
+        # någon prompt ändå läser stdin, (3) tidsstämplad progress-output
+        # (utan `-qq`) så nästa körnings logg visar VILKET kommando som
+        # faktiskt tar tiden i stället för att vara helt tyst, (4) taket
+        # höjt 5 → 12 minuter — fortfarande långt under jobbets 20-minuters-
+        # gräns, men rum för en kall paketinstallation.
+        timeout-minutes: 12
         run: |
           set -euo pipefail
           docker run --rm -v "$PWD/dist-out:/dist-out:ro" \
@@ -166,9 +184,13 @@ jobs:
             # container utan TTY (CI-fynd — `xvfb-run`-bytet till manuell
             # Xvfb ovan löste INTE detta, roten var apt-installationen
             # själv, inte GUI-uppstarten).
-            apt-get update -qq
-            apt-get install -y -qq /dist-out/*.deb
-            apt-get install -y -qq xvfb dbus-x11
+            echo "[$(date -u +%H:%M:%S)] apt-get update"
+            apt-get update -q </dev/null
+            echo "[$(date -u +%H:%M:%S)] installerar bastion-linuxapp + beroenden"
+            apt-get install -y -q --no-install-recommends /dist-out/*.deb </dev/null
+            echo "[$(date -u +%H:%M:%S)] installerar xvfb + dbus-x11"
+            apt-get install -y -q --no-install-recommends xvfb dbus-x11 </dev/null
+            echo "[$(date -u +%H:%M:%S)] apt klar"
 
             # `xvfb-run -a` HÄNGDE hela jobbet till 20-minuters-taket i
             # CI (ingen output, ingen krasch, bara tyst — CI-fynd) — samma
@@ -189,6 +211,7 @@ jobs:
               cat /tmp/app.log
               exit 1
             fi
+            echo "[$(date -u +%H:%M:%S)] bastion-linuxapp lever, städar upp"
             kill "$APP_PID" 2>/dev/null || true
             kill "$XVFB_PID" 2>/dev/null || true
           '
