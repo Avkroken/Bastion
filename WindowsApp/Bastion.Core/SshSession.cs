@@ -67,7 +67,7 @@ public sealed class SshSession : IDisposable
     /// den vid liv genom `using` bara under den synkrona `Connect()`/
     /// `Execute()`-anropet, där SSH.NET faktiskt signerar via den.
     /// </summary>
-    private static SshAgentClient? ConnectAgentIfNeeded(Host host) =>
+    internal static SshAgentClient? ConnectAgentIfNeeded(Host host) =>
         host.Auth is HostAuth.AgentDefault ? SshAgentClient.Connect() : null;
 
     /// <summary>
@@ -130,7 +130,8 @@ public sealed class SshSession : IDisposable
     /// <summary>Kör ETT kommando över en fristående anslutning (motsvarar ssh::run_command).</summary>
     public static string RunCommand(Host host, string? password, KnownHosts knownHosts, string command)
     {
-        var auth = BuildAuthenticationMethod(host, password);
+        using var agent = ConnectAgentIfNeeded(host);
+        var auth = BuildAuthenticationMethod(host, password, agent);
         var connectionInfo = new ConnectionInfo(host.HostName, (int)host.Port, host.User, auth);
         using var client = new SshClient(connectionInfo);
         client.HostKeyReceived += MakeHostKeyHandler(host, knownHosts, throwOnChange: false);

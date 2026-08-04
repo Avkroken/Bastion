@@ -83,8 +83,16 @@ public sealed class SshAgentClient : IDisposable
         var (type, payload) = ReadFrame();
         if (type != IdentitiesAnswerMessage) return [];
 
+        // Samma gräns som OpenSSH sätter för antal identiteter i ett svar —
+        // förhindrar att en trasig/skadlig `count` (t.ex. 0xFFFFFFFF)
+        // orsakar en jättelik `List<>`-preallokering (CodeRabbit-fynd).
+        const uint maxIdentities = 2048;
         var reader = new SshWireReader(payload);
         var count = reader.ReadUInt32();
+        if (count > maxIdentities)
+        {
+            throw new IOException($"ssh-agent uppgav ett orimligt antal identiteter ({count})");
+        }
         var result = new List<(byte[], string)>((int)count);
         for (var i = 0; i < count; i++)
         {
@@ -155,6 +163,14 @@ public sealed class SshAgentClient : IDisposable
         _stream.Flush();
     }
 
+    // Samma gräns som OpenSSHs egen ssh-agent-klient sätter för ett svar —
+    // en lokal agent ska ALDRIG svara med mer än detta, så en längre
+    // uppgiven ram är ett tecken på ett trasigt/skadligt svar, inte ett
+    // legitimt stort paket (CodeRabbit-fynd: en obegränsad `(int)length`-
+    // cast innan allokering kunde annars kastas ett `OverflowException`/
+    // `OutOfMemoryException` istället för ett tydligt protokollfel).
+    private const int MaxReplyBytes = 256 * 1024;
+
     private (byte Type, byte[] Payload) ReadFrame()
     {
         var lengthPrefix = ReadExact(4);
@@ -162,6 +178,10 @@ public sealed class SshAgentClient : IDisposable
         if (length == 0)
         {
             return (FailureMessage, []);
+        }
+        if (length > MaxReplyBytes)
+        {
+            throw new IOException($"ssh-agent-svaret uppgav en orimligt stor ramlängd ({length} byte) — avvisat som ett trasigt/skadligt svar");
         }
         var body = ReadExact((int)length);
         return (body[0], body[1..]);
@@ -183,13 +203,25 @@ public sealed class SshAgentClient : IDisposable
     public void Dispose() => _stream.Dispose();
 }
 
-/// <summary>Läser SSH-protokollets grundläggande wire-typer (uint32, längdprefixad sträng) ur en bytebuffert.</summary>
+/// <summary>
+/// Läser SSH-protokollets grundläggande wire-typer (uint32, längdprefixad
+/// sträng) ur en bytebuffert. Kontrollerar ÅTERSTÅENDE längd innan varje
+/// läsning/slice — ett trasigt/skadligt agent-svar med en uppgiven
+/// stränglängd längre än vad som faktiskt finns kvar i bufferten hade
+/// annars kastat ett ospecifikt `ArgumentOutOfRangeException` från
+/// span-indexeringen i stället för ett tydligt protokollfel
+/// (CodeRabbit-fynd).
+/// </summary>
 internal ref struct SshWireReader(ReadOnlySpan<byte> data)
 {
     private ReadOnlySpan<byte> _data = data;
 
     public uint ReadUInt32()
     {
+        if (_data.Length < 4)
+        {
+            throw new IOException("ssh-agent-svaret klipptes av mitt i ett uint32-fält");
+        }
         var value = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(_data);
         _data = _data[4..];
         return value;
@@ -197,9 +229,13 @@ internal ref struct SshWireReader(ReadOnlySpan<byte> data)
 
     public byte[] ReadString()
     {
-        var length = (int)ReadUInt32();
-        var value = _data[..length].ToArray();
-        _data = _data[length..];
+        var length = ReadUInt32();
+        if (length > (uint)_data.Length)
+        {
+            throw new IOException("ssh-agent-svaret uppgav en strängängd längre än återstående data");
+        }
+        var value = _data[..(int)length].ToArray();
+        _data = _data[(int)length..];
         return value;
     }
 }
@@ -236,7 +272,28 @@ public sealed class AgentHostAlgorithm(SshAgentClient agent, byte[] publicKeyBlo
 {
     public override byte[] Data => publicKeyBlob;
 
-    public override byte[] Sign(byte[] data) => agent.Sign(publicKeyBlob, data);
+    /// <summary>
+    /// SSH.NET tilldelar `Sign`s returvärde RAKT AV till
+    /// `RequestMessagePublicKey.Signature` (se t.ex.
+    /// `KeyHostAlgorithm.Sign` i SSH.NET-källan) — det förväntas alltså
+    /// redan vara den SSH-KODADE signatur-bloben (format-namn +
+    /// signaturbytes, båda som wire-strängar), INTE de råa signatur-
+    /// bytesen `SshAgentClient.Sign` returnerar. Att skicka de råa bytesen
+    /// direkt (tidigare bugg — CodeRabbit-fynd) hade gett en ogiltig
+    /// USERAUTH_REQUEST-signatur och agent-autentisering hade ALDRIG
+    /// lyckats, trots att både agent-protokollet och SSH.NET-anropet såg
+    /// rätt ut var för sig.
+    /// </summary>
+    public override byte[] Sign(byte[] data)
+    {
+        var rawSignature = agent.Sign(publicKeyBlob, data);
+        var writer = new SshWireWriter();
+        writer.WriteString(System.Text.Encoding.ASCII.GetBytes(Name));
+        writer.WriteString(rawSignature);
+        var signature = new byte[writer.Length];
+        writer.CopyTo(signature);
+        return signature;
+    }
 
     /// <summary>
     /// Aldrig anropad i den KLIENTSIDA-autentiseringsvägen (SSH.NET
