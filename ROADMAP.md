@@ -527,8 +527,27 @@ delvis andra, av konkreta skäl:
     klistra in nyckeln + en egen "Importera + deploya + verifiera"-knapp
     som återanvänder samma deploy/verifiera/adoptera-flöde som
     generera-ny-knappen. Byggd och körd under Xvfb utan krasch.
-    **Kvar**: `Host.platform`/Windows-mål (LinuxApp har inget platform-fält
-    alls än — bara POSIX-fjärrsystem stöds för `deploy_command`).
+    **`Host.platform`/Windows-mål klart** (2026-08-04,
+    `key_deploy::deploy_command_for_host`/`deploy_command_windows`): `Host`
+    hade redan ett `platform: RemotePlatform`-fält (för wire-format-
+    kompatibilitet med Swift/WindowsApp) men det lästes tidigare aldrig av
+    något i LinuxApp — `deploy_command` antog alltid POSIX. Windows-grenen
+    bygger samma `powershell -EncodedCommand`-kommando (hela skriptet
+    Base64/UTF-16LE-kodat, kringgår dubbel skal-citering helt) som Swifts
+    `deployPublicKeyCommandWindows`: `.windowsAdmin` skriver
+    `C:\ProgramData\ssh\administrators_authorized_keys` + låser ner ACL:er
+    (`icacls`) eftersom Win32-OpenSSH annars vägrar filen helt för
+    adminkonton, `.windowsStandard` skriver `$env:USERPROFILE\.ssh\
+    authorized_keys` utan ACL-krav. Ny `base64`-direktberoende (fanns bara
+    transitivt tidigare). Ny "Fjärrsystem"-väljare (Linux/macOS/Windows-
+    adminkonto/Windows-standardkonto) i värdredigeringsdialogen.
+    Testat: det genererade PowerShell-skriptet avkodas tillbaka och
+    verifieras innehålla rätt sökväg/ACL-hantering/citerad nyckelrad (ingen
+    riktig Windows-värd tillgänglig i den här sandlådan för ett fullt
+    end-to-end-test — samma begränsning som WindowsApp/MainWindow.xaml.cs,
+    se ROADMAP-posten om `wip/windowsapp-csharp`). Byggd och körd under
+    Xvfb utan krasch, väljaren verifierad interaktivt (öppnar/visar alla
+    tre alternativ korrekt).
   - **App/-flödet klart** (2026-07-08, `App/KeyDeployView.swift`): samma
     generera→deploya→verifiera-ordning, men lagrar nyckeln i Keychain
     (`.keychainKey`, samma ID-schema `host-key-<uuid>` som `HostEditView`

@@ -438,12 +438,23 @@ fn show_host_dialog(
     let host_row = adw::EntryRow::builder().title("Värdnamn/IP").build();
     let user_row = adw::EntryRow::builder().title("Användare").build();
     let port_row = adw::EntryRow::builder().title("Port").text("22").build();
+    // Avgör vilket nyckeldistributionskommando `key_deploy::deploy_command_for_host`
+    // bygger — Windows OpenSSH kräver helt andra kommandon/sökvägar än POSIX
+    // (se key_deploy.rs). Samma tre alternativ som Swift-sidans `RemotePlatform`.
+    let platform_row = adw::ComboRow::builder().title("Fjärrsystem").build();
+    let platform_model = gtk::StringList::new(&["Linux/macOS", "Windows (adminkonto)", "Windows (standardkonto)"]);
+    platform_row.set_model(Some(&platform_model));
 
     if let Some(h) = &existing {
         alias_row.set_text(&h.alias);
         host_row.set_text(&h.host_name);
         user_row.set_text(&h.user);
         port_row.set_text(&h.port.to_string());
+        platform_row.set_selected(match h.platform {
+            host::RemotePlatform::Posix => 0,
+            host::RemotePlatform::WindowsAdmin => 1,
+            host::RemotePlatform::WindowsStandard => 2,
+        });
     }
 
     let group = adw::PreferencesGroup::new();
@@ -451,6 +462,7 @@ fn show_host_dialog(
     group.add(&host_row);
     group.add(&user_row);
     group.add(&port_row);
+    group.add(&platform_row);
 
     let page = adw::PreferencesPage::new();
     page.add(&group);
@@ -509,15 +521,22 @@ fn show_host_dialog(
             if alias.is_empty() || host_name.is_empty() || user.is_empty() {
                 return; // formuläret kräver alias/värdnamn/användare
             }
+            let platform = match platform_row.selected() {
+                1 => host::RemotePlatform::WindowsAdmin,
+                2 => host::RemotePlatform::WindowsStandard,
+                _ => host::RemotePlatform::Posix,
+            };
             let host = if let Some(mut h) = existing.clone() {
                 h.alias = alias;
                 h.host_name = host_name;
                 h.user = user;
                 h.port = port;
+                h.platform = platform;
                 h
             } else {
                 let mut h = Host::new(alias, host_name, user);
                 h.port = port;
+                h.platform = platform;
                 h
             };
             // Se motiveringen vid `delete_action` ovan — en I/O-miss ska
