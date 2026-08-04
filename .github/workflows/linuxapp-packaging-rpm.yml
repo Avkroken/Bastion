@@ -30,7 +30,7 @@ permissions:
   contents: read
 
 jobs:
-  build-rpm:
+  build-rpm-linuxapp:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:

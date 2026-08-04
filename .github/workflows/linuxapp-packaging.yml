@@ -29,7 +29,7 @@ permissions:
   contents: read
 
 jobs:
-  build-deb:
+  build-deb-linuxapp:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
@@ -168,5 +168,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: bastion-linuxapp-deb
-          path: dist-out/*.deb
+          # `actions/upload-artifact` respekterar INTE jobbets
+          # `defaults.run.working-directory` (bara `run:`-steg gör det) —
+          # sökvägen måste vara relativ till $GITHUB_WORKSPACE, alltså med
+          # `LinuxApp/`-prefixet (CI-fynd: "No files were found").
+          path: LinuxApp/dist-out/*.deb
           if-no-files-found: error

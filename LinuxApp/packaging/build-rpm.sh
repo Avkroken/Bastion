@@ -8,7 +8,16 @@
 set -euo pipefail
 
 dnf install -y -q gtk4-devel libadwaita-devel vte291-gtk4-devel \
-  pkgconf-pkg-config rust cargo rpm-build binutils
+  pkgconf-pkg-config rpm-build binutils gcc curl
+
+# Fedora 40:s dnf-paketerade `rust`/`cargo` (1.86) är för gammalt för
+# gtk4-rs 0.11.4-stacken (cairo-rs/gdk4/gtk4 m.fl. kräver rustc 1.92+) —
+# samma `dtolnay/rust-toolchain@stable`-princip som linuxapp-build.yml/
+# linuxapp-packaging.yml (.deb) använder på Ubuntu, fast via rustup direkt
+# eftersom vi kör i en ren Fedora-container utan den GitHub Actions-
+# specifika actionen (CI-fynd: "rustc 1.86.0 is not supported").
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+source "$HOME/.cargo/env"
 
 cd /work/LinuxApp
 cargo build --release --verbose
