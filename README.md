@@ -172,10 +172,29 @@ Autentiseringsordning i CLI:t: `BASTION_KEY_FILE` > `BASTION_ED25519_HEX` >
 
 ## Linux-GUI:t (`LinuxApp/`) och Windows-GUI:t (`WindowsApp/`)
 
-Under ombyggnad till native klienter (beslut 2026-07-29, se ROADMAP.md för
-motivering och historik): Linux blir Rust + GTK4 (gtk4-rs) + russh/libssh2,
-Windows blir C#/.NET + WinUI 3 + SSH.NET. Bygginstruktioner läggs till här
-när respektive projekt är scaffoldat.
+Native klienter (arkitekturbeslut 2026-07-29, se ROADMAP.md för motivering
+och historik): Linux är Rust + GTK4 (gtk4-rs) + russh, Windows är C#/.NET +
+WinUI 3 + SSH.NET.
+
+**Linux** (kräver `libgtk-4-dev`, `libadwaita-1-dev`, `libvte-2.91-gtk4-dev`,
+`pkg-config`):
+
+```sh
+cd LinuxApp
+cargo build
+cargo test
+cargo run
+```
+
+**Windows** (kräver Windows App SDK/WinUI 3 — bygger inte på Linux/macOS,
+se `.github/workflows/`):
+
+```powershell
+cd WindowsApp
+dotnet build
+dotnet test Bastion.Core.Tests
+dotnet run --project WindowsApp.csproj
+```
 
 ## Bygg appen (på en Mac)
 

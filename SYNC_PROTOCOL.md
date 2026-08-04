@@ -1,16 +1,17 @@
 # Synkprotokoll
 
 Formell specifikation för hur Bastion-klienter (`App/`, `Android/`,
-`LinuxApp/`, framtida `WindowsApp/`) synkar host-databasen utan att dela
-UI- eller SSH-kod (se [ROADMAP.md](ROADMAP.md), arkitekturbeslut
-2026-07-29). Detta protokoll är den enda kopplingen mellan klienterna —
-allt annat (SSH-implementation, UI-ramverk) är helt fristående per
-plattform.
+`LinuxApp/`, `WindowsApp/`) synkar host-databasen utan att dela UI- eller
+SSH-kod (se [ROADMAP.md](ROADMAP.md), arkitekturbeslut 2026-07-29). Detta
+protokoll är den enda kopplingen mellan klienterna — allt annat
+(SSH-implementation, UI-ramverk) är helt fristående per plattform.
 
 Referensimplementationer:
 - Swift: `Sources/SSHCore/Host.swift`, `HostStore.swift`, `SyncEngine.swift`,
   `SyncProvider.swift`.
 - Rust: `LinuxApp/src/host.rs`, `LinuxApp/src/sync.rs`.
+- C#: `WindowsApp/Bastion.Core/HostStore.cs`, `SyncEngine.cs`,
+  `SyncProvider.cs`.
 
 Ingen central server. Protokollet är avsiktligt enkelt: en JSON-fil +
 en deterministisk merge-funktion + en utbytbar transport.
@@ -104,34 +105,42 @@ provider.push(merged)
 Enklaste och mest portabla transporten: en JSON-fil i en mapp som något
 ANNAT redan synkar mellan enheter — Syncthing, en klonad Git-mapp, en
 krypterad delad disk. Ingen inloggning, ingen egen server. Implementerad
-identiskt i Swift (`FolderSyncProvider`) och Rust
-(`sync::FolderSyncProvider`) — verifierat med ett riktigt cross-instans-test
-(`two_independent_stores_converge_through_a_shared_folder_provider`) där två
-oberoende `HostStore`-instanser konvergerar via samma delade fil.
+identiskt i Swift (`FolderSyncProvider`), Rust (`sync::FolderSyncProvider`)
+OCH C# (`FolderSyncProvider`, `WindowsApp/Bastion.Core/SyncProvider.cs`) —
+verifierat med riktiga cross-instans-tester i alla tre (t.ex.
+`two_independent_stores_converge_through_a_shared_folder_provider`) där två
+oberoende `HostStore`-instanser konvergerar via samma delade fil. Både
+`LinuxApp` och `WindowsApp` har en "Synka nu"-UI (mappval + synk-knapp)
+ovanpå biblioteksnivån.
 
-### 3.2 Molntransporter (Dropbox/Google Drive/OneDrive) — Swift-sidan, inte porterat än
+### 3.2 Molntransporter (Dropbox/Google Drive/OneDrive)
 
 Swift-sidan har egna OAuth-baserade `SyncProvider`-implementationer för
-molnlagring. Dessa krypterar `SyncState` innan uppladdning (se
-`SyncCrypto.swift`, PBKDF2 + AEAD) eftersom molnleverantören inte är
-betrodd på samma sätt som en lokal/synkad mapp. **Detta är en transport-
-specifik utbyggnad, inte en ändring av kärnprotokollet** — vilken transport
-som helst kan lägga till kryptering utan att `SyncState`-formatet eller
-merge-algoritmen ändras. Inte porterat till `LinuxApp` än.
+molnlagring. Alla tre native klienter (Swift, Rust, C#) har dessutom en
+KRYPTERAD variant av `FolderSyncProvider` (`SyncCrypto`/`sync_crypto.rs`/
+`SyncCrypto.cs`: PBKDF2-HMAC-SHA256 + AES-256-GCM, identiskt "BSYNC1"-kuvert
+i alla tre, cross-språksverifierat byte-för-byte) som krypterar `SyncState`
+innan uppladdning till en icke-betrodd tredjepartsmapp. **Detta är en
+transport-specifik utbyggnad, inte en ändring av kärnprotokollet** — vilken
+transport som helst kan lägga till kryptering utan att `SyncState`-formatet
+eller merge-algoritmen ändras.
 
 ## 4. Vad en ny klient måste implementera för att delta
 
 1. Läsa/skriva `SyncState` exakt enligt §1 (verifiera mot en riktig fixtur
    från en ANNAN klient — gissa inte formatet).
-2. Implementera merge-algoritmen i §2 (eller återanvänd `sync::merge` om
-   klienten redan länkar mot Rust-koden).
+2. Implementera merge-algoritmen i §2 (eller återanvänd `sync::merge`/
+   `SyncEngine.Merge` om klienten redan länkar mot Rust- eller
+   C#-koden) — se till att den är kommutativ även vid en EXAKT
+   tidsstämpel-krock (`modified_at`/`ModifiedAt` lika på båda sidor), inte
+   bara vid olika tidsstämplar.
 3. Välja minst en `SyncProvider`-transport — `FolderSyncProvider` är den
    enklaste startpunkten och kräver ingen inloggning.
 
 ## 5. Känt kvarstående arbete
 
-- `LinuxApp` har `sync.rs`/`host.rs` (protokollet + `FolderSyncProvider`)
-  men ingen UI för att välja/konfigurera en synkmapp än — biblioteks-nivå
-  klart, inte yt-nivå.
-- Krypterade molntransporter (§3.2) är inte porterade till `LinuxApp`.
-- `WindowsApp` har ännu ingen implementation alls (scaffold inte påbörjad).
+- Swift-sidans OAuth-baserade molnleverantörer (Dropbox/Drive/OneDrive
+  direkt, inte via en redan synkad lokal mapp) är inte porterade till
+  `LinuxApp`/`WindowsApp` — båda har den KRYPTERADE `FolderSyncProvider`-
+  varianten (§3.2), men ingen egen OAuth-integration mot molntjänsterna.
+- Android har ingen implementation av det här protokollet än.

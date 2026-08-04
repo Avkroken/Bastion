@@ -34,6 +34,17 @@ struct HostDetailView: View {
     var onNewTab: (() -> Void)? = nil
     @State private var showTerminal = false
     @State private var reloadToken = UUID()
+    // `@AppStorage`, INTE en direkt `UserDefaults.standard`-läsning — den
+    // senare läses bara EN gång när `body` först ritas och observeras inte
+    // av SwiftUI, så menyn kunde bli inaktuell efter att
+    // `FeatureSettingsView` ändrat samma nycklar på en annan flik
+    // (CodeRabbit-fynd). Samma nyckelnamn som `FeatureSettingsView`.
+    @AppStorage(FeatureToggleKeys.showDocker) private var showDockerCard = true
+    @AppStorage(FeatureToggleKeys.showSnippets) private var showSnippetsMenuItem = true
+    @AppStorage(FeatureToggleKeys.showCommandLibrary) private var showCommandLibraryMenuItem = true
+    @AppStorage(FeatureToggleKeys.showSFTP) private var showSFTPMenuItem = true
+    @AppStorage(FeatureToggleKeys.showPortForward) private var showPortForwardMenuItem = true
+    @AppStorage(FeatureToggleKeys.showKeyDeploy) private var showKeyDeployMenuItem = true
 
     var body: some View {
         NavigationStack {
@@ -73,32 +84,32 @@ struct HostDetailView: View {
                             // 2026-07-28 gällde bara Docker-kortet uttryckligen,
                             // men samma klagomål ("ingen valmöjlighet") gäller
                             // principiellt hela den här menyn.
-                            if UserDefaults.standard.showDockerCard {
+                            if showDockerCard {
                                 NavigationLink { DockerView(request: request, store: store) } label: {
                                     Label("Docker", systemImage: "shippingbox")
                                 }
                             }
-                            if UserDefaults.standard.showSnippetsMenuItem {
+                            if showSnippetsMenuItem {
                                 NavigationLink { SnippetListView(request: request, store: store) } label: {
                                     Label("Snippets", systemImage: "text.badge.checkmark")
                                 }
                             }
-                            if UserDefaults.standard.showCommandLibraryMenuItem {
+                            if showCommandLibraryMenuItem {
                                 NavigationLink { CommandLibraryView(request: request, store: store) } label: {
                                     Label("Kommandobibliotek", systemImage: "books.vertical")
                                 }
                             }
-                            if UserDefaults.standard.showSFTPMenuItem {
+                            if showSFTPMenuItem {
                                 NavigationLink { SFTPBrowserView(request: request, store: store) } label: {
                                     Label("Filer (SFTP)", systemImage: "folder")
                                 }
                             }
-                            if UserDefaults.standard.showPortForwardMenuItem {
+                            if showPortForwardMenuItem {
                                 NavigationLink { PortForwardView(request: request, store: store) } label: {
                                     Label("Portvidarebefordran", systemImage: "arrow.left.arrow.right")
                                 }
                             }
-                            if UserDefaults.standard.showKeyDeployMenuItem {
+                            if showKeyDeployMenuItem {
                                 NavigationLink {
                                     KeyDeployView(request: request, store: store) { updated in store.upsert(updated) }
                                 } label: {

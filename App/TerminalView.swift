@@ -41,6 +41,16 @@ final class SSHTerminalController {
     /// (CodeRabbit-fynd på #155: stop() stänger bara det som redan hunnit
     /// tilldelas self.chain/self.shell VID ANROPSTILLFÄLLET).
     private var isStopped = false
+    /// Garanterar att den FAKTISKA nedstängningen (stänga `shell`, stänga
+    /// `chain`) bara körs EN gång oavsett vilken av de tre vägarna som
+    /// hinner först: `stop()`, output-strömmens normala slut, eller ett
+    /// fel i `start()`s Task. Utan detta kunde två vägar råka trigga
+    /// samtidigt (t.ex. `stop()` medan output-loopen precis avslutas
+    /// naturligt) och båda anropa `shell.close()` + starta överlappande
+    /// `chain.close()`-anrop (CodeRabbit-fynd). Säkert att kolla/sätta
+    /// synkront utan lås — allt här körs på `@MainActor`, och kollen+
+    /// sättningen i `teardown()` sker ALDRIG över en `await`-punkt.
+    private var isTornDown = false
 
     /// Anropas på main med bytes att mata in i terminalvyn.
     var onData: ((ArraySlice<UInt8>) -> Void)?
@@ -88,8 +98,7 @@ final class SSHTerminalController {
                 // (CodeRabbit-fynd: den här grenen saknade helt städning,
                 // till skillnad från LinuxApp/WindowsApp-motsvarigheterna).
                 debugLog("session", "output-strömmen tog slut normalt (fjärrshellen stängde)")
-                self.shell?.close()
-                await self.chain?.close()
+                await teardown()
                 // Inte samma sak som `isStopped` (användaren stängde vyn
                 // själv) — den vägen ska INTE trigga onSessionEnded,
                 // anroparen vet redan att den stänger.
@@ -101,12 +110,7 @@ final class SSHTerminalController {
                 // bara sina EGNA fel internt, inte fel som inträffar efter att
                 // den redan returnerat. Ofarligt no-op om chain fortfarande är
                 // nil (connect() self själv redan städat i den vägen).
-                // self.shell?.close() FÖRE chain?.close() — stoppar keepAlive-
-                // Task:en innan chain.close() river ner event loop-gruppen
-                // under den (CodeRabbit-fynd), samma race-klass som redan
-                // dokumenteras i SSHSession.swift.
-                self.shell?.close()
-                await self.chain?.close()
+                await teardown()
                 debugLog("session", "fel: \(error)")
                 guard !isStopped else { return }
                 let msg = Array("\r\n[bastion] fel: \(error)\r\n".utf8)
@@ -126,9 +130,25 @@ final class SSHTerminalController {
     func resize(cols: Int, rows: Int) { shell?.resize(cols: cols, rows: rows) }
     func stop() {
         isStopped = true
-        shell?.close()
+        Task { await teardown() }
+    }
+
+    /// Den ENDA platsen som faktiskt stänger `shell`/`chain` — anropad från
+    /// `stop()` OCH från båda avslutningsvägarna i `start()`s Task. Klar/
+    /// nollställ `shell`/`chain` INNAN någon `await`, så en konkurrerande
+    /// anropare (kollar `isTornDown` på samma `@MainActor`, aldrig över en
+    /// `await`-punkt) garanterat ser att jobbet redan är taget istället för
+    /// att båda stänger samma resurser/startar överlappande
+    /// `chain.close()`-anrop (CodeRabbit-fynd).
+    private func teardown() async {
+        guard !isTornDown else { return }
+        isTornDown = true
+        let shell = self.shell
         let chain = self.chain
-        Task { await chain?.close() }
+        self.shell = nil
+        self.chain = nil
+        shell?.close()
+        await chain?.close()
     }
 }
 

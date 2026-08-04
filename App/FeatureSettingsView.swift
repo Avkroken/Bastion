@@ -21,23 +21,6 @@ enum FeatureToggleKeys {
     static let showKeyDeploy = "featureShowKeyDeploy"
 }
 
-private extension UserDefaults {
-    /// Delad hjälpare: `true` om nyckeln aldrig satts (annars hade ALLA
-    /// befintliga installationer tappat funktionen tyst vid uppgradering).
-    func featureDefaultTrue(_ key: String) -> Bool {
-        object(forKey: key) == nil ? true : bool(forKey: key)
-    }
-}
-
-extension UserDefaults {
-    var showDockerCard: Bool { featureDefaultTrue(FeatureToggleKeys.showDocker) }
-    var showSnippetsMenuItem: Bool { featureDefaultTrue(FeatureToggleKeys.showSnippets) }
-    var showCommandLibraryMenuItem: Bool { featureDefaultTrue(FeatureToggleKeys.showCommandLibrary) }
-    var showSFTPMenuItem: Bool { featureDefaultTrue(FeatureToggleKeys.showSFTP) }
-    var showPortForwardMenuItem: Bool { featureDefaultTrue(FeatureToggleKeys.showPortForward) }
-    var showKeyDeployMenuItem: Bool { featureDefaultTrue(FeatureToggleKeys.showKeyDeploy) }
-}
-
 struct FeatureSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @AppStorage(FeatureToggleKeys.showDocker) private var showDocker = true

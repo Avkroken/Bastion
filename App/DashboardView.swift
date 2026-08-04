@@ -74,6 +74,11 @@ final class DashboardModel: ObservableObject {
 
 struct DashboardView: View {
     @StateObject private var model: DashboardModel
+    // Samma fix som HostDetailView: `@AppStorage`, inte en direkt
+    // `UserDefaults.standard`-läsning — annars observerar SwiftUI inte
+    // ändringen och Docker-kortet kan bli kvar synligt/dolt efter att
+    // `FeatureSettingsView` togglat samma nyckel på en annan flik.
+    @AppStorage(FeatureToggleKeys.showDocker) private var showDockerCard = true
 
     init(request: ConnectRequest, store: HostStore? = nil) {
         _model = StateObject(wrappedValue: DashboardModel(request: request, store: store))
@@ -118,7 +123,7 @@ struct DashboardView: View {
             ForEach(s.disks.filter { $0.mount == "/" || !$0.filesystem.hasPrefix("tmpfs") }, id: \.mount) { d in
                 meterCard("Disk \(d.mount)", used: d.usedBytes, total: d.sizeBytes)
             }
-            if !s.containers.isEmpty && UserDefaults.standard.showDockerCard { dockerCard(s.containers) }
+            if !s.containers.isEmpty && showDockerCard { dockerCard(s.containers) }
         }
     }
 
