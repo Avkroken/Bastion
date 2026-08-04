@@ -103,6 +103,16 @@ fn build_ui(app: &adw::Application) {
         )
     ));
 
+    let quick_connect_button = gtk::Button::from_icon_name("system-run-symbolic");
+    quick_connect_button.set_tooltip_text(Some("Snabbanslutning"));
+    quick_connect_button.connect_clicked(clone!(
+        #[weak]
+        app,
+        #[strong]
+        area,
+        move |_| show_quick_connect_dialog(&app, &area)
+    ));
+
     let telnet_button = gtk::Button::from_icon_name("utilities-terminal-symbolic");
     telnet_button.set_tooltip_text(Some("Telnet"));
     telnet_button.connect_clicked(clone!(
@@ -190,6 +200,7 @@ fn build_ui(app: &adw::Application) {
 
     let sidebar_header = adw::HeaderBar::new();
     sidebar_header.pack_end(&add_button);
+    sidebar_header.pack_end(&quick_connect_button);
     sidebar_header.pack_end(&telnet_button);
     sidebar_header.pack_end(&tailscale_button);
     sidebar_header.pack_end(&wireguard_button);
@@ -1525,6 +1536,104 @@ fn show_telnet_connect_dialog(app: &adw::Application, area: &Rc<SessionArea>) {
             }
             win.close();
             start_telnet_session(&area, host, port);
+        }
+    ));
+
+    win.present();
+}
+
+/// Ansluter till en ad-hoc värd UTAN att spara den i värdlistan — Termius
+/// kallar detta "Quick Connect". Bygger en `Host` bara i minnet (aldrig
+/// skickad till `HostStore`) och öppnar samma `start_session`-flöde som en
+/// sparad värd. Motsvarar `App/QuickConnectView.swift`. Går direkt till
+/// `start_session` (inte `open_session`s omväg via `with_resolved_jump`/
+/// `prompt_password_then`) — en ad-hoc-värd har per definition ingen
+/// `jump_host_id`, och lösenordet (om något) matas in i SAMMA formulär,
+/// inte en separat efterföljande dialog.
+fn show_quick_connect_dialog(app: &adw::Application, area: &Rc<SessionArea>) {
+    let host_row = adw::EntryRow::builder().title("Värd (t.ex. 10.0.0.5)").build();
+    let user_row = adw::EntryRow::builder().title("Användare").build();
+    let port_row = adw::EntryRow::builder().title("Port").text("22").build();
+    let password_row = adw::PasswordEntryRow::builder()
+        .title("Lösenord (tomt = agent/standardnyckel)")
+        .build();
+
+    let group = adw::PreferencesGroup::new();
+    group.add(&host_row);
+    group.add(&user_row);
+    group.add(&port_row);
+    group.add(&password_row);
+    let info_label = gtk::Label::builder()
+        .label("Den här värden sparas INTE i din värdlista — perfekt för en engångsanslutning. Lägg till den vanligt med + om du vill återansluta senare.")
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(4)
+        .halign(gtk::Align::Start)
+        .wrap(true)
+        .css_classes(["dim-label", "caption"])
+        .build();
+
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+
+    let connect_button = gtk::Button::with_label("Anslut");
+    connect_button.add_css_class("suggested-action");
+    let cancel_button = gtk::Button::with_label("Avbryt");
+    let header = adw::HeaderBar::builder()
+        .show_end_title_buttons(false)
+        .build();
+    header.pack_start(&cancel_button);
+    header.pack_end(&connect_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&page);
+    content.append(&info_label);
+
+    let win = adw::Window::builder()
+        .transient_for(&app.active_window().expect("inget aktivt fönster"))
+        .modal(true)
+        .default_width(380)
+        .default_height(320)
+        .title("Snabbanslutning")
+        .content(&content)
+        .build();
+
+    cancel_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        move |_| win.close()
+    ));
+    connect_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        #[strong]
+        area,
+        move |_| {
+            let host_name = host_row.text().trim().to_string();
+            let user = user_row.text().trim().to_string();
+            let Ok(port) = port_row.text().parse::<i64>() else {
+                return;
+            };
+            if host_name.is_empty() || user.is_empty() || !(1..=65_535).contains(&port) {
+                return;
+            }
+            // Lösenordet skickas OBESKURET — trimning hade tyst korrumperat
+            // ett giltigt lösenord med inlednings-/avslutande blanktecken,
+            // samma cubic-fynd Swift-sidan (PR #173) redan vaktar mot.
+            // `is_empty` (inte trimmat) avgör bara vilket auth-läge som väljs.
+            let password = password_row.text().to_string();
+            let mut host = host::Host::new(String::new(), host_name, user);
+            host.port = port;
+            let password = if password.is_empty() {
+                host.auth = host::HostAuth::AgentDefault;
+                None
+            } else {
+                host.auth = host::HostAuth::AskPassword;
+                Some(password)
+            };
+            win.close();
+            start_session(&area, host, password, None);
         }
     ));
 

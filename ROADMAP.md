@@ -355,6 +355,31 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **Snabbanslutning ("Quick Connect") i den NYA Rust/GTK4-`LinuxApp`**
+  (2026-08-04, `LinuxApp/src/main.rs`): helt saknades — ingen väg att
+  ansluta till en ad-hoc värd UTAN att först spara den i värdlistan.
+  Motsvarar `App/QuickConnectView.swift` (Termius kallar detta "Quick
+  Connect"). Ny knapp i sidopanelens header (bredvid "Lägg till värd"):
+  värd/användare/port/lösenord-fält, bygger en `host::Host` bara i
+  minnet (aldrig skickad till `HostStore::upsert`) och öppnar den direkt
+  via `start_session` — samma terminalsession som en sparad värd får,
+  bara utan att fylla värdlistan med en engångsanslutning.
+  - Går direkt till `start_session`, inte via `open_session`s omväg
+    genom `with_resolved_jump`/`prompt_password_then` — en ad-hoc-värd
+    har per definition ingen `jump_host_id`, och lösenordet (om något)
+    matas in i SAMMA formulär som resten av fälten, inte en separat
+    efterföljande dialog (skiljer sig medvetet från hur en SPARAD
+    `AskPassword`-värd hanteras, där lösenordet aldrig lagras och måste
+    frågas efter varje gång).
+  - Tomt lösenordsfält → `HostAuth::AgentDefault` (prova ssh-agent/
+    standardnyckel); ifyllt → `HostAuth::AskPassword` med lösenordet
+    skickat OBESKURET (trimning hade tyst korrumperat ett giltigt
+    lösenord med inlednings-/avslutande blanktecken — samma cubic-fynd,
+    PR #173, som Swift-sidan redan vaktar mot).
+  - Ingen ny testbar logik (ren GTK-kablage ovanpå redan testad
+    `host::Host`/`start_session`) — 128/128 `cargo test` oförändrat
+    gröna, `cargo build`/`clippy` helt tysta.
+
 - **S3 bucket-/objektbläddare i UI:t** (2026-08-04, `LinuxApp/src/main.rs`):
   slutförde "Kvar"-punkten från S3-kompatibel objektlagring nedan (samma
   dag) — resten av `S3Client`s redan portade+testade metoder
