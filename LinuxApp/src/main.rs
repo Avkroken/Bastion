@@ -20,6 +20,7 @@ mod socks_proxy;
 mod ssh;
 mod sync;
 mod sync_crypto;
+mod wake_on_lan;
 
 use host::{Host, HostStore};
 use ssh::SshEvent;
@@ -204,7 +205,7 @@ fn refresh_list(
             .valign(gtk::Align::Center)
             .css_classes(["flat"])
             .build();
-        let menu = gio_menu_for(&toggles);
+        let menu = gio_menu_for(&toggles, &h.mac_address);
         menu_button.set_menu_model(Some(&menu));
         row.add_suffix(&menu_button);
 
@@ -243,6 +244,48 @@ fn refresh_list(
                         Some(host),
                     );
                 }
+            }
+        ));
+        let wake_action = gtk::gio::SimpleAction::new("wake", None);
+        wake_action.connect_activate(clone!(
+            #[strong]
+            store,
+            #[strong]
+            area,
+            #[strong(rename_to = host_id)]
+            h.id,
+            move |_, _| {
+                let mac = store
+                    .borrow()
+                    .all()
+                    .iter()
+                    .find(|x| x.id == host_id)
+                    .and_then(|h| h.mac_address.clone());
+                let Some(mac) = mac else { return };
+                let rx = wake_on_lan::spawn_send(mac, "255.255.255.255".to_string(), 9);
+                glib::spawn_future_local(clone!(
+                    #[strong]
+                    area,
+                    async move {
+                        match rx.recv().await {
+                            Ok(Ok(())) => show_message_dialog(
+                                &area,
+                                "Wake-on-LAN",
+                                "Magic packet skickat.",
+                            ),
+                            Ok(Err(e)) => show_message_dialog(
+                                &area,
+                                "Wake-on-LAN",
+                                &format!("Kunde inte skicka magic packet: {e}"),
+                            ),
+                            Err(_) => show_message_dialog(
+                                &area,
+                                "Wake-on-LAN",
+                                "Kanalen stängdes oväntat",
+                            ),
+                        }
+                    }
+                ));
             }
         ));
         let delete_action = gtk::gio::SimpleAction::new("delete", None);
@@ -437,6 +480,7 @@ fn refresh_list(
             }
         ));
         action_group.add_action(&edit_action);
+        action_group.add_action(&wake_action);
         action_group.add_action(&delete_action);
         action_group.add_action(&docker_action);
         action_group.add_action(&commands_action);
@@ -449,9 +493,16 @@ fn refresh_list(
     }
 }
 
-fn gio_menu_for(toggles: &settings::FeatureToggles) -> gtk::gio::Menu {
+/// `mac_address`: bara den AKTUELLA raden vet om Wake-on-LAN är meningsfullt
+/// — till skillnad från de andra posterna (styrda av globala
+/// `FeatureToggles`) är "Väck"-posten en PER-VÄRD-egenskap, samma UX-regel
+/// som App/HostListView.swift (`if host.macAddress != nil`).
+fn gio_menu_for(toggles: &settings::FeatureToggles, mac_address: &Option<String>) -> gtk::gio::Menu {
     let menu = gtk::gio::Menu::new();
     menu.append(Some("Redigera"), Some("host.edit"));
+    if mac_address.is_some() {
+        menu.append(Some("Väck (Wake-on-LAN)"), Some("host.wake"));
+    }
     if toggles.show_docker {
         menu.append(Some("Docker"), Some("host.docker"));
     }
@@ -492,6 +543,17 @@ fn show_host_dialog(
     let platform_row = adw::ComboRow::builder().title("Fjärrsystem").build();
     let platform_model = gtk::StringList::new(&["Linux/macOS", "Windows (adminkonto)", "Windows (standardkonto)"]);
     platform_row.set_model(Some(&platform_model));
+    let mac_row = adw::EntryRow::builder()
+        .title("MAC-adress (valfritt, Wake-on-LAN, t.ex. AA:BB:CC:DD:EE:FF)")
+        .build();
+    let mac_error_label = gtk::Label::builder()
+        .label("Ogiltig MAC-adress")
+        .margin_start(12)
+        .margin_end(12)
+        .halign(gtk::Align::Start)
+        .css_classes(["error", "caption"])
+        .visible(false)
+        .build();
 
     if let Some(h) = &existing {
         alias_row.set_text(&h.alias);
@@ -503,6 +565,9 @@ fn show_host_dialog(
             host::RemotePlatform::WindowsAdmin => 1,
             host::RemotePlatform::WindowsStandard => 2,
         });
+        if let Some(mac) = &h.mac_address {
+            mac_row.set_text(mac);
+        }
     }
 
     let group = adw::PreferencesGroup::new();
@@ -511,6 +576,7 @@ fn show_host_dialog(
     group.add(&user_row);
     group.add(&port_row);
     group.add(&platform_row);
+    group.add(&mac_row);
 
     let page = adw::PreferencesPage::new();
     page.add(&group);
@@ -529,6 +595,7 @@ fn show_host_dialog(
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.append(&header);
     content.append(&page);
+    content.append(&mac_error_label);
 
     let win = adw::Window::builder()
         .transient_for(&app.active_window().expect("inget aktivt fönster"))
@@ -561,6 +628,10 @@ fn show_host_dialog(
         win,
         #[strong]
         existing,
+        #[strong]
+        mac_row,
+        #[strong]
+        mac_error_label,
         move |_| {
             let alias = alias_row.text().to_string();
             let host_name = host_row.text().to_string();
@@ -569,6 +640,20 @@ fn show_host_dialog(
             if alias.is_empty() || host_name.is_empty() || user.is_empty() {
                 return; // formuläret kräver alias/värdnamn/användare
             }
+            // Validerad HÄR, inte bara vid "Väck"-knappen — en trasig adress
+            // sparad tyst skulle göra Wake-knappen deterministiskt trasig
+            // senare, samma resonemang som App/HostEditView.swifts
+            // `macValidationMessage`.
+            let mac_text = mac_row.text().trim().to_string();
+            let mac_address = if mac_text.is_empty() {
+                None
+            } else if wake_on_lan::parse_mac(&mac_text).is_ok() {
+                Some(mac_text)
+            } else {
+                mac_error_label.set_visible(true);
+                return;
+            };
+            mac_error_label.set_visible(false);
             let platform = match platform_row.selected() {
                 1 => host::RemotePlatform::WindowsAdmin,
                 2 => host::RemotePlatform::WindowsStandard,
@@ -580,11 +665,13 @@ fn show_host_dialog(
                 h.user = user;
                 h.port = port;
                 h.platform = platform;
+                h.mac_address = mac_address;
                 h
             } else {
                 let mut h = Host::new(alias, host_name, user);
                 h.port = port;
                 h.platform = platform;
+                h.mac_address = mac_address;
                 h
             };
             // Se motiveringen vid `delete_action` ovan — en I/O-miss ska
@@ -1047,7 +1134,14 @@ impl SessionArea {
 /// felyta (statusrad/röd text i terminalen) som redan fanns — den här
 /// dialogen är bara för "kunde inte ens börja".
 fn show_connect_error(area: &Rc<SessionArea>, message: &str) {
-    let dialog = adw::AlertDialog::new(Some("Kunde inte ansluta"), Some(message));
+    show_message_dialog(area, "Kunde inte ansluta", message);
+}
+
+/// Samma modala dialog som `show_connect_error`, fast med valfri titel —
+/// återanvänd av t.ex. Wake-on-LAN-resultat (inte ett anslutningsfel, men
+/// samma "kort meddelande, en OK-knapp"-behov).
+fn show_message_dialog(area: &Rc<SessionArea>, title: &str, message: &str) {
+    let dialog = adw::AlertDialog::new(Some(title), Some(message));
     dialog.add_response("ok", "OK");
     dialog.set_default_response(Some("ok"));
     dialog.present(Some(&area.overlay));

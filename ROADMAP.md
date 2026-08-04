@@ -355,6 +355,40 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **Wake-on-LAN i den NYA Rust/GTK4-`LinuxApp`** (2026-08-04,
+  `LinuxApp/src/wake_on_lan.rs`): `Host.mac_address` fanns redan i
+  datamodellen (för wire-format-kompatibilitet med App/Windows-synk) men
+  lästes tidigare aldrig av något i den nya Rust-omskrivningen — samma
+  mönster som `jump_host_id` hade innan ProxyJump-fixen nedan (den gamla
+  SwiftCrossUI-`bastion-gui` hade redan Wake-on-LAN, se commit `06476d6`,
+  men den är riven sedan arkitekturpivoten 2026-08-03 och funktionen
+  porterades aldrig till den nya Rust-koden). Byte-för-byte-port av
+  `Sources/SSHCore/WakeOnLan.swift` (samma magic-packet-format, samma
+  felkontrakt — ogiltig MAC/port ger ett tydligt fel istället för att
+  tyst tolkas fel eller skickas till fel port). `wake_on_lan::send` körs
+  på en egen bakgrundstråd med egen tokio-runtime
+  (`wake_on_lan::spawn_send`), samma mönster som `ssh::spawn_shell`/
+  `run_command` — `glib::spawn_future_local` (GTK:s huvudloop) har ingen
+  egen tokio-reaktor, ett rakt `.await` på `tokio::net::UdpSocket` hade
+  panikat.
+  - MAC-adress-fält i värdredigeringsdialogen (`show_host_dialog`),
+    validerat VID SPARA (inte bara när "Väck" trycks) — en trasig adress
+    sparad tyst skulle göra Wake-knappen deterministiskt trasig senare,
+    samma resonemang som `App/HostEditView.swift`s `macValidationMessage`.
+  - Ny "Väck (Wake-on-LAN)"-post i per-värd-menyn, synlig ENDAST när
+    `host.mac_address` är satt (per-värd-egenskap, till skillnad från de
+    andra menyposterna som styrs av globala `FeatureToggles`) — samma UX-
+    regel som `App/HostListView.swift` (`if host.macAddress != nil`).
+    Resultatet (lyckat/fel) visas i en modal dialog
+    (`show_message_dialog`, en generalisering av den redan existerande
+    `show_connect_error` från ProxyJump-arbetet).
+  - Testat: 6 enhetstester (MAC-parsning i alla tre separatorformat, fel
+    längd/tecken, magic-packet-byte-layout, port-gränsvärden) + 1 genuint
+    end-to-end-test mot en RIKTIG UDP-lyssnare på loopback (bevisar att
+    paketet faktiskt går ut på tråden med rätt innehåll, inte bara att
+    byte-layouten stämmer i minnet) — port av `WakeOnLanTests.swift` rakt
+    av. 87/87 `cargo test` gröna totalt.
+
 - **ProxyJump (`ssh -J`) i den NYA Rust/GTK4-`LinuxApp`** (2026-08-04,
   `LinuxApp/src/ssh.rs`/`host.rs`): `Host.jump_host_id` fanns redan (för
   wire-format-kompatibilitet med Swift/Windows synk) men lästes tidigare
