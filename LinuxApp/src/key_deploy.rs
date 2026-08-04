@@ -6,11 +6,13 @@
 //! anslutning — precis som `SSHSession.verifyKeyAuthWorks` gör innan ett
 //! lösenord får tas bort ur lagringen.
 //!
-//! KÄND BEGRÄNSNING: bara POSIX-fjärrsystem (`~/.ssh/authorized_keys`) —
-//! `RemotePlatform.windowsAdmin`/`.windowsStandard` i Swift-sidan har ingen
-//! motsvarighet här än, LinuxApp har inget `Host.platform`-fält.
+//! Distribuerar mot POSIX- OCH Windows-fjärrsystem (`host.platform`,
+//! samma tre-vägars `RemotePlatform`-uppdelning som
+//! `Sources/SSHCore/KeyManagement.swift`) — LinuxApp hade fältet i `Host`
+//! sedan tidigare men läste det aldrig här.
 
 use crate::host::{Host, HostAuth};
+use base64::Engine;
 use russh::keys::key::KeyPair;
 use russh::keys::PublicKeyBase64;
 use std::io::Write;
@@ -118,6 +120,65 @@ fn deploy_command_at(public_key_line: &str, path: &str) -> String {
     )
 }
 
+/// Vilket kommando som faktiskt distribuerar nyckeln — grenar på
+/// `host.platform` (fältet fanns redan i `Host`, men lästes tidigare
+/// aldrig av något i LinuxApp: `deploy_command`/`deploy_and_verify` antog
+/// alltid POSIX). Windows OpenSSH har en avsiktlig säkerhetsregel som gör
+/// att admin- och standardkonton måste hanteras helt olika — samma
+/// tre-vägars uppdelning som `Sources/SSHCore/KeyManagement.swift`.
+fn deploy_command_for_host(host: &Host, public_key_line: &str) -> String {
+    match host.platform {
+        crate::host::RemotePlatform::Posix => deploy_command(public_key_line),
+        crate::host::RemotePlatform::WindowsAdmin => {
+            deploy_command_windows(public_key_line, r"C:\ProgramData\ssh\administrators_authorized_keys", true)
+        }
+        crate::host::RemotePlatform::WindowsStandard => {
+            deploy_command_windows(public_key_line, r"$env:USERPROFILE\.ssh\authorized_keys", false)
+        }
+    }
+}
+
+/// Bygger ett Windows-kommando som anropar `powershell -EncodedCommand` med
+/// hela skriptet Base64/UTF-16LE-kodat — undviker helt att behöva escapa en
+/// fri kommentarsträng genom TVÅ nästlade skallager (SSH-exec-argumentet
+/// OCH cmd.exe/PowerShells egen citering). Base64 innehåller bara
+/// `[A-Za-z0-9+/=]`, alla säkra oquotade i cmd.exe. Samma logik/wire-format
+/// som Swift-sidans `deployPublicKeyCommandWindows` — verifierat mot
+/// samma teststräng-approach (ingen riktig Windows-värd tillgänglig i den
+/// här sandlådan, se testerna nedan).
+///
+/// `set_acl`: bara `.windows_admin` behöver `icacls`-låsningen — Win32-
+/// OpenSSH vägrar annars filen helt. Standardkontots egen `.ssh`-mapp har
+/// inga såna krav.
+fn deploy_command_windows(public_key_line: &str, path: &str, set_acl: bool) -> String {
+    let ps_quote = |s: &str| format!("'{}'", s.replace('\'', "''"));
+    let ps_key = ps_quote(public_key_line);
+    let ps_path = ps_quote(path);
+    let dir = path.rsplit_once('\\').map(|(d, _)| d).unwrap_or(path);
+    let ps_dir = ps_quote(dir);
+
+    let mut script = format!(
+        "$ErrorActionPreference = 'Stop'\n\
+         $key = {ps_key}\n\
+         $path = {ps_path}\n\
+         $dir = {ps_dir}\n\
+         if (!(Test-Path $dir)) {{ New-Item -ItemType Directory -Path $dir -Force | Out-Null }}\n\
+         if (!(Test-Path $path) -or -not (Select-String -Path $path -Pattern ([regex]::Escape($key)) -SimpleMatch -Quiet)) {{\n    \
+             Add-Content -Path $path -Value $key\n\
+         }}"
+    );
+    if set_acl {
+        script.push_str(
+            "\n\nicacls $path /inheritance:r | Out-Null\n\
+             icacls $path /grant SYSTEM:F /grant Administrators:F | Out-Null",
+        );
+    }
+
+    let utf16: Vec<u8> = script.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
+    format!("powershell -NoProfile -NonInteractive -EncodedCommand {encoded}")
+}
+
 /// Distribuerar den nya nyckeln (via den BEFINTLIGA auth-metoden i `host`)
 /// och verifierar sedan att den fungerar genom en HELT NY, separat
 /// anslutning som bara använder den nya nyckeln — motsvarar
@@ -154,7 +215,7 @@ async fn deploy_and_verify(
 ) -> Result<(), String> {
     let command = match authorized_keys_path_override {
         Some(path) => deploy_command_at(&public_key_line, path),
-        None => deploy_command(&public_key_line),
+        None => deploy_command_for_host(&host, &public_key_line),
     };
     let session = crate::ssh::connect(&host, password, None).await?;
     let mut channel = session.channel_open_session().await.map_err(|e| format!("kunde inte öppna kanal: {e}"))?;
@@ -280,6 +341,62 @@ mod tests {
         assert!(cmd.contains("grep -qxF"), "ska kolla om raden redan finns innan den lägger till den");
         // Enkelcitatet i kommentaren ska vara escapat, inte avslutat kommandot i förtid.
         assert!(cmd.contains("it'\\''s-a-comment"));
+    }
+
+    /// Avkodar en `powershell -EncodedCommand`-sträng tillbaka till klartext
+    /// för att kunna kontrollera INNEHÅLLET, inte bara att kommandot råkar
+    /// börja med rätt prefix.
+    fn decode_powershell_script(command: &str) -> String {
+        let encoded = command.strip_prefix("powershell -NoProfile -NonInteractive -EncodedCommand ").unwrap();
+        let utf16_bytes = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
+        let utf16: Vec<u16> =
+            utf16_bytes.chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
+        String::from_utf16(&utf16).unwrap()
+    }
+
+    #[test]
+    fn deploy_command_windows_admin_writes_administrators_authorized_keys_with_acl() {
+        let cmd = deploy_command_windows(
+            "ssh-ed25519 AAAA bastion@test",
+            r"C:\ProgramData\ssh\administrators_authorized_keys",
+            true,
+        );
+        assert!(cmd.starts_with("powershell -NoProfile -NonInteractive -EncodedCommand "));
+        let script = decode_powershell_script(&cmd);
+        assert!(script.contains(r"C:\ProgramData\ssh\administrators_authorized_keys"));
+        assert!(script.contains("Add-Content -Path $path -Value $key"));
+        assert!(script.contains("icacls $path /inheritance:r"), "adminkontot måste låsa ner ACL:erna");
+        assert!(script.contains("ssh-ed25519 AAAA bastion@test"));
+    }
+
+    #[test]
+    fn deploy_command_windows_standard_skips_the_acl_lockdown() {
+        let cmd = deploy_command_windows("ssh-ed25519 AAAA bastion@test", r"$env:USERPROFILE\.ssh\authorized_keys", false);
+        let script = decode_powershell_script(&cmd);
+        assert!(script.contains(r"$env:USERPROFILE\.ssh\authorized_keys"));
+        assert!(!script.contains("icacls"), "standardkontot ska INTE låsa ner ACL:er");
+    }
+
+    #[test]
+    fn deploy_command_windows_escapes_embedded_single_quotes_powershell_style() {
+        // PowerShell fördubblar enkelcitat (''), till skillnad från POSIX-skalets '\''.
+        let cmd = deploy_command_windows("ssh-ed25519 AAAA it's-a-comment", r"C:\path\authorized_keys", false);
+        let script = decode_powershell_script(&cmd);
+        assert!(script.contains("it''s-a-comment"), "fick: {script}");
+    }
+
+    #[test]
+    fn deploy_command_for_host_dispatches_on_platform() {
+        let mut host = Host::new("t".into(), "h".into(), "u".into());
+
+        host.platform = crate::host::RemotePlatform::Posix;
+        assert!(deploy_command_for_host(&host, "ssh-ed25519 AAAA").starts_with("mkdir -p"));
+
+        host.platform = crate::host::RemotePlatform::WindowsAdmin;
+        assert!(deploy_command_for_host(&host, "ssh-ed25519 AAAA").starts_with("powershell"));
+
+        host.platform = crate::host::RemotePlatform::WindowsStandard;
+        assert!(deploy_command_for_host(&host, "ssh-ed25519 AAAA").starts_with("powershell"));
     }
 
     #[tokio::test]
