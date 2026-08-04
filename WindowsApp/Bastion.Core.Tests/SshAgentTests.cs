@@ -71,6 +71,43 @@ public class SshAgentTests
         Assert.False(VerifyWithOpenSsl(ExtractRawPublicKey(blob), tampered, signature), "en signatur över ANNAN data ska inte verifiera");
     }
 
+    /// <summary>
+    /// Regressionstest vid SSH.NET-gränsen (CodeRabbit-fynd): `AgentHostAlgorithm.
+    /// Sign` MÅSTE returnera den SSH-KODADE signatur-bloben (format-namn +
+    /// signatur, båda som wire-strängar) — SSH.NET tilldelar returvärdet
+    /// rakt av till `RequestMessagePublicKey.Signature`. Att skicka de råa
+    /// signaturbytesen direkt (den ursprungliga buggen) hade gett en
+    /// ogiltig USERAUTH_REQUEST-signatur och agent-autentisering hade
+    /// ALDRIG lyckats mot en riktig server, trots att både agent-
+    /// protokollet och SSH.NET-anropet såg rätt ut isolerat.
+    /// </summary>
+    [Fact]
+    public void AgentHostAlgorithmSignReturnsAnSshEncodedSignatureBlobNotRawBytes()
+    {
+        if (!HasAgent) return;
+        using var agent = SshAgentClient.Connect();
+        Assert.NotNull(agent);
+        var identities = agent!.RequestIdentities();
+        Assert.NotEmpty(identities);
+        var (blob, _) = identities[0];
+
+        var algorithm = new AgentHostAlgorithm(agent, blob);
+        var data = Encoding.UTF8.GetBytes("bastion-agenthostalgorithm-sign-test");
+        var encoded = algorithm.Sign(data);
+
+        // SSH-wire-format: uint32 namnlängd + namn + uint32 siglängd + rå signatur.
+        var nameLength = (int)BinaryPrimitives.ReadUInt32BigEndian(encoded);
+        var name = Encoding.ASCII.GetString(encoded, 4, nameLength);
+        Assert.Equal("ssh-ed25519", name);
+        var sigOffset = 4 + nameLength;
+        var sigLength = (int)BinaryPrimitives.ReadUInt32BigEndian(encoded.AsSpan(sigOffset));
+        var rawSignature = encoded[(sigOffset + 4)..(sigOffset + 4 + sigLength)];
+        Assert.Equal(64, rawSignature.Length);
+        Assert.Equal(encoded.Length, sigOffset + 4 + sigLength);
+
+        Assert.True(VerifyWithOpenSsl(ExtractRawPublicKey(blob), data, rawSignature), "den UPPACKADE rå signaturen inuti SSH-kuvertet måste fortfarande verifiera mot exakt samma data");
+    }
+
     private static string ExtractAlgorithmName(byte[] blob)
     {
         var length = (int)BinaryPrimitives.ReadUInt32BigEndian(blob);
