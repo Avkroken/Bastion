@@ -1298,7 +1298,29 @@ Inget nytt att bygga, bara verifiera/lansera:
   Härledd `Depends` verifierad lokalt: `libc6, libadwaita-1-0,
   libglib2.0-0t64, libgtk-4-1, libvte-2.91-gtk4-0`.
 
-  **Kvar**: `.rpm` för `bastion-linuxapp`, FreeBSD-bygge (Swift har
+  **`.rpm`-paketering av `bastion-linuxapp`** (2026-08-04,
+  `linuxapp-packaging-rpm.yml`): ✅ klart (CI-verifierat, ej lokalt körbart
+  i den här sandlådan — se nedan) — RPM-halvan av samma backloggpunkt,
+  samma härledda-`Requires`-teknik (`readelf -d` → `rpm -qf` i stället för
+  `dpkg -S`). Byggs i en `fedora:40`-container (INTE RHEL UBI9, som
+  `bastion-cli`s `.rpm`-jobb använder — UBI9s begränsade repos saknar
+  GTK4/libadwaita/VTE4-skrivbordspaketen; Fedora-paketnamnen `gtk4-devel`/
+  `libadwaita-devel`/`vte291-gtk4-devel` bekräftade via websökning, inte
+  gissade). Körs medvetet som `docker run fedora:40 …` i stället för
+  jobbnivåns `container:`-nyckel: både build- och smoke-test-stegen
+  behöver ett eget `docker run` (det senare i en HELT FRISK container,
+  samma "fel sak bevisad annars"-princip som `.deb`-jobbet), och ett
+  containeriserat jobb har ingen egen docker-daemon-åtkomst (ingen
+  docker-in-docker utan extra uppsättning på GitHub-runners). Byggskriptet
+  ligger i `LinuxApp/packaging/build-rpm.sh` (inte inline i YAML) för att
+  undvika skör nästlad bash-i-YAML-citering. **Ej körbart lokalt i den här
+  sandlådan**: `docker run` gav "permission denied" mot den lokala
+  docker-sockeln (samma begränsning gällde redan `.deb`-jobbets
+  container-baserade smoke-test) — skriptet är syntaxkontrollerat
+  (`bash -n`) och YAML:et schemavaliderat, men den FAKTISKA `dnf install`/
+  `rpmbuild`/smoke-test-körningen är overifierad tills CI kör den.
+
+  **Kvar**: FreeBSD-bygge (Swift har
   community-toolchains där; LinuxApp/Rust har sin egen story att
   utreda), OpenBSD/NetBSD-undersökning (oklart om något av detta ens
   fungerar där än — måste verifieras mot en riktig installation innan
