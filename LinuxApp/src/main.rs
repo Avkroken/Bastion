@@ -13,6 +13,7 @@ mod host;
 mod key_deploy;
 mod known_hosts;
 mod port_forward;
+mod s3;
 mod settings;
 mod sftp;
 mod snippet;
@@ -51,6 +52,10 @@ fn build_ui(app: &adw::Application) {
     let wireguard_store = Rc::new(RefCell::new(
         wireguard::WireGuardProfileStore::open(wireguard::WireGuardProfileStore::default_path())
             .expect("kunde inte öppna wireguard-profildatabasen"),
+    ));
+    let s3_store = Rc::new(RefCell::new(
+        s3::S3ConnectionStore::open(s3::S3ConnectionStore::default_path())
+            .expect("kunde inte öppna s3-anslutningsdatabasen"),
     ));
     let sync_config = Rc::new(RefCell::new(sync::SyncConfig::load(
         &sync::SyncConfig::default_path(),
@@ -143,6 +148,16 @@ fn build_ui(app: &adw::Application) {
         move |_| show_wireguard_profile_list(&app, &wireguard_store)
     ));
 
+    let s3_button = gtk::Button::from_icon_name("folder-remote-symbolic");
+    s3_button.set_tooltip_text(Some("S3-anslutningar"));
+    s3_button.connect_clicked(clone!(
+        #[weak]
+        app,
+        #[strong]
+        s3_store,
+        move |_| show_s3_connection_list(&app, &s3_store)
+    ));
+
     let settings_button = gtk::Button::from_icon_name("preferences-system-symbolic");
     settings_button.set_tooltip_text(Some("Funktioner"));
     settings_button.connect_clicked(clone!(
@@ -176,6 +191,7 @@ fn build_ui(app: &adw::Application) {
     sidebar_header.pack_end(&telnet_button);
     sidebar_header.pack_end(&tailscale_button);
     sidebar_header.pack_end(&wireguard_button);
+    sidebar_header.pack_end(&s3_button);
     sidebar_header.pack_end(&settings_button);
 
     let sidebar_content = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -1952,6 +1968,280 @@ fn show_wireguard_profile_edit(
                 return;
             }
             refresh_wireguard_profile_list(&app, &wireguard_store, &list, &parent_win);
+            win.close();
+        }
+    ));
+
+    win.present();
+}
+
+/// Lista över sparade S3-anslutningar — v1: hantera ANSLUTNINGAR (namn/
+/// endpoint/region/nycklar), motsvarande `App/`s (planerade) motsvarighet.
+/// **Kvar**: själva bucket-/objektbläddraren (`s3::S3Client::list_buckets`/
+/// `list_objects`/`put_object`/`get_object` är redan klara och testade,
+/// se `s3.rs`) — samma "backend klart, ytlager en avgränsad uppföljning"-
+/// mönster som synkmotorn hade innan dess UI kom på plats.
+fn show_s3_connection_list(app: &adw::Application, s3_store: &Rc<RefCell<s3::S3ConnectionStore>>) {
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(12)
+        .margin_bottom(12)
+        .build();
+    let scrolled = gtk::ScrolledWindow::builder().child(&list).vexpand(true).build();
+
+    let add_button = gtk::Button::from_icon_name("list-add-symbolic");
+    add_button.set_tooltip_text(Some("Ny anslutning"));
+    let header = adw::HeaderBar::new();
+    header.pack_end(&add_button);
+    header.set_title_widget(Some(&adw::WindowTitle::new("S3-anslutningar", "")));
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&scrolled);
+
+    let win = adw::Window::builder()
+        .transient_for(&app.active_window().expect("inget aktivt fönster"))
+        .modal(true)
+        .default_width(420)
+        .default_height(480)
+        .content(&content)
+        .build();
+
+    refresh_s3_connection_list(app, s3_store, &list, &win);
+
+    add_button.connect_clicked(clone!(
+        #[strong]
+        app,
+        #[strong]
+        s3_store,
+        #[weak]
+        list,
+        #[weak]
+        win,
+        move |_| show_s3_connection_edit(
+            &app,
+            &s3_store,
+            &list,
+            &win,
+            s3::S3Connection::new(
+                String::new(),
+                String::new(),
+                "us-east-1".to_string(),
+                String::new(),
+                String::new(),
+            ),
+        )
+    ));
+
+    win.present();
+}
+
+fn refresh_s3_connection_list(
+    app: &adw::Application,
+    s3_store: &Rc<RefCell<s3::S3ConnectionStore>>,
+    list: &gtk::ListBox,
+    parent_win: &adw::Window,
+) {
+    while let Some(row) = list.row_at_index(0) {
+        list.remove(&row);
+    }
+    for connection in s3_store.borrow().all() {
+        let row = adw::ActionRow::builder()
+            .title(&connection.name)
+            .subtitle(format!("{} · {}", connection.endpoint, connection.region))
+            .activatable(true)
+            .build();
+
+        let delete_button = gtk::Button::from_icon_name("user-trash-symbolic");
+        delete_button.set_tooltip_text(Some("Ta bort"));
+        delete_button.add_css_class("flat");
+        delete_button.connect_clicked(clone!(
+            #[strong]
+            app,
+            #[strong]
+            s3_store,
+            #[weak]
+            list,
+            #[weak]
+            parent_win,
+            #[strong(rename_to = connection_id)]
+            connection.id,
+            move |_| {
+                if let Err(e) = s3_store.borrow_mut().delete(connection_id) {
+                    eprintln!("kunde inte ta bort s3-anslutningen: {e}");
+                    return;
+                }
+                refresh_s3_connection_list(&app, &s3_store, &list, &parent_win);
+            }
+        ));
+        row.add_suffix(&delete_button);
+
+        row.connect_activated(clone!(
+            #[strong]
+            app,
+            #[strong]
+            s3_store,
+            #[weak]
+            list,
+            #[weak]
+            parent_win,
+            #[strong]
+            connection,
+            move |_| show_s3_connection_edit(&app, &s3_store, &list, &parent_win, connection.clone())
+        ));
+
+        list.append(&row);
+    }
+}
+
+fn show_s3_connection_edit(
+    app: &adw::Application,
+    s3_store: &Rc<RefCell<s3::S3ConnectionStore>>,
+    list: &gtk::ListBox,
+    parent_win: &adw::Window,
+    connection: s3::S3Connection,
+) {
+    let name_row = adw::EntryRow::builder().title("Namn").text(&connection.name).build();
+    let endpoint_row = adw::EntryRow::builder()
+        .title("Endpoint (t.ex. https://s3.example.com)")
+        .text(&connection.endpoint)
+        .build();
+    let region_row = adw::EntryRow::builder().title("Region").text(&connection.region).build();
+    let access_key_row = adw::EntryRow::builder()
+        .title("Access Key ID")
+        .text(&connection.access_key_id)
+        .build();
+    let secret_key_row = adw::PasswordEntryRow::builder()
+        .title("Secret Access Key")
+        .text(&connection.secret_access_key)
+        .build();
+
+    let test_button = gtk::Button::with_label("Testa anslutning");
+    let test_status_label = gtk::Label::builder()
+        .margin_start(12)
+        .margin_end(12)
+        .margin_bottom(8)
+        .halign(gtk::Align::Start)
+        .wrap(true)
+        .build();
+
+    let group = adw::PreferencesGroup::new();
+    group.add(&name_row);
+    group.add(&endpoint_row);
+    group.add(&region_row);
+    group.add(&access_key_row);
+    group.add(&secret_key_row);
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+
+    let save_button = gtk::Button::with_label("Spara");
+    save_button.add_css_class("suggested-action");
+    let cancel_button = gtk::Button::with_label("Avbryt");
+    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    header.pack_start(&cancel_button);
+    header.pack_end(&save_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&page);
+    content.append(&test_button);
+    content.append(&test_status_label);
+
+    let win = adw::Window::builder()
+        .transient_for(parent_win)
+        .modal(true)
+        .default_width(420)
+        .default_height(360)
+        .title("S3-anslutning")
+        .content(&content)
+        .build();
+
+    cancel_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        move |_| win.close()
+    ));
+    // Bygger ett ANONYMT S3Connection av de aktuella fältvärdena (inte
+    // nödvändigtvis sparade än) — "Testa" ska verifiera det som STÅR i
+    // formuläret just nu, inte den senast sparade versionen, samma
+    // resonemang som key_deploy's "verifiera innan lösenordet tas bort".
+    test_button.connect_clicked(clone!(
+        #[strong]
+        connection,
+        #[strong]
+        endpoint_row,
+        #[strong]
+        region_row,
+        #[strong]
+        access_key_row,
+        #[strong]
+        secret_key_row,
+        #[strong]
+        test_status_label,
+        #[strong]
+        test_button,
+        move |_| {
+            let mut candidate = connection.clone();
+            candidate.endpoint = endpoint_row.text().trim().to_string();
+            candidate.region = region_row.text().trim().to_string();
+            candidate.access_key_id = access_key_row.text().trim().to_string();
+            candidate.secret_access_key = secret_key_row.text().to_string();
+
+            test_status_label.set_label("Testar…");
+            test_button.set_sensitive(false);
+            let rx = s3::spawn_test_connection(candidate);
+            glib::spawn_future_local(clone!(
+                #[strong]
+                test_status_label,
+                #[strong]
+                test_button,
+                async move {
+                    match rx.recv().await {
+                        Ok(Ok(buckets)) => test_status_label.set_label(&format!(
+                            "Anslutningen fungerar — {} bucket(s) hittades.",
+                            buckets.len()
+                        )),
+                        Ok(Err(e)) => test_status_label.set_label(&format!("Fel: {e}")),
+                        Err(_) => test_status_label.set_label("Kanalen stängdes oväntat"),
+                    }
+                    test_button.set_sensitive(true);
+                }
+            ));
+        }
+    ));
+    save_button.connect_clicked(clone!(
+        #[strong]
+        app,
+        #[strong]
+        s3_store,
+        #[weak]
+        list,
+        #[strong]
+        parent_win,
+        #[weak]
+        win,
+        #[strong]
+        connection,
+        move |_| {
+            let name = name_row.text().trim().to_string();
+            let endpoint = endpoint_row.text().trim().to_string();
+            if name.is_empty() || endpoint.is_empty() {
+                return;
+            }
+            let mut updated = connection.clone();
+            updated.name = name;
+            updated.endpoint = endpoint;
+            updated.region = region_row.text().trim().to_string();
+            updated.access_key_id = access_key_row.text().trim().to_string();
+            updated.secret_access_key = secret_key_row.text().to_string();
+            if let Err(e) = s3_store.borrow_mut().upsert(updated) {
+                eprintln!("kunde inte spara s3-anslutningen: {e}");
+                return;
+            }
+            refresh_s3_connection_list(&app, &s3_store, &list, &parent_win);
             win.close();
         }
     ));
