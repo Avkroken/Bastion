@@ -30,4 +30,19 @@ public class HostAuthTests
         var back = JsonSerializer.Deserialize<HostAuth>(json);
         Assert.Equal(auth, back);
     }
+
+    [Fact]
+    public void MoreThanOneCaseKeyIsRejected()
+    {
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<HostAuth>("""{"askPassword":{},"agentDefault":{}}"""));
+    }
+
+    [Fact]
+    public void ANonObjectValueIsRejectedAsAJsonExceptionNotAnUnhandledOne()
+    {
+        // Måste bli JsonException specifikt — HostStore.Load fångar bara
+        // just den typen för att falla tillbaka på äldre format.
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<HostAuth>("\"not-an-object\""));
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<HostAuth>("42"));
+    }
 }

@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace Bastion.Core;
 
 /// <summary>
@@ -7,13 +9,35 @@ namespace Bastion.Core;
 /// </summary>
 public static class SyncEngine
 {
+    /// <summary>
+    /// Stabil, ordningsoberoende tiebreak-nyckel för två <see cref="Host"/>-
+    /// värden med EXAKT samma <c>ModifiedAt</c> — jämförelsen bryr sig bara
+    /// om att den ger SAMMA svar för samma par oavsett besöksordning, inte
+    /// om vilken av dem som "objektivt" är bäst (det finns inget sådant på
+    /// en äkta tidsstämpel-krock). Samma princip som
+    /// <c>LinuxApp/src/sync.rs</c>s <c>tiebreak_key</c>.
+    /// </summary>
+    private static string TiebreakKey(Host h) => JsonSerializer.Serialize(h);
+
     public static SyncState Merge(SyncState a, SyncState b)
     {
         var newestHost = new Dictionary<Guid, Host>();
         foreach (var h in a.Hosts.Concat(b.Hosts))
         {
-            if (!newestHost.TryGetValue(h.Id, out var existing) || h.ModifiedAt.Seconds >= existing.ModifiedAt.Seconds)
+            if (!newestHost.TryGetValue(h.Id, out var existing))
+            {
                 newestHost[h.Id] = h;
+                continue;
+            }
+            // `>=` gjorde detta ORDNINGSBEROENDE på en EXAKT tidsstämpel-
+            // krock: sist besökt i `Concat` (alltså `b`s kopia i
+            // `Merge(a, b)`, men `a`s i `Merge(b, a)`) vann alltid —
+            // `Merge(a, b) != Merge(b, a)`, ett brott mot kommutativitets-
+            // löftet (CodeRabbit-fynd). Avgörs nu istället av en stabil
+            // jämförelse av VÄRDET självt när tidsstämplarna är exakt lika.
+            var cmp = h.ModifiedAt.Seconds.CompareTo(existing.ModifiedAt.Seconds);
+            var replace = cmp > 0 || (cmp == 0 && string.CompareOrdinal(TiebreakKey(h), TiebreakKey(existing)) > 0);
+            if (replace) newestHost[h.Id] = h;
         }
 
         var tomb = new Dictionary<Guid, ReferenceDate>();

@@ -26,9 +26,19 @@ public sealed class HostAuthConverter : JsonConverter<HostAuth>
     public override HostAuth Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
         using var doc = JsonDocument.ParseValue(ref reader);
-        var prop = doc.RootElement.EnumerateObject().FirstOrDefault();
-        if (prop.Value.ValueKind == JsonValueKind.Undefined)
-            throw new JsonException("HostAuth: tom map, väntade exakt en case-nyckel");
+        // `EnumerateObject()` kastar `InvalidOperationException` (INTE
+        // `JsonException`) om roten inte är ett objekt — en sträng/siffra i
+        // en delad `hosts.json` skulle annars propagera ett otypat fel
+        // förbi `HostStore.Load`s `catch (JsonException)` istället för att
+        // ta den avsedda äldre-format-vägen (CodeRabbit-fynd). Samtidigt
+        // avvisas fler än EN case-nyckel — samma skydd som
+        // `LinuxApp/src/host.rs`s `HostAuth`-deserialisering fick.
+        if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            throw new JsonException($"HostAuth: väntade ett JSON-objekt, fick {doc.RootElement.ValueKind}");
+        var properties = doc.RootElement.EnumerateObject().ToList();
+        if (properties.Count != 1)
+            throw new JsonException($"HostAuth: väntade exakt en case-nyckel, hittade {properties.Count}");
+        var prop = properties[0];
         var payload = prop.Value;
         return prop.Name switch
         {

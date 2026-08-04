@@ -23,6 +23,14 @@ public sealed class HostStore
         _state = Load(path);
     }
 
+    /// <summary>
+    /// Skiljer "filen finns inte än" (tomt tillstånd är korrekt) från
+    /// "filen finns men går inte att tolka i något av de två kända
+    /// formaten" (kasta vidare) — innan denna fix kollapsade båda till ett
+    /// tomt <see cref="SyncState"/>, så nästa <see cref="Upsert"/>/
+    /// <see cref="Delete"/> skrev permanent över en bara TRUNKERAD (inte
+    /// tom) fil med tomt innehåll, en tyst dataförlust utan varning.
+    /// </summary>
     private static SyncState Load(string path)
     {
         if (!File.Exists(path)) return new SyncState();
@@ -34,15 +42,7 @@ public sealed class HostStore
         catch (JsonException)
         {
             // Äldre format: en ren Host[]-array utan SyncState-omslag.
-            try
-            {
-                var hosts = JsonSerializer.Deserialize<List<Host>>(text, JsonOptions) ?? new();
-                return new SyncState { Hosts = hosts };
-            }
-            catch (JsonException)
-            {
-                return new SyncState();
-            }
+            return new SyncState { Hosts = JsonSerializer.Deserialize<List<Host>>(text, JsonOptions) ?? new() };
         }
     }
 
@@ -90,6 +90,6 @@ public sealed class HostStore
     {
         var dir = Path.GetDirectoryName(_path);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-        File.WriteAllText(_path, JsonSerializer.Serialize(_state, JsonOptions));
+        FsUtil.AtomicWriteText(_path, JsonSerializer.Serialize(_state, JsonOptions));
     }
 }

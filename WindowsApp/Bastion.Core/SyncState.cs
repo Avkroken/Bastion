@@ -18,24 +18,48 @@ public sealed class SyncState
 
 public sealed class SyncStateConverter : JsonConverter<SyncState>
 {
+    /// <summary>
+    /// `HostStore.Load` faller tillbaka på ett äldre format (en ren
+    /// <c>Host[]</c>-array) om detta kastar `JsonException` — men
+    /// `JsonElement.GetProperty`/`GetString`/`GetDouble`/`Guid.Parse` kastar
+    /// ALLA andra otypade undantag (`KeyNotFoundException`,
+    /// `InvalidOperationException`, `FormatException`) på precis den
+    /// legacy-arrayen (rot = array, ingen `"hosts"`-egenskap), vilket
+    /// tidigare lät felet propagera FÖRBI fallback-vägen istället för att
+    /// trigga den (CodeRabbit-fynd). Allt nedan är därför wrappat så ATT
+    /// undantaget alltid blir en `JsonException`.
+    /// </summary>
     public override SyncState Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
         using var doc = JsonDocument.ParseValue(ref reader);
         var root = doc.RootElement;
-        var state = new SyncState
+        try
         {
-            Hosts = JsonSerializer.Deserialize<List<Host>>(root.GetProperty("hosts").GetRawText(), options) ?? new(),
-        };
-        var flat = root.GetProperty("tombstones");
-        var items = flat.EnumerateArray().ToList();
-        if (items.Count % 2 != 0)
-            throw new JsonException("tombstones: udda antal element i platt array");
-        for (var i = 0; i < items.Count; i += 2)
-        {
-            var id = Guid.Parse(items[i].GetString() ?? throw new JsonException("tombstones: ogiltig UUID-nyckel"));
-            state.Tombstones[id] = new ReferenceDate(items[i + 1].GetDouble());
+            if (root.ValueKind != JsonValueKind.Object)
+                throw new JsonException($"SyncState: väntade ett JSON-objekt, fick {root.ValueKind}");
+            if (!root.TryGetProperty("hosts", out var hostsElement))
+                throw new JsonException("SyncState: saknar fältet hosts");
+            if (!root.TryGetProperty("tombstones", out var flat))
+                throw new JsonException("SyncState: saknar fältet tombstones");
+
+            var state = new SyncState
+            {
+                Hosts = JsonSerializer.Deserialize<List<Host>>(hostsElement.GetRawText(), options) ?? new(),
+            };
+            var items = flat.EnumerateArray().ToList();
+            if (items.Count % 2 != 0)
+                throw new JsonException("tombstones: udda antal element i platt array");
+            for (var i = 0; i < items.Count; i += 2)
+            {
+                var id = Guid.Parse(items[i].GetString() ?? throw new JsonException("tombstones: ogiltig UUID-nyckel"));
+                state.Tombstones[id] = new ReferenceDate(items[i + 1].GetDouble());
+            }
+            return state;
         }
-        return state;
+        catch (Exception e) when (e is not JsonException)
+        {
+            throw new JsonException($"SyncState: {e.Message}", e);
+        }
     }
 
     public override void Write(Utf8JsonWriter writer, SyncState value, JsonSerializerOptions options)

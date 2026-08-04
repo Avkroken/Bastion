@@ -19,6 +19,15 @@ public static class SyncCrypto
     private const int SaltLen = 16;
     private const int NonceLen = 12;
     private const int TagLen = 16;
+    /// <summary>
+    /// Gräns för <c>iterations</c>-fältet LÄST UR EN FIL — kuvertet kommer
+    /// per design från en obetrodd tredjepartsmapp, så en manipulerad fil
+    /// kan annars tvinga fram en godtyckligt dyr PBKDF2-körning INNAN AEAD-
+    /// autentiseringen ens hunnit avvisa den (samma DoS-resonemang/gräns
+    /// som <c>LinuxApp/src/sync_crypto.rs</c>).
+    /// </summary>
+    private const uint MinIterations = 1_000;
+    private const uint MaxIterations = 10_000_000;
 
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
@@ -60,7 +69,10 @@ public static class SyncCrypto
 
         var iterationsBytes = data.AsSpan(Magic.Length, 4).ToArray();
         if (BitConverter.IsLittleEndian) Array.Reverse(iterationsBytes);
-        var iterations = (int)BitConverter.ToUInt32(iterationsBytes);
+        var iterationsRaw = BitConverter.ToUInt32(iterationsBytes);
+        if (iterationsRaw < MinIterations || iterationsRaw > MaxIterations)
+            throw new SyncCryptoException(SyncCryptoError.BadFormat);
+        var iterations = (int)iterationsRaw;
 
         var salt = data.AsSpan(Magic.Length + 4, SaltLen).ToArray();
         var nonce = data.AsSpan(Magic.Length + 4 + SaltLen, NonceLen).ToArray();
@@ -114,6 +126,6 @@ public sealed class EncryptedFolderSyncProvider(string path, string passphrase) 
     {
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-        File.WriteAllBytes(path, SyncCrypto.Seal(state, passphrase));
+        FsUtil.AtomicWrite(path, SyncCrypto.Seal(state, passphrase));
     }
 }

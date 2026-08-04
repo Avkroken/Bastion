@@ -44,6 +44,40 @@ public class HostStoreTests
     }
 
     [Fact]
+    public void ACorruptHostsJsonThrowsInsteadOfSilentlyBecomingEmpty()
+    {
+        var dir = TempDir();
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "hosts.json");
+        File.WriteAllText(path, "{ det här är inte giltig json");
+
+        Assert.ThrowsAny<System.Text.Json.JsonException>(() => new HostStore(path));
+        Directory.Delete(dir, true);
+    }
+
+    /// <summary>
+    /// Ett äldre format (en ren <c>Host[]</c>-array utan SyncState-omslag)
+    /// ska fortfarande gå att läsa — regressionstest för
+    /// <see cref="SyncStateConverter"/>s omskrivning (den skulle annars
+    /// kunna kasta ett otypat undantag på just den här formen och missa
+    /// fallback-vägen helt).
+    /// </summary>
+    [Fact]
+    public void ALegacyBareHostArrayStillLoadsCorrectly()
+    {
+        var dir = TempDir();
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "hosts.json");
+        File.WriteAllText(path, """[{"id":"00000000-0000-0000-0000-000000000001","alias":"legacy","hostName":"h","user":"u","modifiedAt":0}]""");
+
+        var store = new HostStore(path);
+        var hosts = store.All();
+        Assert.Single(hosts);
+        Assert.Equal("legacy", hosts[0].Alias);
+        Directory.Delete(dir, true);
+    }
+
+    [Fact]
     public void DeleteAddsATombstoneThatSurvivesReopen()
     {
         var dir = TempDir();
@@ -103,6 +137,24 @@ public class SyncEngineTests
         Assert.Single(merged.Hosts);
         Assert.Equal("återupplivad", merged.Hosts[0].Alias);
         Assert.Empty(merged.Tombstones);
+    }
+
+    /// <summary>
+    /// Regressionstest för en ORDNINGSBEROENDE tie-bugg (CodeRabbit-fynd):
+    /// på en EXAKT tidsstämpel-krock vann tidigare alltid den sist besökta
+    /// kopian i <c>Concat</c> — <c>Merge(a, b)</c> gav ett annat resultat
+    /// än <c>Merge(b, a)</c>.
+    /// </summary>
+    [Fact]
+    public void MergeIsCommutativeEvenOnAnExactModifiedAtTie()
+    {
+        var id = Guid.NewGuid();
+        var a = new SyncState { Hosts = { HostAt("alpha", id, 42) } };
+        var b = new SyncState { Hosts = { HostAt("bravo", id, 42) } };
+        var ab = SyncEngine.Merge(a, b);
+        var ba = SyncEngine.Merge(b, a);
+        Assert.Single(ab.Hosts);
+        Assert.Equal(ab.Hosts[0].Alias, ba.Hosts[0].Alias);
     }
 
     /// <summary>

@@ -60,6 +60,25 @@ public class SyncCryptoTests
         Assert.Equal(SyncCryptoError.BadFormat, ex.Error);
     }
 
+    /// <summary>
+    /// En manipulerad fil kan sätta `iterations` i kuverthuvudet till vad
+    /// som helst — ett absurt lågt (bruteforce-billigt) eller absurt högt
+    /// (CPU-DoS) värde ska avvisas INNAN någon PBKDF2-körning eller
+    /// AEAD-dekryptering ens försöks.
+    /// </summary>
+    [Theory]
+    [InlineData(1u)]
+    [InlineData(uint.MaxValue)]
+    public void OutOfRangeIterationCountInTheEnvelopeHeaderIsRejected(uint tamperedIterations)
+    {
+        var blob = SyncCrypto.Seal(SampleState(), "pw", 1000);
+        var iterationsBytes = BitConverter.GetBytes(tamperedIterations);
+        if (BitConverter.IsLittleEndian) Array.Reverse(iterationsBytes);
+        Array.Copy(iterationsBytes, 0, blob, 6, 4); // magic "BSYNC1" är 6 bytes
+        var ex = Assert.Throws<SyncCryptoException>(() => SyncCrypto.Open(blob, "pw"));
+        Assert.Equal(SyncCryptoError.BadFormat, ex.Error);
+    }
+
     [Fact]
     public void CiphertextLeaksNoPlaintext()
     {

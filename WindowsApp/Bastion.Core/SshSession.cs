@@ -47,15 +47,29 @@ public sealed class SshSession : IDisposable
             }
         };
 
-        client.Connect();
-
-        var shell = client.CreateShellStream("xterm-256color", cols, rows, 0, 0, 4096);
-        if (!string.IsNullOrEmpty(host.StartupCommand))
+        // `client` (och dess underliggande socket) läcker annars om
+        // `Connect()`/`CreateShellStream()` kastar — inklusive det
+        // AVSIKTLIGA host-key-ändrat-avslaget ovan, som gör exakt det via
+        // `HostKeyReceived`. `RunCommand` nedan gör redan rätt med `using`;
+        // detta var en inkonsekvens, inte ett medvetet undantag
+        // (CodeRabbit-fynd).
+        try
         {
-            shell.WriteLine(host.StartupCommand);
-        }
+            client.Connect();
 
-        return new SshSession(client, shell);
+            var shell = client.CreateShellStream("xterm-256color", cols, rows, 0, 0, 4096);
+            if (!string.IsNullOrEmpty(host.StartupCommand))
+            {
+                shell.WriteLine(host.StartupCommand);
+            }
+
+            return new SshSession(client, shell);
+        }
+        catch
+        {
+            client.Dispose();
+            throw;
+        }
     }
 
     private static AuthenticationMethod BuildAuthenticationMethod(Host host, string? password) => host.Auth switch
@@ -80,6 +94,10 @@ public sealed class SshSession : IDisposable
         };
         client.Connect();
         using var cmd = client.CreateCommand(command);
+        // Utan detta kan en hängande/ovanligt långsam fjärrprocess (samma
+        // användningsfall som ssh.rs::COMMAND_TIMEOUT — Docker-listor/
+        // -loggar) blockera anropet obestämt (CodeRabbit-fynd).
+        cmd.CommandTimeout = TimeSpan.FromSeconds(30);
         return cmd.Execute();
     }
 
