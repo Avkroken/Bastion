@@ -175,7 +175,7 @@ fn deploy_command_windows(public_key_line: &str, path: &str, set_acl: bool) -> S
          $path = {ps_path}\n\
          $dir = {ps_dir}\n\
          if (!(Test-Path $dir)) {{ New-Item -ItemType Directory -Path $dir -Force | Out-Null }}\n\
-         if (!(Test-Path $path) -or -not (Select-String -Path $path -Pattern ([regex]::Escape($key)) -SimpleMatch -Quiet)) {{\n    \
+         if (!(Test-Path $path) -or -not (Select-String -LiteralPath $path -Pattern $key -SimpleMatch -Quiet)) {{\n    \
              Add-Content -Path $path -Value $key\n\
          }}"
     );
@@ -386,6 +386,21 @@ mod tests {
         let cmd = deploy_command_windows("ssh-ed25519 AAAA bastion@test", r"$env:USERPROFILE\.ssh\authorized_keys", false);
         let script = decode_powershell_script(&cmd);
         assert!(!script.contains("icacls"), "standardkontot ska INTE låsa ner ACL:er");
+    }
+
+    /// `-SimpleMatch` gör redan sökningen LITERAL — att ändå köra `$key`
+    /// genom `[regex]::Escape` (TIDIGARE kod) bäddar in bakstreck i en
+    /// kommentar som t.ex. `key[prod]`, vilket gör att det escapade
+    /// mönstret ALDRIG matchar den riktiga, oescapade raden i filen.
+    /// Idempotensen hade alltså varit trasig för varje nyckelkommentar med
+    /// hakparenteser eller andra regex-specialtecken — samma nyckel hade
+    /// lagts till på nytt vid varje körning (CodeRabbit-fynd).
+    #[test]
+    fn deploy_command_windows_uses_a_literal_simplematch_not_a_regex_escaped_one() {
+        let cmd = deploy_command_windows("ssh-ed25519 AAAA key[prod]", r"C:\path\authorized_keys", false);
+        let script = decode_powershell_script(&cmd);
+        assert!(!script.contains("[regex]::Escape"), "fick: {script}");
+        assert!(script.contains("-Pattern $key -SimpleMatch"), "fick: {script}");
     }
 
     /// `$env:USERPROFILE` fick TIDIGARE inbäddas i ett enkelcitat PowerShell-
