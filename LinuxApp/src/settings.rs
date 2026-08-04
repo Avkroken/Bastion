@@ -59,16 +59,29 @@ impl AppSettingsStore {
             .join(".bastion/settings.json")
     }
 
-    pub fn open(path: std::path::PathBuf) -> Self {
-        let toggles = Self::load(&path);
-        AppSettingsStore { path, toggles }
+    pub fn open(path: std::path::PathBuf) -> std::io::Result<Self> {
+        let toggles = Self::load(&path)?;
+        Ok(AppSettingsStore { path, toggles })
     }
 
-    fn load(path: &std::path::Path) -> FeatureToggles {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|data| serde_json::from_str(&data).ok())
-            .unwrap_or_default()
+    /// Skiljer "filen finns inte än" (standardvärden är korrekt) från
+    /// "filen finns men går inte att tolka" (propagera felet) — samma
+    /// princip som `HostStore::load`, som en trunkerad/skadad fil annars
+    /// tyst hade kollapsat till standardvärden här också.
+    fn load(path: &std::path::Path) -> std::io::Result<FeatureToggles> {
+        let data = match std::fs::read_to_string(path) {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(FeatureToggles::default());
+            }
+            Err(e) => return Err(e),
+        };
+        serde_json::from_str(&data).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{}: {e}", path.display()),
+            )
+        })
     }
 
     pub fn current(&self) -> FeatureToggles {
@@ -89,7 +102,7 @@ impl AppSettingsStore {
             }
         }
         let json = serde_json::to_string_pretty(&new_value)?;
-        std::fs::write(&self.path, json)?;
+        crate::fsutil::atomic_write(&self.path, json.as_bytes())?;
         self.toggles = new_value;
         Ok(())
     }
@@ -108,14 +121,15 @@ mod tests {
 
     #[test]
     fn round_trips_through_disk() {
-        let dir = std::env::temp_dir().join(format!("bastion-settings-test-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("bastion-settings-test-{}", uuid::Uuid::new_v4()));
         let path = dir.join("settings.json");
-        let mut store = AppSettingsStore::open(path.clone());
+        let mut store = AppSettingsStore::open(path.clone()).unwrap();
         let mut toggles = store.current();
         toggles.show_docker = false;
         store.update(toggles).unwrap();
 
-        let reopened = AppSettingsStore::open(path);
+        let reopened = AppSettingsStore::open(path).unwrap();
         assert!(!reopened.current().show_docker);
         std::fs::remove_dir_all(dir).ok();
     }
@@ -128,7 +142,26 @@ mod tests {
         let json = serde_json::to_string(&FeatureToggles::default()).unwrap();
         assert!(json.contains("\"showDocker\":true"));
         assert!(json.contains("\"showSFTPBrowser\":true"), "fick: {json}");
-        assert!(!json.contains("showSftpBrowser"), "serdes auto-camelCase skulle ha gett fel casing: {json}");
+        assert!(
+            !json.contains("showSftpBrowser"),
+            "serdes auto-camelCase skulle ha gett fel casing: {json}"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_settings_file_is_an_error_not_a_silent_default_fallback() {
+        let dir =
+            std::env::temp_dir().join(format!("bastion-settings-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, "{ inte giltig json").unwrap();
+
+        let result = AppSettingsStore::open(path);
+        assert!(
+            result.is_err(),
+            "en trunkerad/skadad fil ska propagera ett fel, inte tyst falla tillbaka på standardvärden"
+        );
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

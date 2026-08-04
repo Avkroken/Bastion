@@ -16,6 +16,15 @@ use rand::Rng;
 use sha2::Sha256;
 
 pub const DEFAULT_ITERATIONS: u32 = 210_000;
+/// Gräns för `iterations`-fältet LÄST UR EN FIL — kuvertet kommer per design
+/// från en obetrodd tredjepartsmapp (se modulnoten), så en manipulerad fil
+/// kan annars tvinga fram en godtyckligt dyr PBKDF2-körning INNAN AEAD-
+/// autentiseringen ens har hunnit avvisa den (en DoS-vektor: ett par hundra
+/// byte kan binda CPU:n i flera minuter). `MIN` skyddar mot en absurt SVAG
+/// härledning (någon som satt `iterations: 1` för att göra bruteforce
+/// billigt), `MAX` mot den dyra varianten.
+const MIN_ITERATIONS: u32 = 1_000;
+const MAX_ITERATIONS: u32 = 10_000_000;
 const MAGIC: &[u8] = b"BSYNC1";
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
@@ -30,7 +39,9 @@ impl std::fmt::Display for SyncCryptoError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SyncCryptoError::BadFormat => write!(f, "ogiltigt kuvertformat"),
-            SyncCryptoError::WrongPassphraseOrTampered => write!(f, "fel lösenfras eller manipulerad data"),
+            SyncCryptoError::WrongPassphraseOrTampered => {
+                write!(f, "fel lösenfras eller manipulerad data")
+            }
         }
     }
 }
@@ -41,7 +52,11 @@ fn derive_key(passphrase: &str, salt: &[u8], iterations: u32) -> [u8; 32] {
     key
 }
 
-pub fn seal(state: &SyncState, passphrase: &str, iterations: u32) -> Result<Vec<u8>, SyncCryptoError> {
+pub fn seal(
+    state: &SyncState,
+    passphrase: &str,
+    iterations: u32,
+) -> Result<Vec<u8>, SyncCryptoError> {
     let mut salt = [0u8; SALT_LEN];
     rand::rng().fill_bytes(&mut salt);
     let key = derive_key(passphrase, &salt, iterations);
@@ -52,9 +67,12 @@ pub fn seal(state: &SyncState, passphrase: &str, iterations: u32) -> Result<Vec<
 
     let plaintext = serde_json::to_vec(state).map_err(|_| SyncCryptoError::BadFormat)?;
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| SyncCryptoError::BadFormat)?;
-    let ciphertext_and_tag = cipher.encrypt(&nonce, plaintext.as_ref()).map_err(|_| SyncCryptoError::BadFormat)?;
+    let ciphertext_and_tag = cipher
+        .encrypt(&nonce, plaintext.as_ref())
+        .map_err(|_| SyncCryptoError::BadFormat)?;
 
-    let mut out = Vec::with_capacity(MAGIC.len() + 4 + SALT_LEN + NONCE_LEN + ciphertext_and_tag.len());
+    let mut out =
+        Vec::with_capacity(MAGIC.len() + 4 + SALT_LEN + NONCE_LEN + ciphertext_and_tag.len());
     out.extend_from_slice(MAGIC);
     out.extend_from_slice(&iterations.to_be_bytes());
     out.extend_from_slice(&salt);
@@ -69,6 +87,9 @@ pub fn open(data: &[u8], passphrase: &str) -> Result<SyncState, SyncCryptoError>
         return Err(SyncCryptoError::BadFormat);
     }
     let iterations = u32::from_be_bytes(data[MAGIC.len()..MAGIC.len() + 4].try_into().unwrap());
+    if !(MIN_ITERATIONS..=MAX_ITERATIONS).contains(&iterations) {
+        return Err(SyncCryptoError::BadFormat);
+    }
     let salt = &data[MAGIC.len() + 4..MAGIC.len() + 4 + SALT_LEN];
     let nonce_bytes = &data[MAGIC.len() + 4 + SALT_LEN..header_len];
     let ciphertext_and_tag = &data[header_len..];
@@ -95,7 +116,11 @@ pub struct EncryptedFolderSyncProvider {
 
 impl EncryptedFolderSyncProvider {
     pub fn new(path: std::path::PathBuf, passphrase: String) -> Self {
-        Self { path, passphrase, iterations: DEFAULT_ITERATIONS }
+        Self {
+            path,
+            passphrase,
+            iterations: DEFAULT_ITERATIONS,
+        }
     }
 }
 
@@ -121,7 +146,7 @@ impl crate::sync::SyncProvider for EncryptedFolderSyncProvider {
         }
         let sealed = seal(state, &self.passphrase, self.iterations)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-        std::fs::write(&self.path, sealed)
+        crate::fsutil::atomic_write(&self.path, &sealed)
     }
 }
 
@@ -141,21 +166,34 @@ mod tests {
     fn pbkdf2_known_answer_vectors_match_swift_reference() {
         let mut out = [0u8; 32];
         pbkdf2::pbkdf2_hmac::<Sha256>(b"password", b"salt", 1, &mut out);
-        assert_eq!(to_hex(&out), "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b");
+        assert_eq!(
+            to_hex(&out),
+            "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b"
+        );
 
         let mut out2 = [0u8; 32];
         pbkdf2::pbkdf2_hmac::<Sha256>(b"password", b"salt", 2, &mut out2);
-        assert_eq!(to_hex(&out2), "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43");
+        assert_eq!(
+            to_hex(&out2),
+            "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43"
+        );
 
         let mut out3 = [0u8; 32];
         pbkdf2::pbkdf2_hmac::<Sha256>(b"password", b"salt", 4096, &mut out3);
-        assert_eq!(to_hex(&out3), "c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a");
+        assert_eq!(
+            to_hex(&out3),
+            "c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a"
+        );
     }
 
     #[test]
     fn seal_open_round_trip() {
         let mut state = SyncState::default();
-        state.hosts.push(crate::host::Host::new("test".into(), "h".into(), "u".into()));
+        state.hosts.push(crate::host::Host::new(
+            "test".into(),
+            "h".into(),
+            "u".into(),
+        ));
         let sealed = seal(&state, "korrekt lösenfras", 1000).unwrap();
         let opened = open(&sealed, "korrekt lösenfras").unwrap();
         assert_eq!(opened.hosts.len(), 1);
@@ -167,7 +205,10 @@ mod tests {
         let state = SyncState::default();
         let sealed = seal(&state, "rätt", 1000).unwrap();
         let result = open(&sealed, "fel");
-        assert_eq!(result.unwrap_err(), SyncCryptoError::WrongPassphraseOrTampered);
+        assert_eq!(
+            result.unwrap_err(),
+            SyncCryptoError::WrongPassphraseOrTampered
+        );
     }
 
     #[test]
@@ -177,14 +218,42 @@ mod tests {
         let last = sealed.len() - 1;
         sealed[last] ^= 0xFF;
         let result = open(&sealed, "lösen");
-        assert_eq!(result.unwrap_err(), SyncCryptoError::WrongPassphraseOrTampered);
+        assert_eq!(
+            result.unwrap_err(),
+            SyncCryptoError::WrongPassphraseOrTampered
+        );
     }
 
     // TILLFÄLLIG cross-språk-verifiering mot Tests/SSHCoreTests/SyncCryptoTests.swift
     // — tas bort igen efter körning.
     #[test]
     fn bad_format_is_rejected_cleanly() {
-        assert_eq!(open(b"not a valid envelope", "x").unwrap_err(), SyncCryptoError::BadFormat);
+        assert_eq!(
+            open(b"not a valid envelope", "x").unwrap_err(),
+            SyncCryptoError::BadFormat
+        );
+    }
+
+    /// En manipulerad fil kan sätta `iterations` till vad som helst i
+    /// kuvertets header — ett absurt lågt (bruteforce-billigt) eller
+    /// absurt högt (CPU-DoS) värde ska avvisas INNAN någon PBKDF2-körning
+    /// eller AEAD-dekryptering ens försöks.
+    #[test]
+    fn out_of_range_iteration_count_in_the_envelope_header_is_rejected() {
+        let state = SyncState::default();
+        let mut sealed_low = seal(&state, "pw", 1000).unwrap();
+        sealed_low[MAGIC.len()..MAGIC.len() + 4].copy_from_slice(&1u32.to_be_bytes());
+        assert_eq!(
+            open(&sealed_low, "pw").unwrap_err(),
+            SyncCryptoError::BadFormat
+        );
+
+        let mut sealed_high = seal(&state, "pw", 1000).unwrap();
+        sealed_high[MAGIC.len()..MAGIC.len() + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(
+            open(&sealed_high, "pw").unwrap_err(),
+            SyncCryptoError::BadFormat
+        );
     }
 
     #[test]
@@ -215,15 +284,21 @@ mod tests {
         let mut store_a = HostStore::open(dir.join("a/hosts.json")).unwrap();
         let mut store_b = HostStore::open(dir.join("b/hosts.json")).unwrap();
 
-        let provider = EncryptedFolderSyncProvider::new(shared_path.clone(), "delad-hemlis".to_string());
-        store_a.upsert(Host::new("nas".into(), "10.0.0.2".into(), "root".into())).unwrap();
+        let provider =
+            EncryptedFolderSyncProvider::new(shared_path.clone(), "delad-hemlis".to_string());
+        store_a
+            .upsert(Host::new("nas".into(), "10.0.0.2".into(), "root".into()))
+            .unwrap();
         store_a.sync(&provider).unwrap();
         store_b.sync(&provider).unwrap();
 
         assert_eq!(store_b.all()[0].alias, "nas");
 
         let wrong_provider = EncryptedFolderSyncProvider::new(shared_path, "gissning".to_string());
-        assert!(wrong_provider.pull().is_err(), "fel lösenfras borde inte kunna läsa den krypterade filen");
+        assert!(
+            wrong_provider.pull().is_err(),
+            "fel lösenfras borde inte kunna läsa den krypterade filen"
+        );
 
         std::fs::remove_dir_all(dir).ok();
     }

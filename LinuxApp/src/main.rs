@@ -8,6 +8,7 @@ use vte::prelude::*;
 mod archive;
 mod command_library;
 mod docker;
+mod fsutil;
 mod host;
 mod key_deploy;
 mod known_hosts;
@@ -35,11 +36,17 @@ fn build_ui(app: &adw::Application) {
     let store = Rc::new(RefCell::new(
         HostStore::open(HostStore::default_path()).expect("kunde inte öppna host-databasen"),
     ));
-    let settings_store = Rc::new(RefCell::new(settings::AppSettingsStore::open(
-        settings::AppSettingsStore::default_path(),
+    let settings_store = Rc::new(RefCell::new(
+        settings::AppSettingsStore::open(settings::AppSettingsStore::default_path())
+            .expect("kunde inte öppna inställningsfilen"),
+    ));
+    let snippet_store = Rc::new(RefCell::new(
+        snippet::SnippetStore::open(snippet::SnippetStore::default_path())
+            .expect("kunde inte öppna snippet-databasen"),
+    ));
+    let sync_config = Rc::new(RefCell::new(sync::SyncConfig::load(
+        &sync::SyncConfig::default_path(),
     )));
-    let snippet_store = Rc::new(RefCell::new(snippet::SnippetStore::open(snippet::SnippetStore::default_path())));
-    let sync_config = Rc::new(RefCell::new(sync::SyncConfig::load(&sync::SyncConfig::default_path())));
 
     let list = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
@@ -52,7 +59,10 @@ fn build_ui(app: &adw::Application) {
     let area = SessionArea::new();
     refresh_list(&list, &store, app, &area, &settings_store, &snippet_store);
 
-    let scrolled = gtk::ScrolledWindow::builder().child(&list).vexpand(true).build();
+    let scrolled = gtk::ScrolledWindow::builder()
+        .child(&list)
+        .vexpand(true)
+        .build();
 
     let add_button = gtk::Button::from_icon_name("list-add-symbolic");
     add_button.set_tooltip_text(Some("Lägg till värd"));
@@ -69,7 +79,15 @@ fn build_ui(app: &adw::Application) {
         settings_store,
         #[strong]
         snippet_store,
-        move |_| show_host_dialog(&app, &store, &list, &area, &settings_store, &snippet_store, None)
+        move |_| show_host_dialog(
+            &app,
+            &store,
+            &list,
+            &area,
+            &settings_store,
+            &snippet_store,
+            None
+        )
     ));
 
     let settings_button = gtk::Button::from_icon_name("preferences-system-symbolic");
@@ -89,7 +107,15 @@ fn build_ui(app: &adw::Application) {
         snippet_store,
         #[strong]
         sync_config,
-        move |_| show_settings_dialog(&app, &settings_store, &store, &list, &area, &snippet_store, &sync_config)
+        move |_| show_settings_dialog(
+            &app,
+            &settings_store,
+            &store,
+            &list,
+            &area,
+            &snippet_store,
+            &sync_config
+        )
     ));
 
     let sidebar_header = adw::HeaderBar::new();
@@ -122,7 +148,12 @@ fn build_ui(app: &adw::Application) {
         area,
         move |_, row| {
             let index = row.index();
-            if let Some(host) = store.borrow().all().get(index as usize).map(|h| (*h).clone()) {
+            if let Some(host) = store
+                .borrow()
+                .all()
+                .get(index as usize)
+                .map(|h| (*h).clone())
+            {
                 open_session(&area, host);
             }
         }
@@ -195,9 +226,22 @@ fn refresh_list(
             #[strong(rename_to = host_id)]
             h.id,
             move |_, _| {
-                let host = store.borrow().all().iter().find(|x| x.id == host_id).map(|h| (*h).clone());
+                let host = store
+                    .borrow()
+                    .all()
+                    .iter()
+                    .find(|x| x.id == host_id)
+                    .map(|h| (*h).clone());
                 if let Some(host) = host {
-                    show_host_dialog(&app, &store, &list, &area, &settings_store, &snippet_store, Some(host));
+                    show_host_dialog(
+                        &app,
+                        &store,
+                        &list,
+                        &area,
+                        &settings_store,
+                        &snippet_store,
+                        Some(host),
+                    );
                 }
             }
         ));
@@ -218,7 +262,14 @@ fn refresh_list(
             #[strong(rename_to = host_id)]
             h.id,
             move |_, _| {
-                store.borrow_mut().delete(host_id).expect("kunde inte ta bort värden");
+                // En `.expect` här kraschade tidigare HELA appen (och alla
+                // öppna SSH-sessioner) om t.ex. disken var full eller
+                // `~/.bastion` skrivskyddad (CodeRabbit-fynd) — en
+                // återhämtningsbar I/O-miss ska inte vara ödesdiger.
+                if let Err(e) = store.borrow_mut().delete(host_id) {
+                    eprintln!("kunde inte ta bort värden: {e}");
+                    return;
+                }
                 refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store);
             }
         ));
@@ -231,7 +282,12 @@ fn refresh_list(
             #[strong(rename_to = host_id)]
             h.id,
             move |_, _| {
-                let host = store.borrow().all().iter().find(|x| x.id == host_id).map(|h| (*h).clone());
+                let host = store
+                    .borrow()
+                    .all()
+                    .iter()
+                    .find(|x| x.id == host_id)
+                    .map(|h| (*h).clone());
                 if let Some(host) = host {
                     require_password(&area, host, open_docker_view);
                 }
@@ -248,7 +304,12 @@ fn refresh_list(
             #[strong(rename_to = host_id)]
             h.id,
             move |_, _| {
-                let host = store.borrow().all().iter().find(|x| x.id == host_id).map(|h| (*h).clone());
+                let host = store
+                    .borrow()
+                    .all()
+                    .iter()
+                    .find(|x| x.id == host_id)
+                    .map(|h| (*h).clone());
                 if let Some(host) = host {
                     let snippet_store = snippet_store.clone();
                     require_password(&area, host, move |area, host, password| {
@@ -266,7 +327,12 @@ fn refresh_list(
             #[strong(rename_to = host_id)]
             h.id,
             move |_, _| {
-                let host = store.borrow().all().iter().find(|x| x.id == host_id).map(|h| (*h).clone());
+                let host = store
+                    .borrow()
+                    .all()
+                    .iter()
+                    .find(|x| x.id == host_id)
+                    .map(|h| (*h).clone());
                 if let Some(host) = host {
                     require_password(&area, host, open_sftp_view);
                 }
@@ -281,7 +347,12 @@ fn refresh_list(
             #[strong(rename_to = host_id)]
             h.id,
             move |_, _| {
-                let host = store.borrow().all().iter().find(|x| x.id == host_id).map(|h| (*h).clone());
+                let host = store
+                    .borrow()
+                    .all()
+                    .iter()
+                    .find(|x| x.id == host_id)
+                    .map(|h| (*h).clone());
                 if let Some(host) = host {
                     require_password(&area, host, open_port_forward_view);
                 }
@@ -296,7 +367,12 @@ fn refresh_list(
             #[strong(rename_to = host_id)]
             h.id,
             move |_, _| {
-                let host = store.borrow().all().iter().find(|x| x.id == host_id).map(|h| (*h).clone());
+                let host = store
+                    .borrow()
+                    .all()
+                    .iter()
+                    .find(|x| x.id == host_id)
+                    .map(|h| (*h).clone());
                 if let Some(host) = host {
                     require_password(
                         &area,
@@ -304,7 +380,9 @@ fn refresh_list(
                         clone!(
                             #[strong]
                             store,
-                            move |area, host, password| open_key_deploy_view(area, host, password, &store)
+                            move |area, host, password| open_key_deploy_view(
+                                area, host, password, &store
+                            )
                         ),
                     );
                 }
@@ -382,7 +460,9 @@ fn show_host_dialog(
 
     let cancel_button = gtk::Button::with_label("Avbryt");
 
-    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    let header = adw::HeaderBar::builder()
+        .show_end_title_buttons(false)
+        .build();
     header.pack_start(&cancel_button);
     header.pack_end(&save_button);
 
@@ -440,7 +520,14 @@ fn show_host_dialog(
                 h.port = port;
                 h
             };
-            store.borrow_mut().upsert(host).expect("kunde inte spara värden");
+            // Se motiveringen vid `delete_action` ovan — en I/O-miss ska
+            // inte krascha appen, bara lämna dialogen öppen så användaren
+            // ser att sparandet inte gick igenom (fönstret stängs bara vid
+            // lyckat utfall, nedan).
+            if let Err(e) = store.borrow_mut().upsert(host) {
+                eprintln!("kunde inte spara värden: {e}");
+                return;
+            }
             refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store);
             win.close();
         }
@@ -465,7 +552,11 @@ fn show_settings_dialog(
 ) {
     let current = settings_store.borrow().current();
 
-    let docker_row = adw::SwitchRow::builder().title("Docker").subtitle("Visa Docker-knappen på värdar").active(current.show_docker).build();
+    let docker_row = adw::SwitchRow::builder()
+        .title("Docker")
+        .subtitle("Visa Docker-knappen på värdar")
+        .active(current.show_docker)
+        .build();
     let commands_row = adw::SwitchRow::builder()
         .title("Kommandobibliotek")
         .subtitle("Visa Kommandon-knappen på värdar")
@@ -484,7 +575,13 @@ fn show_settings_dialog(
 
     let sync_folder_row = adw::ActionRow::builder()
         .title("Synkmapp")
-        .subtitle(sync_config.borrow().folder_path.clone().unwrap_or_else(|| "Ingen vald".to_string()))
+        .subtitle(
+            sync_config
+                .borrow()
+                .folder_path
+                .clone()
+                .unwrap_or_else(|| "Ingen vald".to_string()),
+        )
         .build();
     let choose_folder_button = gtk::Button::with_label("Välj mapp…");
     choose_folder_button.set_valign(gtk::Align::Center);
@@ -495,7 +592,10 @@ fn show_settings_dialog(
         .subtitle("Dropbox/Google Drive/OneDrive — AES-256-GCM, lösenfras krävs vid varje synk")
         .active(sync_config.borrow().encrypted)
         .build();
-    let passphrase_row = adw::PasswordEntryRow::builder().title("Lösenfras").visible(sync_config.borrow().encrypted).build();
+    let passphrase_row = adw::PasswordEntryRow::builder()
+        .title("Lösenfras")
+        .visible(sync_config.borrow().encrypted)
+        .build();
     encrypted_row.connect_active_notify(clone!(
         #[weak]
         passphrase_row,
@@ -505,11 +605,16 @@ fn show_settings_dialog(
             passphrase_row.set_visible(row.is_active());
             let mut cfg = sync_config.borrow_mut();
             cfg.encrypted = row.is_active();
-            cfg.save(&sync::SyncConfig::default_path()).expect("kunde inte spara synkinställningen");
+            if let Err(e) = cfg.save(&sync::SyncConfig::default_path()) {
+                eprintln!("kunde inte spara synkinställningen: {e}");
+            }
         }
     ));
 
-    let sync_now_row = adw::ActionRow::builder().title("Synka nu").activatable(true).build();
+    let sync_now_row = adw::ActionRow::builder()
+        .title("Synka nu")
+        .activatable(true)
+        .build();
     let sync_status_label = gtk::Label::builder().opacity(0.7).build();
     sync_now_row.add_suffix(&sync_status_label);
 
@@ -525,7 +630,9 @@ fn show_settings_dialog(
 
     let close_button = gtk::Button::with_label("Klar");
     close_button.add_css_class("suggested-action");
-    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    let header = adw::HeaderBar::builder()
+        .show_end_title_buttons(false)
+        .build();
     header.pack_end(&close_button);
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -557,10 +664,9 @@ fn show_settings_dialog(
         move |row| {
             let mut toggles = settings_store.borrow().current();
             toggles.show_docker = row.is_active();
-            settings_store
-                .borrow_mut()
-                .update(toggles)
-                .expect("kunde inte spara inställningarna");
+            if let Err(e) = settings_store.borrow_mut().update(toggles) {
+                eprintln!("kunde inte spara inställningarna: {e}");
+            }
             refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store);
         }
     ));
@@ -581,10 +687,9 @@ fn show_settings_dialog(
         move |row| {
             let mut toggles = settings_store.borrow().current();
             toggles.show_command_library = row.is_active();
-            settings_store
-                .borrow_mut()
-                .update(toggles)
-                .expect("kunde inte spara inställningarna");
+            if let Err(e) = settings_store.borrow_mut().update(toggles) {
+                eprintln!("kunde inte spara inställningarna: {e}");
+            }
             refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store);
         }
     ));
@@ -605,10 +710,9 @@ fn show_settings_dialog(
         move |row| {
             let mut toggles = settings_store.borrow().current();
             toggles.show_sftp_browser = row.is_active();
-            settings_store
-                .borrow_mut()
-                .update(toggles)
-                .expect("kunde inte spara inställningarna");
+            if let Err(e) = settings_store.borrow_mut().update(toggles) {
+                eprintln!("kunde inte spara inställningarna: {e}");
+            }
             refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store);
         }
     ));
@@ -636,7 +740,10 @@ fn show_settings_dialog(
                                 let path_str = path.to_string_lossy().to_string();
                                 let mut cfg = sync_config.borrow_mut();
                                 cfg.folder_path = Some(path_str.clone());
-                                cfg.save(&sync::SyncConfig::default_path()).expect("kunde inte spara synkinställningen");
+                                if let Err(e) = cfg.save(&sync::SyncConfig::default_path()) {
+                                    eprintln!("kunde inte spara synkinställningen: {e}");
+                                    return;
+                                }
                                 sync_folder_row.set_subtitle(&path_str);
                             }
                         }
@@ -656,6 +763,8 @@ fn show_settings_dialog(
         #[weak]
         passphrase_row,
         #[weak]
+        sync_now_row,
+        #[weak]
         list,
         #[strong]
         app,
@@ -671,28 +780,87 @@ fn show_settings_dialog(
                 return;
             };
             let encrypted = sync_config.borrow().encrypted;
-            let result = if encrypted {
+
+            // Både filens I/O (kan vara en molnsynkad mapp — Dropbox/Drive/
+            // OneDrive — som stallar) och, för den krypterade varianten,
+            // PBKDF2-nyckelhärledningen är för tunga för att köras rakt av
+            // i klickhanteraren — det fryser hela GTK-huvudloopen för
+            // varaktigheten (CodeRabbit-fynd). Görs istället på en egen
+            // bakgrundstråd mot en FRISTÅENDE `HostStore::open` (samma fil,
+            // men INTE den delade `Rc<RefCell<HostStore>>` — den är inte
+            // `Send` och får aldrig korsa en trådgräns); resultatet läses
+            // tillbaka till den riktiga butiken bara vid lyckat utfall.
+            sync_status_label.set_text("Synkar…");
+            sync_now_row.set_sensitive(false);
+            let rx = if encrypted {
                 let passphrase = passphrase_row.text().to_string();
                 if passphrase.is_empty() {
                     sync_status_label.set_text("Ange en lösenfras först");
+                    sync_now_row.set_sensitive(true);
                     return;
                 }
                 let provider = sync_crypto::EncryptedFolderSyncProvider::new(
                     std::path::PathBuf::from(folder).join("hosts.enc"),
                     passphrase,
                 );
-                store.borrow_mut().sync(&provider)
+                spawn_background_sync_encrypted(provider)
             } else {
-                let provider = sync::FolderSyncProvider::new(std::path::PathBuf::from(folder).join("hosts.json"));
-                store.borrow_mut().sync(&provider)
+                let provider = sync::FolderSyncProvider::new(
+                    std::path::PathBuf::from(folder).join("hosts.json"),
+                );
+                spawn_background_sync_plain(provider)
             };
-            match result {
-                Ok(()) => {
-                    sync_status_label.set_text("Synkad");
-                    refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store);
+
+            glib::spawn_future_local(clone!(
+                #[strong]
+                store,
+                #[strong]
+                sync_status_label,
+                #[strong]
+                sync_now_row,
+                #[strong]
+                list,
+                #[strong]
+                app,
+                #[strong]
+                area,
+                #[strong]
+                settings_store,
+                #[strong]
+                snippet_store,
+                async move {
+                    let result = rx
+                        .recv()
+                        .await
+                        .unwrap_or_else(|_| Err("kanalen stängdes oväntat".to_string()));
+                    match result {
+                        Ok(()) => {
+                            // Läs om från disk — bakgrundstråden skrev med
+                            // sin EGEN `HostStore`-instans, den delade
+                            // `Rc<RefCell<HostStore>>` här vet inget om det
+                            // förrän den öppnas igen.
+                            match host::HostStore::open(host::HostStore::default_path()) {
+                                Ok(reloaded) => {
+                                    *store.borrow_mut() = reloaded;
+                                    sync_status_label.set_text("Synkad");
+                                    refresh_list(
+                                        &list,
+                                        &store,
+                                        &app,
+                                        &area,
+                                        &settings_store,
+                                        &snippet_store,
+                                    );
+                                }
+                                Err(e) => sync_status_label
+                                    .set_text(&format!("Fel: synkad men kunde inte läsa om: {e}")),
+                            }
+                        }
+                        Err(e) => sync_status_label.set_text(&format!("Fel: {e}")),
+                    }
+                    sync_now_row.set_sensitive(true);
                 }
-                Err(e) => sync_status_label.set_text(&format!("Fel: {e}")),
-            }
+            ));
         }
     ));
 
@@ -751,7 +919,12 @@ impl SessionArea {
         ));
         overlay.add_controller(swipe);
 
-        let area = Rc::new(SessionArea { overlay, tab_view, tab_bar, placeholder });
+        let area = Rc::new(SessionArea {
+            overlay,
+            tab_view,
+            tab_bar,
+            placeholder,
+        });
         area.update_placeholder();
 
         area.tab_view.connect_close_page(clone!(
@@ -765,6 +938,22 @@ impl SessionArea {
                     // den övergiven i bakgrunden efter att fliken stängts.
                     unsafe {
                         terminal.steal_data::<async_channel::Sender<Vec<u8>>>("bastion-ssh-input");
+                    }
+                }
+                if let Some(content_box) = page.child().downcast_ref::<gtk::Box>() {
+                    // Tunnel-flikens innehåll (om den här sidan råkar vara
+                    // en) bär ett `ActiveForward`-handtag — utan detta
+                    // fortsatte en aktiv `-L`/`-R`/`-D`-vidarebefordran att
+                    // köra i bakgrunden för alltid efter att fliken stängts
+                    // (CodeRabbit-fynd), ingen väg kvar att stoppa den.
+                    unsafe {
+                        if let Some(handle) = content_box
+                            .steal_data::<Rc<RefCell<Option<port_forward::ActiveForward>>>>("bastion-active-forward")
+                        {
+                            if let Some(forward) = handle.borrow_mut().take() {
+                                forward.stop();
+                            }
+                        }
                     }
                 }
                 area.tab_view.close_page_finish(page, true);
@@ -817,8 +1006,13 @@ fn prompt_password_then(
     host: host::Host,
     on_password: impl Fn(&Rc<SessionArea>, host::Host, String) + 'static,
 ) {
-    let entry = gtk::PasswordEntry::builder().show_peek_icon(true).hexpand(true).build();
-    let group = adw::PreferencesGroup::builder().title(format!("Lösenord för {}@{}", host.user, host.host_name)).build();
+    let entry = gtk::PasswordEntry::builder()
+        .show_peek_icon(true)
+        .hexpand(true)
+        .build();
+    let group = adw::PreferencesGroup::builder()
+        .title(format!("Lösenord för {}@{}", host.user, host.host_name))
+        .build();
     group.add(&entry);
     let page = adw::PreferencesPage::new();
     page.add(&group);
@@ -826,7 +1020,9 @@ fn prompt_password_then(
     let connect_button = gtk::Button::with_label("Anslut");
     connect_button.add_css_class("suggested-action");
     let cancel_button = gtk::Button::with_label("Avbryt");
-    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    let header = adw::HeaderBar::builder()
+        .show_end_title_buttons(false)
+        .build();
     header.pack_start(&cancel_button);
     header.pack_end(&connect_button);
 
@@ -835,7 +1031,13 @@ fn prompt_password_then(
     content.append(&page);
 
     let win = adw::Window::builder()
-        .transient_for(&area.overlay.root().and_downcast::<gtk::Window>().expect("inget fönster"))
+        .transient_for(
+            &area
+                .overlay
+                .root()
+                .and_downcast::<gtk::Window>()
+                .expect("inget fönster"),
+        )
         .modal(true)
         .default_width(360)
         .default_height(180)
@@ -906,7 +1108,9 @@ fn start_session(area: &Rc<SessionArea>, host: host::Host, password: Option<Stri
                 match event {
                     SshEvent::Data(bytes) => terminal.feed(&bytes),
                     SshEvent::Error(msg) => {
-                        terminal.feed(format!("\r\n\x1b[31m[bastion] fel: {msg}\x1b[0m\r\n").as_bytes());
+                        terminal.feed(
+                            format!("\r\n\x1b[31m[bastion] fel: {msg}\x1b[0m\r\n").as_bytes(),
+                        );
                     }
                     SshEvent::Connected => {}
                     SshEvent::Closed => {
@@ -933,12 +1137,26 @@ fn open_docker_view(area: &Rc<SessionArea>, host: host::Host, password: Option<S
         .margin_top(12)
         .margin_bottom(12)
         .build();
-    let scrolled = gtk::ScrolledWindow::builder().child(&list).vexpand(true).build();
+    let scrolled = gtk::ScrolledWindow::builder()
+        .child(&list)
+        .vexpand(true)
+        .build();
 
     let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
     refresh_button.set_tooltip_text(Some("Uppdatera"));
-    let toolbar = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).margin_start(12).margin_end(12).margin_top(8).build();
-    toolbar.append(&gtk::Label::builder().label(format!("Docker: {}", host.alias)).hexpand(true).halign(gtk::Align::Start).build());
+    let toolbar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .build();
+    toolbar.append(
+        &gtk::Label::builder()
+            .label(format!("Docker: {}", host.alias))
+            .hexpand(true)
+            .halign(gtk::Align::Start)
+            .build(),
+    );
     toolbar.append(&refresh_button);
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -975,11 +1193,17 @@ fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Op
     // `ssh -D` (lokal SOCKS5-proxy) — målet väljs av SOCKS-klienten per
     // anslutning, så Målvärd/Målport är meningslösa och göms.
     let direction_row = adw::ComboRow::builder().title("Riktning").build();
-    let direction_model = gtk::StringList::new(&["Lokal (-L)", "Fjärr (-R)", "Dynamisk (-D, SOCKS5)"]);
+    let direction_model =
+        gtk::StringList::new(&["Lokal (-L)", "Fjärr (-R)", "Dynamisk (-D, SOCKS5)"]);
     direction_row.set_model(Some(&direction_model));
 
-    let bind_port_row = adw::EntryRow::builder().title("Bindport (0 = valfri)").build();
-    let target_host_row = adw::EntryRow::builder().title("Målvärd").text("127.0.0.1").build();
+    let bind_port_row = adw::EntryRow::builder()
+        .title("Bindport (0 = valfri)")
+        .build();
+    let target_host_row = adw::EntryRow::builder()
+        .title("Målvärd")
+        .text("127.0.0.1")
+        .build();
     let target_port_row = adw::EntryRow::builder().title("Målport").build();
 
     let group = adw::PreferencesGroup::new();
@@ -1041,7 +1265,14 @@ fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Op
     area.tab_view.set_selected_page(&page);
     area.update_placeholder();
 
-    let forward_handle: Rc<RefCell<Option<port_forward::ActiveForward>>> = Rc::new(RefCell::new(None));
+    let forward_handle: Rc<RefCell<Option<port_forward::ActiveForward>>> =
+        Rc::new(RefCell::new(None));
+    // Läses av `connect_close_page` (`SessionArea::new`) för att stoppa en
+    // fortfarande aktiv vidarebefordran om användaren stänger fliken utan
+    // att först trycka "Stoppa" — se kommentaren där.
+    unsafe {
+        content.set_data("bastion-active-forward", forward_handle.clone());
+    }
 
     start_button.connect_clicked(clone!(
         #[strong]
@@ -1067,7 +1298,18 @@ fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Op
         move |_| {
             let direction = direction_row.selected();
             let is_dynamic = direction == 2;
-            let bind_port: u16 = bind_port_row.text().parse().unwrap_or(0);
+            let bind_port_text = bind_port_row.text();
+            let bind_port: u16 = if bind_port_text.is_empty() {
+                0
+            } else {
+                match bind_port_text.parse() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        status_label.set_label("Ogiltig bindport");
+                        return;
+                    }
+                }
+            };
             let target_host_value = target_host_row.text().to_string();
             // Dynamisk (-D) behöver inget mål — SOCKS-klienten väljer det
             // per anslutning — så målporten valideras bara för -L/-R.
@@ -1106,7 +1348,12 @@ fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Op
                     let result: Result<port_forward::ActiveForward, String> = match direction {
                         1 => {
                             let rx = port_forward::spawn_remote_forward(
-                                host, password, "0.0.0.0".to_string(), bind_port, target_host_value, target_port,
+                                host,
+                                password,
+                                "0.0.0.0".to_string(),
+                                bind_port,
+                                target_host_value,
+                                target_port,
                             );
                             match rx.recv().await {
                                 Ok(r) => r.map(port_forward::ActiveForward::Remote),
@@ -1114,7 +1361,12 @@ fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Op
                             }
                         }
                         2 => {
-                            let rx = socks_proxy::spawn_dynamic_forward(host, password, "127.0.0.1".to_string(), bind_port);
+                            let rx = socks_proxy::spawn_dynamic_forward(
+                                host,
+                                password,
+                                "127.0.0.1".to_string(),
+                                bind_port,
+                            );
                             match rx.recv().await {
                                 Ok(r) => r.map(port_forward::ActiveForward::Dynamic),
                                 Err(_) => Err("kanalen stängdes oväntat".to_string()),
@@ -1122,7 +1374,12 @@ fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Op
                         }
                         _ => {
                             let rx = port_forward::spawn_local_forward(
-                                host, password, "127.0.0.1".to_string(), bind_port, target_host_value, target_port,
+                                host,
+                                password,
+                                "127.0.0.1".to_string(),
+                                bind_port,
+                                target_host_value,
+                                target_port,
                             );
                             match rx.recv().await {
                                 Ok(r) => r.map(port_forward::ActiveForward::Local),
@@ -1177,12 +1434,23 @@ fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Op
 /// `App/KeyDeployView.swift`. Vid lyckad verifiering erbjuds att byta
 /// värdens lagrade auth-metod till den nya nyckeln, så ett gammalt
 /// lösenord inte behöver sparas kvar.
-fn open_key_deploy_view(area: &Rc<SessionArea>, host: host::Host, password: Option<String>, store: &Rc<RefCell<HostStore>>) {
-    let comment_row = adw::EntryRow::builder().title("Kommentar (valfri)").text(format!("bastion@{}", host.alias)).build();
+fn open_key_deploy_view(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    store: &Rc<RefCell<HostStore>>,
+) {
+    let comment_row = adw::EntryRow::builder()
+        .title("Kommentar (valfri)")
+        .text(format!("bastion@{}", host.alias))
+        .build();
     let group = adw::PreferencesGroup::new();
     group.add(&comment_row);
 
-    let public_key_view = gtk::TextView::builder().editable(false).wrap_mode(gtk::WrapMode::WordChar).build();
+    let public_key_view = gtk::TextView::builder()
+        .editable(false)
+        .wrap_mode(gtk::WrapMode::WordChar)
+        .build();
     public_key_view.set_visible(false);
     let public_key_scroller = gtk::ScrolledWindow::builder()
         .child(&public_key_view)
@@ -1279,7 +1547,12 @@ fn open_key_deploy_view(area: &Rc<SessionArea>, host: host::Host, password: Opti
             status_label.set_label("Deployerar och verifierar…");
             generate_button.set_sensitive(false);
 
-            let rx = key_deploy::spawn_deploy_and_verify(host.clone(), password.clone(), pair.public_key_line.clone(), key_path.clone());
+            let rx = key_deploy::spawn_deploy_and_verify(
+                host.clone(),
+                password.clone(),
+                pair.public_key_line.clone(),
+                key_path.clone(),
+            );
             glib::spawn_future_local(clone!(
                 #[strong]
                 status_label,
@@ -1292,7 +1565,9 @@ fn open_key_deploy_view(area: &Rc<SessionArea>, host: host::Host, password: Opti
                 async move {
                     match rx.recv().await {
                         Ok(Ok(())) => {
-                            status_label.set_label("Klart — nyckeln är deployad och verifierad att fungera.");
+                            status_label.set_label(
+                                "Klart — nyckeln är deployad och verifierad att fungera.",
+                            );
                             *new_key_path.borrow_mut() = Some(key_path);
                             adopt_button.set_sensitive(true);
                         }
@@ -1321,21 +1596,68 @@ fn open_key_deploy_view(area: &Rc<SessionArea>, host: host::Host, password: Opti
         #[strong]
         new_key_path,
         move |_| {
-            let Some(key_path) = new_key_path.borrow_mut().take() else { return };
+            // Läses UTAN att tas bort — en misslyckad `upsert` (disk full,
+            // rättighetsfel) ska inte förbruka sökvägen och blockera ett
+            // omförsök vid nästa klick (CodeRabbit-fynd). Tas bort bara vid
+            // lyckat utfall, nedan.
+            let Some(key_path) = new_key_path.borrow().clone() else {
+                return;
+            };
             let mut updated = host.clone();
             updated.auth = host::HostAuth::KeyFile(key_path);
             match store.borrow_mut().upsert(updated) {
                 Ok(()) => {
+                    *new_key_path.borrow_mut() = None;
                     status_label.set_label("Värdens auth-metod är nu den nya nyckeln.");
                     adopt_button.set_sensitive(false);
                 }
-                Err(e) => status_label.set_label(&format!("Fel: kunde inte spara den nya auth-metoden: {e}")),
+                Err(e) => status_label
+                    .set_label(&format!("Fel: kunde inte spara den nya auth-metoden: {e}")),
             }
         }
     ));
 }
 
-fn refresh_docker_list(area: &Rc<SessionArea>, host: host::Host, password: Option<String>, list: &gtk::ListBox) {
+/// Kör en full synkrunda (öppen-egen-`HostStore` → `sync` → stäng) på en
+/// egen bakgrundstråd, motsvarande `spawn_background_sync_encrypted` men
+/// för den okrypterade `FolderSyncProvider`. Två nästan identiska
+/// funktioner istället för en generisk/`dyn`-baserad — `HostStore::sync`
+/// tar redan `impl SyncProvider` (monomorfiserad), och bara två
+/// anropsställen gör en abstraktion här till för tidig.
+fn spawn_background_sync_plain(
+    provider: sync::FolderSyncProvider,
+) -> async_channel::Receiver<Result<(), String>> {
+    let (tx, rx) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let result = (|| -> std::io::Result<()> {
+            let mut store = host::HostStore::open(host::HostStore::default_path())?;
+            store.sync(&provider)
+        })();
+        let _ = tx.send_blocking(result.map_err(|e| e.to_string()));
+    });
+    rx
+}
+
+fn spawn_background_sync_encrypted(
+    provider: sync_crypto::EncryptedFolderSyncProvider,
+) -> async_channel::Receiver<Result<(), String>> {
+    let (tx, rx) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let result = (|| -> std::io::Result<()> {
+            let mut store = host::HostStore::open(host::HostStore::default_path())?;
+            store.sync(&provider)
+        })();
+        let _ = tx.send_blocking(result.map_err(|e| e.to_string()));
+    });
+    rx
+}
+
+fn refresh_docker_list(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    list: &gtk::ListBox,
+) {
     let rx = ssh::run_command(host.clone(), password.clone(), docker::list_command(true));
     glib::spawn_future_local(clone!(
         #[weak]
@@ -1353,7 +1675,9 @@ fn refresh_docker_list(area: &Rc<SessionArea>, host: host::Host, password: Optio
             match rx.recv().await {
                 Ok(Ok(output)) => {
                     for container in docker::parse_list(&output) {
-                        list.append(&build_container_row(&area, &host, &password, &list, container));
+                        list.append(&build_container_row(
+                            &area, &host, &password, &list, container,
+                        ));
                     }
                 }
                 Ok(Err(e)) => list.append(&error_row(&e)),
@@ -1364,7 +1688,10 @@ fn refresh_docker_list(area: &Rc<SessionArea>, host: host::Host, password: Optio
 }
 
 fn error_row(message: &str) -> adw::ActionRow {
-    adw::ActionRow::builder().title("Fel").subtitle(message).build()
+    adw::ActionRow::builder()
+        .title("Fel")
+        .subtitle(message)
+        .build()
 }
 
 fn build_container_row(
@@ -1379,7 +1706,11 @@ fn build_container_row(
         .subtitle(format!("{} — {}", container.image, container.status))
         .build();
 
-    let suffix = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(4).valign(gtk::Align::Center).build();
+    let suffix = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(4)
+        .valign(gtk::Align::Center)
+        .build();
 
     let run_docker_action = {
         let area = area.clone();
@@ -1484,12 +1815,31 @@ fn build_container_row(
     row
 }
 
-fn show_docker_logs(area: &Rc<SessionArea>, host: &host::Host, password: &Option<String>, container: &docker::DockerContainer) {
-    let Ok(cmd) = docker::logs_command(&container.id, 200) else { return };
-    let text_view = gtk::TextView::builder().editable(false).monospace(true).build();
-    let scrolled = gtk::ScrolledWindow::builder().child(&text_view).vexpand(true).build();
+fn show_docker_logs(
+    area: &Rc<SessionArea>,
+    host: &host::Host,
+    password: &Option<String>,
+    container: &docker::DockerContainer,
+) {
+    let Ok(cmd) = docker::logs_command(&container.id, 200) else {
+        return;
+    };
+    let text_view = gtk::TextView::builder()
+        .editable(false)
+        .monospace(true)
+        .build();
+    let scrolled = gtk::ScrolledWindow::builder()
+        .child(&text_view)
+        .vexpand(true)
+        .build();
     let win = adw::Window::builder()
-        .transient_for(&area.overlay.root().and_downcast::<gtk::Window>().expect("inget fönster"))
+        .transient_for(
+            &area
+                .overlay
+                .root()
+                .and_downcast::<gtk::Window>()
+                .expect("inget fönster"),
+        )
         .modal(true)
         .default_width(700)
         .default_height(500)
@@ -1530,12 +1880,26 @@ fn open_command_library_view(
         .margin_top(12)
         .margin_bottom(12)
         .build();
-    let scrolled = gtk::ScrolledWindow::builder().child(&list).vexpand(true).build();
+    let scrolled = gtk::ScrolledWindow::builder()
+        .child(&list)
+        .vexpand(true)
+        .build();
 
     let add_button = gtk::Button::from_icon_name("list-add-symbolic");
     add_button.set_tooltip_text(Some("Ny snippet"));
-    let toolbar = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).margin_start(12).margin_end(12).margin_top(8).build();
-    toolbar.append(&gtk::Label::builder().label(format!("Kommandon: {}", host.alias)).hexpand(true).halign(gtk::Align::Start).build());
+    let toolbar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .build();
+    toolbar.append(
+        &gtk::Label::builder()
+            .label(format!("Kommandon: {}", host.alias))
+            .hexpand(true)
+            .halign(gtk::Align::Start)
+            .build(),
+    );
     toolbar.append(&add_button);
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -1558,7 +1922,14 @@ fn open_command_library_view(
         snippet_store,
         #[weak]
         list,
-        move |_| show_snippet_edit_dialog(&area, host.clone(), password.clone(), &snippet_store, &list, None)
+        move |_| show_snippet_edit_dialog(
+            &area,
+            host.clone(),
+            password.clone(),
+            &snippet_store,
+            &list,
+            None
+        )
     ));
 
     refresh_command_library_list(area, &host, &password, snippet_store, &list);
@@ -1576,7 +1947,14 @@ fn refresh_command_library_list(
     }
 
     for s in snippet_store.borrow().all() {
-        list.append(&build_snippet_row(area, host, password, snippet_store, s.clone(), list));
+        list.append(&build_snippet_row(
+            area,
+            host,
+            password,
+            snippet_store,
+            s.clone(),
+            list,
+        ));
     }
     for entry in command_library::all() {
         list.append(&build_library_entry_row(area, host, password, entry));
@@ -1591,8 +1969,15 @@ fn build_snippet_row(
     snippet: snippet::Snippet,
     list: &gtk::ListBox,
 ) -> adw::ActionRow {
-    let row = adw::ActionRow::builder().title(&snippet.name).subtitle(&snippet.template).build();
-    let suffix = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(4).valign(gtk::Align::Center).build();
+    let row = adw::ActionRow::builder()
+        .title(&snippet.name)
+        .subtitle(&snippet.template)
+        .build();
+    let suffix = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(4)
+        .valign(gtk::Align::Center)
+        .build();
 
     let run_button = gtk::Button::from_icon_name("media-playback-start-symbolic");
     run_button.set_tooltip_text(Some("Kör"));
@@ -1623,7 +2008,14 @@ fn build_snippet_row(
         list,
         #[strong]
         snippet,
-        move |_| show_snippet_edit_dialog(&area, host.clone(), password.clone(), &snippet_store, &list, Some(snippet.clone()))
+        move |_| show_snippet_edit_dialog(
+            &area,
+            host.clone(),
+            password.clone(),
+            &snippet_store,
+            &list,
+            Some(snippet.clone())
+        )
     ));
 
     let delete_button = gtk::Button::from_icon_name("user-trash-symbolic");
@@ -1642,7 +2034,10 @@ fn build_snippet_row(
         #[strong(rename_to = snippet_id)]
         snippet.id,
         move |_| {
-            snippet_store.borrow_mut().delete(snippet_id).expect("kunde inte ta bort snippeten");
+            if let Err(e) = snippet_store.borrow_mut().delete(snippet_id) {
+                eprintln!("kunde inte ta bort snippeten: {e}");
+                return;
+            }
             refresh_command_library_list(&area, &host, &password, &snippet_store, &list);
         }
     ));
@@ -1664,15 +2059,23 @@ fn build_library_entry_row(
     if let Some(example) = entry.example {
         subtitle.push_str(&format!(" — t.ex. {example}"));
     }
-    let row = adw::ActionRow::builder().title(entry.command).subtitle(subtitle).build();
+    let row = adw::ActionRow::builder()
+        .title(entry.command)
+        .subtitle(subtitle)
+        .build();
 
-    let suffix = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(4).valign(gtk::Align::Center).build();
+    let suffix = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(4)
+        .valign(gtk::Align::Center)
+        .build();
 
     if let Some(docs_url) = entry.docs_url {
         let docs_button = gtk::Button::from_icon_name("help-about-symbolic");
         docs_button.set_tooltip_text(Some("Dokumentation"));
         docs_button.connect_clicked(move |_| {
-            gtk::gio::AppInfo::launch_default_for_uri(docs_url, gtk::gio::AppLaunchContext::NONE).ok();
+            gtk::gio::AppInfo::launch_default_for_uri(docs_url, gtk::gio::AppLaunchContext::NONE)
+                .ok();
         });
         suffix.append(&docs_button);
     }
@@ -1687,7 +2090,8 @@ fn build_library_entry_row(
         #[strong]
         password,
         move |_| {
-            let snippet = snippet::Snippet::new(entry.summary.to_string(), entry.command.to_string());
+            let snippet =
+                snippet::Snippet::new(entry.summary.to_string(), entry.command.to_string());
             run_snippet(&area, host.clone(), password.clone(), snippet);
         }
     ));
@@ -1699,24 +2103,49 @@ fn build_library_entry_row(
 /// Kör en snippet: fyller i `{{variabler}}` via en dialog om det finns
 /// några, annars öppnar direkt en ny terminalflik med det rendrade
 /// kommandot som `startup_command` (samma mönster som Docker-shell).
-fn run_snippet(area: &Rc<SessionArea>, host: host::Host, password: Option<String>, snippet: snippet::Snippet) {
+fn run_snippet(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    snippet: snippet::Snippet,
+) {
     if snippet.variable_names().is_empty() {
-        launch_rendered_command(area, host, password, &snippet.name, snippet.rendered(&std::collections::HashMap::new()));
+        launch_rendered_command(
+            area,
+            host,
+            password,
+            &snippet.name,
+            snippet.rendered(&std::collections::HashMap::new()),
+        );
     } else {
         prompt_snippet_variables(area, host, password, snippet);
     }
 }
 
-fn launch_rendered_command(area: &Rc<SessionArea>, host: host::Host, password: Option<String>, title_suffix: &str, command: String) {
+fn launch_rendered_command(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    title_suffix: &str,
+    command: String,
+) {
     let mut h = host;
     h.startup_command = Some(command);
     h.alias = format!("{}: {title_suffix}", h.alias);
     start_session(area, h, password);
 }
 
-fn prompt_snippet_variables(area: &Rc<SessionArea>, host: host::Host, password: Option<String>, snippet: snippet::Snippet) {
+fn prompt_snippet_variables(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    snippet: snippet::Snippet,
+) {
     let names = snippet.variable_names();
-    let group = adw::PreferencesGroup::builder().title(&snippet.name).description(&snippet.template).build();
+    let group = adw::PreferencesGroup::builder()
+        .title(&snippet.name)
+        .description(&snippet.template)
+        .build();
     let entries: Vec<(String, adw::EntryRow)> = names
         .iter()
         .map(|name| {
@@ -1732,7 +2161,9 @@ fn prompt_snippet_variables(area: &Rc<SessionArea>, host: host::Host, password: 
     let run_button = gtk::Button::with_label("Kör");
     run_button.add_css_class("suggested-action");
     let cancel_button = gtk::Button::with_label("Avbryt");
-    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    let header = adw::HeaderBar::builder()
+        .show_end_title_buttons(false)
+        .build();
     header.pack_start(&cancel_button);
     header.pack_end(&run_button);
 
@@ -1741,7 +2172,13 @@ fn prompt_snippet_variables(area: &Rc<SessionArea>, host: host::Host, password: 
     content.append(&page);
 
     let win = adw::Window::builder()
-        .transient_for(&area.overlay.root().and_downcast::<gtk::Window>().expect("inget fönster"))
+        .transient_for(
+            &area
+                .overlay
+                .root()
+                .and_downcast::<gtk::Window>()
+                .expect("inget fönster"),
+        )
         .modal(true)
         .default_width(420)
         .default_height(320)
@@ -1766,11 +2203,19 @@ fn prompt_snippet_variables(area: &Rc<SessionArea>, host: host::Host, password: 
         #[strong]
         snippet,
         move |_| {
-            let values: std::collections::HashMap<String, String> =
-                entries.iter().map(|(name, row)| (name.clone(), row.text().to_string())).collect();
+            let values: std::collections::HashMap<String, String> = entries
+                .iter()
+                .map(|(name, row)| (name.clone(), row.text().to_string()))
+                .collect();
             let rendered = snippet.rendered(&values);
             win.close();
-            launch_rendered_command(&area, host.clone(), password.clone(), &snippet.name, rendered);
+            launch_rendered_command(
+                &area,
+                host.clone(),
+                password.clone(),
+                &snippet.name,
+                rendered,
+            );
         }
     ));
 
@@ -1787,7 +2232,9 @@ fn show_snippet_edit_dialog(
 ) {
     let is_edit = existing.is_some();
     let name_row = adw::EntryRow::builder().title("Namn").build();
-    let template_row = adw::EntryRow::builder().title("Kommando (t.ex. docker restart {{service}})").build();
+    let template_row = adw::EntryRow::builder()
+        .title("Kommando (t.ex. docker restart {{service}})")
+        .build();
     if let Some(s) = &existing {
         name_row.set_text(&s.name);
         template_row.set_text(&s.template);
@@ -1802,7 +2249,9 @@ fn show_snippet_edit_dialog(
     let save_button = gtk::Button::with_label(if is_edit { "Spara" } else { "Lägg till" });
     save_button.add_css_class("suggested-action");
     let cancel_button = gtk::Button::with_label("Avbryt");
-    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    let header = adw::HeaderBar::builder()
+        .show_end_title_buttons(false)
+        .build();
     header.pack_start(&cancel_button);
     header.pack_end(&save_button);
 
@@ -1811,7 +2260,13 @@ fn show_snippet_edit_dialog(
     content.append(&page);
 
     let win = adw::Window::builder()
-        .transient_for(&area.overlay.root().and_downcast::<gtk::Window>().expect("inget fönster"))
+        .transient_for(
+            &area
+                .overlay
+                .root()
+                .and_downcast::<gtk::Window>()
+                .expect("inget fönster"),
+        )
         .modal(true)
         .default_width(420)
         .default_height(240)
@@ -1852,7 +2307,10 @@ fn show_snippet_edit_dialog(
             } else {
                 snippet::Snippet::new(name, template)
             };
-            snippet_store.borrow_mut().upsert(snippet).expect("kunde inte spara snippeten");
+            if let Err(e) = snippet_store.borrow_mut().upsert(snippet) {
+                eprintln!("kunde inte spara snippeten: {e}");
+                return;
+            }
             refresh_command_library_list(&area, &host, &password, &snippet_store, &list);
             win.close();
         }
@@ -1877,7 +2335,11 @@ struct SftpContext {
 
 fn open_sftp_view(area: &Rc<SessionArea>, host: host::Host, password: Option<String>) {
     let handle = sftp::spawn(host.clone(), password.clone());
-    let ctx = SftpContext { handle, host, password };
+    let ctx = SftpContext {
+        handle,
+        host,
+        password,
+    };
     let current_path = Rc::new(RefCell::new(".".to_string()));
 
     let list = gtk::ListBox::builder()
@@ -1888,16 +2350,28 @@ fn open_sftp_view(area: &Rc<SessionArea>, host: host::Host, password: Option<Str
         .margin_top(12)
         .margin_bottom(12)
         .build();
-    let scrolled = gtk::ScrolledWindow::builder().child(&list).vexpand(true).build();
+    let scrolled = gtk::ScrolledWindow::builder()
+        .child(&list)
+        .vexpand(true)
+        .build();
 
-    let path_label = gtk::Label::builder().halign(gtk::Align::Start).hexpand(true).build();
+    let path_label = gtk::Label::builder()
+        .halign(gtk::Align::Start)
+        .hexpand(true)
+        .build();
     let up_button = gtk::Button::from_icon_name("go-up-symbolic");
     up_button.set_tooltip_text(Some("Upp en nivå"));
     let mkdir_button = gtk::Button::from_icon_name("folder-new-symbolic");
     mkdir_button.set_tooltip_text(Some("Ny mapp"));
     let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
 
-    let toolbar = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(4).margin_start(12).margin_end(12).margin_top(8).build();
+    let toolbar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(4)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .build();
     toolbar.append(&up_button);
     toolbar.append(&path_label);
     toolbar.append(&mkdir_button);
@@ -1932,7 +2406,14 @@ fn open_sftp_view(area: &Rc<SessionArea>, host: host::Host, password: Option<Str
                 };
                 let new_path = path.clone();
                 drop(path);
-                refresh_sftp_list(&area, ctx.clone(), current_path.clone(), new_path, &list, &path_label);
+                refresh_sftp_list(
+                    &area,
+                    ctx.clone(),
+                    current_path.clone(),
+                    new_path,
+                    &list,
+                    &path_label,
+                );
             }
         }
     ));
@@ -1948,7 +2429,13 @@ fn open_sftp_view(area: &Rc<SessionArea>, host: host::Host, password: Option<Str
         list,
         #[weak]
         path_label,
-        move |_| prompt_new_folder_name(&area, ctx.clone(), current_path.clone(), &list, &path_label)
+        move |_| prompt_new_folder_name(
+            &area,
+            ctx.clone(),
+            current_path.clone(),
+            &list,
+            &path_label
+        )
     ));
 
     refresh_button.connect_clicked(clone!(
@@ -1964,7 +2451,14 @@ fn open_sftp_view(area: &Rc<SessionArea>, host: host::Host, password: Option<Str
         path_label,
         move |_| {
             let path = current_path.borrow().clone();
-            refresh_sftp_list(&area, ctx.clone(), current_path.clone(), path, &list, &path_label);
+            refresh_sftp_list(
+                &area,
+                ctx.clone(),
+                current_path.clone(),
+                path,
+                &list,
+                &path_label,
+            );
         }
     ));
 
@@ -1995,7 +2489,15 @@ fn refresh_sftp_list(
             match ctx.handle.list(path.clone()).await {
                 Ok(entries) => {
                     for entry in entries {
-                        list.append(&build_sftp_entry_row(&area, ctx.clone(), current_path.clone(), path.clone(), entry, &list, &path_label));
+                        list.append(&build_sftp_entry_row(
+                            &area,
+                            ctx.clone(),
+                            current_path.clone(),
+                            path.clone(),
+                            entry,
+                            &list,
+                            &path_label,
+                        ));
                     }
                 }
                 Err(e) => list.append(&error_row(&e)),
@@ -2021,9 +2523,21 @@ fn build_sftp_entry_row(
     list: &gtk::ListBox,
     path_label: &gtk::Label,
 ) -> adw::ActionRow {
-    let subtitle = if entry.is_dir { "Mapp".to_string() } else { format!("{} bytes", entry.size) };
-    let row = adw::ActionRow::builder().title(&entry.name).subtitle(subtitle).activatable(true).build();
-    let icon = gtk::Image::from_icon_name(if entry.is_dir { "folder-symbolic" } else { "text-x-generic-symbolic" });
+    let subtitle = if entry.is_dir {
+        "Mapp".to_string()
+    } else {
+        format!("{} bytes", entry.size)
+    };
+    let row = adw::ActionRow::builder()
+        .title(&entry.name)
+        .subtitle(subtitle)
+        .activatable(true)
+        .build();
+    let icon = gtk::Image::from_icon_name(if entry.is_dir {
+        "folder-symbolic"
+    } else {
+        "text-x-generic-symbolic"
+    });
     row.add_prefix(&icon);
 
     row.connect_activated(clone!(
@@ -2045,7 +2559,14 @@ fn build_sftp_entry_row(
             let full_path = joined_path(&path, &entry.name);
             if entry.is_dir {
                 *current_path.borrow_mut() = full_path.clone();
-                refresh_sftp_list(&area, ctx.clone(), current_path.clone(), full_path, &list, &path_label);
+                refresh_sftp_list(
+                    &area,
+                    ctx.clone(),
+                    current_path.clone(),
+                    full_path,
+                    &list,
+                    &path_label,
+                );
             } else {
                 open_sftp_file_editor(&area, ctx.handle.clone(), full_path);
             }
@@ -2086,7 +2607,11 @@ fn build_sftp_entry_row(
                 #[strong]
                 path,
                 async move {
-                    let result = if is_dir { ctx.handle.remove_dir(full_path).await } else { ctx.handle.remove_file(full_path).await };
+                    let result = if is_dir {
+                        ctx.handle.remove_dir(full_path).await
+                    } else {
+                        ctx.handle.remove_file(full_path).await
+                    };
                     if let Err(e) = result {
                         list.append(&error_row(&e));
                         return;
@@ -2114,7 +2639,15 @@ fn build_sftp_entry_row(
         entry,
         #[strong]
         path,
-        move |_| prompt_rename(&area, ctx.clone(), current_path.clone(), path.clone(), entry.clone(), &list, &path_label)
+        move |_| prompt_rename(
+            &area,
+            ctx.clone(),
+            current_path.clone(),
+            path.clone(),
+            entry.clone(),
+            &list,
+            &path_label
+        )
     ));
 
     let permissions_button = gtk::Button::from_icon_name("changes-allow-symbolic");
@@ -2134,7 +2667,15 @@ fn build_sftp_entry_row(
         entry,
         #[strong]
         path,
-        move |_| prompt_permissions(&area, ctx.clone(), current_path.clone(), path.clone(), entry.clone(), &list, &path_label)
+        move |_| prompt_permissions(
+            &area,
+            ctx.clone(),
+            current_path.clone(),
+            path.clone(),
+            entry.clone(),
+            &list,
+            &path_label
+        )
     ));
 
     row.add_suffix(&permissions_button);
@@ -2158,7 +2699,8 @@ fn build_sftp_entry_row(
                 // arkivet hamnar bredvid mappen (i `path`, inte inuti den).
                 let full_dir = joined_path(&path, &entry.name);
                 let archive_name = format!("../{}.tar.gz", entry.name);
-                let command = archive::create_tar_gz_command(&[".".to_string()], &archive_name, &full_dir);
+                let command =
+                    archive::create_tar_gz_command(&[".".to_string()], &archive_name, &full_dir);
                 let rx = ssh::run_command(ctx.host.clone(), ctx.password.clone(), command);
                 glib::spawn_future_local(async move {
                     if let Ok(Err(e)) = rx.recv().await {
@@ -2168,7 +2710,10 @@ fn build_sftp_entry_row(
             }
         ));
         row.add_suffix(&compress_button);
-    } else if entry.name.ends_with(".tar.gz") || entry.name.ends_with(".tgz") || entry.name.ends_with(".zip") {
+    } else if entry.name.ends_with(".tar.gz")
+        || entry.name.ends_with(".tgz")
+        || entry.name.ends_with(".zip")
+    {
         let extract_button = gtk::Button::from_icon_name("package-x-generic-symbolic");
         extract_button.set_tooltip_text(Some("Packa upp"));
         extract_button.connect_clicked(clone!(
@@ -2222,7 +2767,13 @@ fn build_sftp_entry_row(
     row
 }
 
-fn prompt_new_folder_name(area: &Rc<SessionArea>, ctx: SftpContext, current_path: Rc<RefCell<String>>, list: &gtk::ListBox, path_label: &gtk::Label) {
+fn prompt_new_folder_name(
+    area: &Rc<SessionArea>,
+    ctx: SftpContext,
+    current_path: Rc<RefCell<String>>,
+    list: &gtk::ListBox,
+    path_label: &gtk::Label,
+) {
     let name_row = adw::EntryRow::builder().title("Mappnamn").build();
     let group = adw::PreferencesGroup::new();
     group.add(&name_row);
@@ -2232,7 +2783,9 @@ fn prompt_new_folder_name(area: &Rc<SessionArea>, ctx: SftpContext, current_path
     let create_button = gtk::Button::with_label("Skapa");
     create_button.add_css_class("suggested-action");
     let cancel_button = gtk::Button::with_label("Avbryt");
-    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    let header = adw::HeaderBar::builder()
+        .show_end_title_buttons(false)
+        .build();
     header.pack_start(&cancel_button);
     header.pack_end(&create_button);
 
@@ -2241,7 +2794,13 @@ fn prompt_new_folder_name(area: &Rc<SessionArea>, ctx: SftpContext, current_path
     content.append(&page);
 
     let win = adw::Window::builder()
-        .transient_for(&area.overlay.root().and_downcast::<gtk::Window>().expect("inget fönster"))
+        .transient_for(
+            &area
+                .overlay
+                .root()
+                .and_downcast::<gtk::Window>()
+                .expect("inget fönster"),
+        )
         .modal(true)
         .default_width(360)
         .default_height(160)
@@ -2310,7 +2869,10 @@ fn prompt_rename(
     list: &gtk::ListBox,
     path_label: &gtk::Label,
 ) {
-    let name_row = adw::EntryRow::builder().title("Nytt namn").text(&entry.name).build();
+    let name_row = adw::EntryRow::builder()
+        .title("Nytt namn")
+        .text(&entry.name)
+        .build();
     let group = adw::PreferencesGroup::new();
     group.add(&name_row);
     let page = adw::PreferencesPage::new();
@@ -2319,7 +2881,9 @@ fn prompt_rename(
     let save_button = gtk::Button::with_label("Döp om");
     save_button.add_css_class("suggested-action");
     let cancel_button = gtk::Button::with_label("Avbryt");
-    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    let header = adw::HeaderBar::builder()
+        .show_end_title_buttons(false)
+        .build();
     header.pack_start(&cancel_button);
     header.pack_end(&save_button);
 
@@ -2328,7 +2892,13 @@ fn prompt_rename(
     content.append(&page);
 
     let win = adw::Window::builder()
-        .transient_for(&area.overlay.root().and_downcast::<gtk::Window>().expect("inget fönster"))
+        .transient_for(
+            &area
+                .overlay
+                .root()
+                .and_downcast::<gtk::Window>()
+                .expect("inget fönster"),
+        )
         .modal(true)
         .default_width(360)
         .default_height(160)
@@ -2400,9 +2970,15 @@ fn prompt_permissions(
     list: &gtk::ListBox,
     path_label: &gtk::Label,
 ) {
-    let mode_row = adw::EntryRow::builder().title("Rättigheter (oktalt, t.ex. 755)").build();
-    let uid_row = adw::EntryRow::builder().title("UID (lämna tomt för att inte ändra)").build();
-    let gid_row = adw::EntryRow::builder().title("GID (lämna tomt för att inte ändra)").build();
+    let mode_row = adw::EntryRow::builder()
+        .title("Rättigheter (oktalt, t.ex. 755)")
+        .build();
+    let uid_row = adw::EntryRow::builder()
+        .title("UID (lämna tomt för att inte ändra)")
+        .build();
+    let gid_row = adw::EntryRow::builder()
+        .title("GID (lämna tomt för att inte ändra)")
+        .build();
 
     let group = adw::PreferencesGroup::builder().title(&entry.name).build();
     group.add(&mode_row);
@@ -2414,7 +2990,9 @@ fn prompt_permissions(
     let apply_button = gtk::Button::with_label("Verkställ");
     apply_button.add_css_class("suggested-action");
     let cancel_button = gtk::Button::with_label("Avbryt");
-    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    let header = adw::HeaderBar::builder()
+        .show_end_title_buttons(false)
+        .build();
     header.pack_start(&cancel_button);
     header.pack_end(&apply_button);
 
@@ -2423,7 +3001,13 @@ fn prompt_permissions(
     content.append(&page);
 
     let win = adw::Window::builder()
-        .transient_for(&area.overlay.root().and_downcast::<gtk::Window>().expect("inget fönster"))
+        .transient_for(
+            &area
+                .overlay
+                .root()
+                .and_downcast::<gtk::Window>()
+                .expect("inget fönster"),
+        )
         .modal(true)
         .default_width(420)
         .default_height(280)
@@ -2500,22 +3084,43 @@ fn prompt_permissions(
 /// binärt innehåll"-lärdom som Swiftsidans `EditingFile.isBinary`).
 fn open_sftp_file_editor(area: &Rc<SessionArea>, handle: sftp::SftpHandle, path: String) {
     let text_view = gtk::TextView::builder().monospace(true).build();
-    let scrolled = gtk::ScrolledWindow::builder().child(&text_view).vexpand(true).build();
+    let scrolled = gtk::ScrolledWindow::builder()
+        .child(&text_view)
+        .vexpand(true)
+        .build();
 
     let save_button = gtk::Button::with_label("Spara");
     save_button.add_css_class("suggested-action");
     save_button.set_sensitive(false);
     let close_button = gtk::Button::with_label("Stäng");
-    let header = adw::HeaderBar::builder().show_end_title_buttons(false).title_widget(&gtk::Label::new(Some(&path))).build();
+    let header = adw::HeaderBar::builder()
+        .show_end_title_buttons(false)
+        .title_widget(&gtk::Label::new(Some(&path)))
+        .build();
     header.pack_start(&close_button);
     header.pack_end(&save_button);
 
+    let save_status_label = gtk::Label::builder()
+        .halign(gtk::Align::Start)
+        .margin_start(12)
+        .margin_top(4)
+        .visible(false)
+        .css_classes(["error"])
+        .build();
+
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.append(&header);
+    content.append(&save_status_label);
     content.append(&scrolled);
 
     let win = adw::Window::builder()
-        .transient_for(&area.overlay.root().and_downcast::<gtk::Window>().expect("inget fönster"))
+        .transient_for(
+            &area
+                .overlay
+                .root()
+                .and_downcast::<gtk::Window>()
+                .expect("inget fönster"),
+        )
         .modal(true)
         .default_width(700)
         .default_height(500)
@@ -2535,16 +3140,29 @@ fn open_sftp_file_editor(area: &Rc<SessionArea>, handle: sftp::SftpHandle, path:
         path,
         #[weak]
         text_view,
+        #[strong]
+        save_status_label,
         move |_| {
             let buffer = text_view.buffer();
-            let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
+            let text = buffer
+                .text(&buffer.start_iter(), &buffer.end_iter(), false)
+                .to_string();
+            save_status_label.set_visible(false);
             glib::spawn_future_local(clone!(
                 #[strong]
                 handle,
                 #[strong]
                 path,
+                #[strong]
+                save_status_label,
                 async move {
-                    let _ = handle.write(path, text.into_bytes()).await;
+                    // Ett `let _ =` här dolde tidigare rättighets-/diskfulla
+                    // fel helt — filen såg "sparad" ut för användaren trots
+                    // att skrivningen avvisades (CodeRabbit-fynd).
+                    if let Err(e) = handle.write(path, text.into_bytes()).await {
+                        save_status_label.set_text(&format!("Kunde inte spara: {e}"));
+                        save_status_label.set_visible(true);
+                    }
                 }
             ));
         }

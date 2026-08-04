@@ -57,7 +57,9 @@ impl Serialize for HostAuth {
         use serde::ser::SerializeMap;
         let mut outer = s.serialize_map(Some(1))?;
         match self {
-            HostAuth::AskPassword => outer.serialize_entry("askPassword", &serde_json::json!({}))?,
+            HostAuth::AskPassword => {
+                outer.serialize_entry("askPassword", &serde_json::json!({}))?
+            }
             HostAuth::KeyFile(path) => {
                 outer.serialize_entry("keyFile", &serde_json::json!({ "_0": path }))?
             }
@@ -67,7 +69,10 @@ impl Serialize for HostAuth {
             HostAuth::KeychainKey(id) => {
                 outer.serialize_entry("keychainKey", &serde_json::json!({ "_0": id }))?
             }
-            HostAuth::CertificateFile { key_path, cert_path } => outer.serialize_entry(
+            HostAuth::CertificateFile {
+                key_path,
+                cert_path,
+            } => outer.serialize_entry(
                 "certificateFile",
                 &serde_json::json!({ "keyPath": key_path, "certPath": cert_path }),
             )?,
@@ -83,6 +88,12 @@ impl<'de> Deserialize<'de> for HostAuth {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         use serde::de::Error;
         let map = HashMap::<String, serde_json::Value>::deserialize(d)?;
+        if map.len() != 1 {
+            return Err(D::Error::custom(format!(
+                "HostAuth: väntade exakt en case-nyckel, hittade {}",
+                map.len()
+            )));
+        }
         let (case, payload) = map
             .into_iter()
             .next()
@@ -222,7 +233,9 @@ impl<'de> Deserialize<'de> for SyncState {
         }
         let raw = Raw::deserialize(d)?;
         if raw.tombstones.len() % 2 != 0 {
-            return Err(D::Error::custom("tombstones: udda antal element i platt array"));
+            return Err(D::Error::custom(
+                "tombstones: udda antal element i platt array",
+            ));
         }
         let mut tombstones = HashMap::new();
         for pair in raw.tombstones.chunks_exact(2) {
@@ -235,7 +248,10 @@ impl<'de> Deserialize<'de> for SyncState {
                 .ok_or_else(|| D::Error::custom("tombstones: ogiltigt datumvärde"))?;
             tombstones.insert(id, ReferenceDate(date));
         }
-        Ok(SyncState { hosts: raw.hosts, tombstones })
+        Ok(SyncState {
+            hosts: raw.hosts,
+            tombstones,
+        })
     }
 }
 
@@ -254,22 +270,38 @@ impl HostStore {
     }
 
     pub fn open(path: std::path::PathBuf) -> std::io::Result<Self> {
-        let state = Self::load(&path);
+        let state = Self::load(&path)?;
         Ok(HostStore { path, state })
     }
 
-    fn load(path: &std::path::Path) -> SyncState {
-        let Ok(data) = std::fs::read_to_string(path) else {
-            return SyncState::default();
+    /// Skiljer "filen finns inte än" (tomt tillstånd är korrekt) från
+    /// "filen finns men går inte att läsa/tolka" (propagera felet).
+    /// Innan denna fix kollapsade båda till `SyncState::default()` — nästa
+    /// `upsert`/`delete` skrev då permanent över en bara TRUNKERAD (inte
+    /// tom) fil med ett tomt tillstånd, en tyst dataförlust utan varning.
+    fn load(path: &std::path::Path) -> std::io::Result<SyncState> {
+        let data = match std::fs::read_to_string(path) {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(SyncState::default()),
+            Err(e) => return Err(e),
         };
         // Nytt format (SyncState) först; annars äldre rena Host-listor.
         if let Ok(state) = serde_json::from_str::<SyncState>(&data) {
-            return state;
+            return Ok(state);
         }
         if let Ok(hosts) = serde_json::from_str::<Vec<Host>>(&data) {
-            return SyncState { hosts, tombstones: HashMap::new() };
+            return Ok(SyncState {
+                hosts,
+                tombstones: HashMap::new(),
+            });
         }
-        SyncState::default()
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{}: går inte att tolka som SyncState eller Vec<Host>",
+                path.display()
+            ),
+        ))
     }
 
     pub fn all(&self) -> Vec<&Host> {
@@ -316,7 +348,7 @@ impl HostStore {
             }
         }
         let json = serde_json::to_string_pretty(&self.state)?;
-        std::fs::write(&self.path, json)
+        crate::fsutil::atomic_write(&self.path, json.as_bytes())
     }
 }
 
@@ -335,7 +367,10 @@ mod tests {
         let json = serde_json::to_string(&HostAuth::AskPassword).unwrap();
         assert_eq!(json, r#"{"askPassword":{}}"#);
 
-        let cert = HostAuth::CertificateFile { key_path: "/k".into(), cert_path: "/c".into() };
+        let cert = HostAuth::CertificateFile {
+            key_path: "/k".into(),
+            cert_path: "/c".into(),
+        };
         let json = serde_json::to_string(&cert).unwrap();
         let back: HostAuth = serde_json::from_str(&json).unwrap();
         assert_eq!(back, cert);
@@ -354,9 +389,15 @@ mod tests {
         let id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap();
         let mut tombstones = HashMap::new();
         tombstones.insert(id, ReferenceDate(5.0));
-        let state = SyncState { hosts: vec![], tombstones };
+        let state = SyncState {
+            hosts: vec![],
+            tombstones,
+        };
         let json = serde_json::to_string(&state).unwrap();
-        assert_eq!(json, r#"{"hosts":[],"tombstones":["00000000-0000-0000-0000-000000000001",5.0]}"#);
+        assert_eq!(
+            json,
+            r#"{"hosts":[],"tombstones":["00000000-0000-0000-0000-000000000001",5.0]}"#
+        );
         let back: SyncState = serde_json::from_str(&json).unwrap();
         assert_eq!(back.tombstones.len(), 1);
     }
@@ -372,7 +413,44 @@ mod tests {
         assert_eq!(hosts.len(), 1);
         assert_eq!(hosts[0].alias, "swift-genererad");
         assert_eq!(hosts[0].host_name, "10.0.0.5");
-        assert_eq!(hosts[0].auth, HostAuth::KeyFile("/home/x/.ssh/id_ed25519".into()));
+        assert_eq!(
+            hosts[0].auth,
+            HostAuth::KeyFile("/home/x/.ssh/id_ed25519".into())
+        );
+    }
+
+    #[test]
+    fn a_corrupt_hosts_json_is_an_error_not_a_silent_empty_state() {
+        let dir = std::env::temp_dir().join(format!("bastion-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("hosts.json");
+        std::fs::write(&path, "{ det här är inte giltig json").unwrap();
+
+        let result = HostStore::open(path);
+        assert!(
+            result.is_err(),
+            "en trunkerad/skadad fil ska propagera ett fel, inte tyst bli SyncState::default()"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_missing_hosts_json_is_still_a_valid_empty_store() {
+        let dir = std::env::temp_dir().join(format!("bastion-test-{}", Uuid::new_v4()));
+        let path = dir.join("hosts.json");
+        let store = HostStore::open(path).unwrap();
+        assert!(store.all().is_empty());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn host_auth_with_more_than_one_case_key_is_rejected() {
+        let json = r#"{"askPassword":{},"agentDefault":{}}"#;
+        let result: Result<HostAuth, _> = serde_json::from_str(json);
+        assert!(
+            result.is_err(),
+            "en HostAuth med flera case-nycklar ska avvisas, inte godtyckligt välja en"
+        );
     }
 
     #[test]

@@ -7,7 +7,8 @@
 //! server_channel_open_forwarded_tcpip`, se `ssh.rs`) bryggas mot en ny
 //! lokal TCP-anslutning.
 //!
-//! Dynamisk (`-D`, SOCKS5) vidarebefordran är INTE byggd än — se ROADMAP.md.
+//! Dynamisk (`-D`, SOCKS5) vidarebefordran ligger i `socks_proxy.rs` och
+//! nås härifrån via `ActiveForward::Dynamic`.
 
 use crate::host::Host;
 use russh::client::Handle;

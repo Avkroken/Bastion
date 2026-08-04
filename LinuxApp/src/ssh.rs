@@ -15,11 +15,11 @@
 
 use crate::host::{Host, HostAuth};
 use crate::known_hosts::{KnownHosts, Verdict};
+use russh::client::Msg;
 use russh::client::{self, Handle};
 use russh::keys::agent::client::AgentClient;
 use russh::keys::key::PublicKey;
-use russh::keys::{load_secret_key, PublicKeyBase64};
-use russh::client::Msg;
+use russh::keys::{PublicKeyBase64, load_secret_key};
 use russh::{Channel, ChannelMsg};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -80,8 +80,15 @@ pub(crate) struct ClientHandler {
 impl client::Handler for ClientHandler {
     type Error = ConnectError;
 
-    async fn check_server_key(&mut self, server_public_key: &PublicKey) -> Result<bool, Self::Error> {
-        let key_string = format!("{} {}", server_public_key.name(), server_public_key.public_key_base64());
+    async fn check_server_key(
+        &mut self,
+        server_public_key: &PublicKey,
+    ) -> Result<bool, Self::Error> {
+        let key_string = format!(
+            "{} {}",
+            server_public_key.name(),
+            server_public_key.public_key_base64()
+        );
         match self.known_hosts.check(&self.host, self.port, &key_string) {
             Verdict::Trusted | Verdict::Learned => Ok(true),
             Verdict::Changed(stored) => Err(ConnectError::HostKeyChanged(format!(
@@ -109,7 +116,12 @@ impl client::Handler for ClientHandler {
         _originator_port: u32,
         _session: &mut client::Session,
     ) -> Result<(), Self::Error> {
-        let target = self.remote_forwards.lock().expect("remote_forwards-låset korrupt").get(&connected_port).cloned();
+        let target = self
+            .remote_forwards
+            .lock()
+            .expect("remote_forwards-låset korrupt")
+            .get(&connected_port)
+            .cloned();
         let Some((target_host, target_port)) = target else {
             return Ok(());
         };
@@ -138,15 +150,43 @@ pub fn spawn_shell(host: Host, password: Option<String>, cols: u32, rows: u32) -
             .build()
             .expect("kunde inte starta tokio-runtimen för SSH-tråden");
         rt.block_on(async move {
-            if let Err(e) = run(host, password, cols, rows, input_rx, output_tx.clone(), None).await {
+            if let Err(e) = run(
+                host,
+                password,
+                cols,
+                rows,
+                input_rx,
+                output_tx.clone(),
+                None,
+            )
+            .await
+            {
                 let _ = output_tx.send(SshEvent::Error(e)).await;
             }
             let _ = output_tx.send(SshEvent::Closed).await;
         });
     });
 
-    SshSession { input: input_tx, output: output_rx }
+    SshSession {
+        input: input_tx,
+        output: output_rx,
+    }
 }
+
+/// Hur länge `client::connect` (TCP + SSH-handskakning) får ta innan den
+/// ges upp — utan detta kan en obesvarad/svarthålsad värd blockera hela
+/// bakgrundstråden (och därmed den väntande UI-kanalen) på obestämd tid.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// Hur länge ett engångskommando (`run_command_once`, Docker-listor/-loggar
+/// m.fl.) får köra innan det avbryts — samma resonemang som `CONNECT_TIMEOUT`,
+/// fast för fjärrkommandot självt (en hängande shell/process på fjärrsidan).
+const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Tak på hur mycket utdata ett engångskommando ackumulerar i minnet —
+/// `docker logs` utan `--tail` eller en oavsiktlig `cat` av en stor fil ska
+/// inte kunna svälta GUI-processen. 4 MiB räcker gott för det här
+/// användningsfallet (statuslistor/loggutdrag), inte en generell
+/// filöverföringskanal (den finns redan, SFTP).
+const MAX_COMMAND_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 
 /// Ansluter och autentiserar — delad av den interaktiva shell-sessionen
 /// (`run`) och engångskommandon (`run_command_once`, t.ex. Docker-anrop).
@@ -155,7 +195,13 @@ pub(crate) async fn connect(
     password: Option<String>,
     known_hosts_path_override: Option<std::path::PathBuf>,
 ) -> Result<Handle<ClientHandler>, String> {
-    connect_with_forwards(host, password, known_hosts_path_override, RemoteForwards::default()).await
+    connect_with_forwards(
+        host,
+        password,
+        known_hosts_path_override,
+        RemoteForwards::default(),
+    )
+    .await
 }
 
 /// Samma som `connect`, men tar en delad `RemoteForwards`-karta som
@@ -173,10 +219,22 @@ pub(crate) async fn connect_with_forwards(
     )));
     let config = Arc::new(client::Config::default());
     let addr = (host.host_name.as_str(), host.port as u16);
-    let handler = ClientHandler { host: host.host_name.clone(), port: host.port as u16, known_hosts, remote_forwards };
-    let mut session: Handle<ClientHandler> = client::connect(config, addr, handler)
-        .await
-        .map_err(|e| format!("anslutning misslyckades: {e}"))?;
+    let handler = ClientHandler {
+        host: host.host_name.clone(),
+        port: host.port as u16,
+        known_hosts,
+        remote_forwards,
+    };
+    let mut session: Handle<ClientHandler> =
+        tokio::time::timeout(CONNECT_TIMEOUT, client::connect(config, addr, handler))
+            .await
+            .map_err(|_| {
+                format!(
+                    "anslutningen svarade inte inom {}s",
+                    CONNECT_TIMEOUT.as_secs()
+                )
+            })?
+            .map_err(|e| format!("anslutning misslyckades: {e}"))?;
     authenticate(&mut session, host, password).await?;
     Ok(session)
 }
@@ -186,7 +244,11 @@ pub(crate) async fn connect_with_forwards(
 /// engångsanrop (Docker list/start/stopp/loggar) — en ny anslutning per
 /// anrop är enklare och korrekt, om än inte det mest effektiva; se
 /// ROADMAP.md om det senare visar sig behöva en delad uppkopplad session.
-pub fn run_command(host: Host, password: Option<String>, command: String) -> async_channel::Receiver<Result<String, String>> {
+pub fn run_command(
+    host: Host,
+    password: Option<String>,
+    command: String,
+) -> async_channel::Receiver<Result<String, String>> {
     let (tx, rx) = async_channel::bounded(1);
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -206,6 +268,15 @@ async fn run_command_once(
     known_hosts_path_override: Option<std::path::PathBuf>,
 ) -> Result<String, String> {
     let session = connect(&host, password, known_hosts_path_override).await?;
+    tokio::time::timeout(COMMAND_TIMEOUT, run_command_on_session(&session, &command))
+        .await
+        .map_err(|_| format!("kommandot svarade inte inom {}s", COMMAND_TIMEOUT.as_secs()))?
+}
+
+async fn run_command_on_session(
+    session: &Handle<ClientHandler>,
+    command: &str,
+) -> Result<String, String> {
     let mut channel = session
         .channel_open_session()
         .await
@@ -216,16 +287,33 @@ async fn run_command_once(
         .map_err(|e| format!("kommandot kunde inte köras: {e}"))?;
 
     let mut output = Vec::new();
+    let mut truncated = false;
     while let Some(msg) = channel.wait().await {
         match msg {
             ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
-                output.extend_from_slice(&data);
+                if output.len() < MAX_COMMAND_OUTPUT_BYTES {
+                    let remaining = MAX_COMMAND_OUTPUT_BYTES - output.len();
+                    output.extend_from_slice(&data[..data.len().min(remaining)]);
+                    if data.len() > remaining {
+                        truncated = true;
+                    }
+                } else {
+                    truncated = true;
+                }
             }
             ChannelMsg::ExitStatus { .. } => break,
             _ => {}
         }
     }
-    String::from_utf8(output).map_err(|e| format!("ogiltig UTF-8 i kommandots utdata: {e}"))
+    let mut text =
+        String::from_utf8(output).map_err(|e| format!("ogiltig UTF-8 i kommandots utdata: {e}"))?;
+    if truncated {
+        text.push_str(&format!(
+            "\n[...avkortad, mer än {} MiB utdata...]",
+            MAX_COMMAND_OUTPUT_BYTES / (1024 * 1024)
+        ));
+    }
+    Ok(text)
 }
 
 async fn run(
@@ -298,8 +386,9 @@ async fn authenticate(
 ) -> Result<(), String> {
     let ok = match &host.auth {
         HostAuth::KeyFile(path) => {
-            let key = load_secret_key(path, None)
-                .map_err(|e| format!("kunde inte läsa nyckelfilen {path}: {e} (lösenfraser stöds inte än)"))?;
+            let key = load_secret_key(path, None).map_err(|e| {
+                format!("kunde inte läsa nyckelfilen {path}: {e} (lösenfraser stöds inte än)")
+            })?;
             session
                 .authenticate_publickey(&host.user, Arc::new(key))
                 .await
@@ -313,11 +402,24 @@ async fn authenticate(
                 .request_identities()
                 .await
                 .map_err(|e| format!("kunde inte hämta identiteter från ssh-agent: {e}"))?;
-            let Some(key) = identities.into_iter().next() else {
+            if identities.is_empty() {
                 return Err("ssh-agent har inga laddade identiteter".into());
-            };
-            let (_agent, result) = session.authenticate_future(&host.user, key, agent).await;
-            result.map_err(|e| format!("agent-autentisering misslyckades: {e}"))?
+            }
+            // En ssh-agent kan ha flera laddade nycklar — precis som riktig
+            // `ssh` provas var och en i tur och ordning tills en lyckas,
+            // istället för att ge upp bara för att den FÖRSTA inte råkar
+            // vara den servern accepterar (CodeRabbit-fynd).
+            let mut succeeded = false;
+            for key in identities {
+                let (returned_agent, result) =
+                    session.authenticate_future(&host.user, key, agent).await;
+                agent = returned_agent;
+                if matches!(result, Ok(true)) {
+                    succeeded = true;
+                    break;
+                }
+            }
+            succeeded
         }
         HostAuth::AskPassword => {
             let pass = password.ok_or("lösenord krävs men saknades")?;
@@ -329,7 +431,7 @@ async fn authenticate(
         other => {
             return Err(format!(
                 "autentiseringstypen {other:?} stöds inte på Linux ännu"
-            ))
+            ));
         }
     };
     if !ok {
@@ -349,16 +451,31 @@ fn spawn_shell_with_known_hosts(
     let (input_tx, input_rx) = async_channel::unbounded::<Vec<u8>>();
     let (output_tx, output_rx) = async_channel::unbounded::<SshEvent>();
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async move {
-            if let Err(e) = run(host, password, cols, rows, input_rx, output_tx.clone(), Some(known_hosts_path)).await
+            if let Err(e) = run(
+                host,
+                password,
+                cols,
+                rows,
+                input_rx,
+                output_tx.clone(),
+                Some(known_hosts_path),
+            )
+            .await
             {
                 let _ = output_tx.send(SshEvent::Error(e)).await;
             }
             let _ = output_tx.send(SshEvent::Closed).await;
         });
     });
-    SshSession { input: input_tx, output: output_rx }
+    SshSession {
+        input: input_tx,
+        output: output_rx,
+    }
 }
 
 #[cfg(test)]
@@ -367,7 +484,10 @@ mod tests {
     use crate::host::Host;
     use std::time::Duration;
 
-    fn drain_until_data_error_or_closed(session: &SshSession, timeout: Duration) -> Result<(), String> {
+    fn drain_until_data_error_or_closed(
+        session: &SshSession,
+        timeout: Duration,
+    ) -> Result<(), String> {
         let deadline = std::time::Instant::now() + timeout;
         while std::time::Instant::now() < deadline {
             match session.output.recv_blocking() {
@@ -389,7 +509,8 @@ mod tests {
     #[test]
     #[ignore = "kräver en riktig localhost-sshd + en nyckel förberedd i authorized_keys, se ROADMAP.md"]
     fn connects_to_real_localhost_sshd_and_gets_a_shell_prompt() {
-        let key_path = std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
+        let key_path =
+            std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
         let user = std::env::var("USER").expect("USER måste vara satt");
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
@@ -407,14 +528,21 @@ mod tests {
     #[test]
     #[ignore = "kräver en riktig localhost-sshd + en nyckel förberedd i authorized_keys, se ROADMAP.md"]
     fn rejects_connection_when_host_key_has_changed() {
-        let key_path = std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
+        let key_path =
+            std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
         let user = std::env::var("USER").expect("USER måste vara satt");
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
 
-        let known_hosts_path =
-            std::env::temp_dir().join(format!("bastion-tofu-test-{}.known_hosts", uuid::Uuid::new_v4()));
-        std::fs::write(&known_hosts_path, "127.0.0.1:22 ssh-ed25519 FALSKT-INTE-DEN-RIKTIGA-NYCKELN\n").unwrap();
+        let known_hosts_path = std::env::temp_dir().join(format!(
+            "bastion-tofu-test-{}.known_hosts",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(
+            &known_hosts_path,
+            "127.0.0.1:22 ssh-ed25519 FALSKT-INTE-DEN-RIKTIGA-NYCKELN\n",
+        )
+        .unwrap();
 
         let session = spawn_shell_with_known_hosts(host, None, 80, 24, known_hosts_path.clone());
         let result = drain_until_data_error_or_closed(&session, Duration::from_secs(10));
@@ -425,7 +553,9 @@ mod tests {
                 msg.contains("HAR ÄNDRATS"),
                 "väntade ett host-key-avslag, fick: {msg}"
             ),
-            Ok(()) => panic!("anslutningen borde ha avvisats p.g.a. ändrad värdnyckel, men lyckades"),
+            Ok(()) => {
+                panic!("anslutningen borde ha avvisats p.g.a. ändrad värdnyckel, men lyckades")
+            }
         }
     }
 
@@ -435,7 +565,8 @@ mod tests {
     #[test]
     #[ignore = "kräver en riktig localhost-sshd + en nyckel förberedd i authorized_keys, se ROADMAP.md"]
     fn run_command_executes_a_real_readonly_command_over_ssh() {
-        let key_path = std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
+        let key_path =
+            std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
         let user = std::env::var("USER").expect("USER måste vara satt");
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
@@ -451,15 +582,22 @@ mod tests {
     #[test]
     #[ignore = "kräver riktig localhost-sshd + docker + en nyckel i authorized_keys, se ROADMAP.md"]
     fn docker_list_command_parses_real_dockerd_output() {
-        let key_path = std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
+        let key_path =
+            std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
         let user = std::env::var("USER").expect("USER måste vara satt");
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
 
         let rx = run_command(host, None, crate::docker::list_command(true));
-        let output = rx.recv_blocking().expect("kanalen stängdes utan svar").expect("docker ps misslyckades");
+        let output = rx
+            .recv_blocking()
+            .expect("kanalen stängdes utan svar")
+            .expect("docker ps misslyckades");
         let containers = crate::docker::parse_list(&output);
-        assert!(!containers.is_empty(), "väntade minst en container på testmaskinen, fick ingen");
+        assert!(
+            !containers.is_empty(),
+            "väntade minst en container på testmaskinen, fick ingen"
+        );
     }
 
     /// Verifierar att skriva `exit` i den interaktiva shellen faktiskt
@@ -469,7 +607,8 @@ mod tests {
     #[test]
     #[ignore = "kräver en riktig localhost-sshd + en nyckel förberedd i authorized_keys, se ROADMAP.md"]
     fn typing_exit_in_the_shell_closes_the_session() {
-        let key_path = std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
+        let key_path =
+            std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
         let user = std::env::var("USER").expect("USER måste vara satt");
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
@@ -480,7 +619,10 @@ mod tests {
         drain_until_data_error_or_closed(&session, Duration::from_secs(10))
             .expect("fick aldrig en initial prompt från skalet");
 
-        session.input.send_blocking(b"exit\n".to_vec()).expect("kunde inte skicka exit till skalet");
+        session
+            .input
+            .send_blocking(b"exit\n".to_vec())
+            .expect("kunde inte skicka exit till skalet");
 
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let mut closed = false;
@@ -495,6 +637,131 @@ mod tests {
                 Err(_) => break,
             }
         }
-        assert!(closed, "sessionen stängdes aldrig efter att exit skrevs i skalet");
+        assert!(
+            closed,
+            "sessionen stängdes aldrig efter att exit skrevs i skalet"
+        );
+    }
+
+    /// Fristående test-sshd (egen konfig/port, INTE systemtjänsten) — samma
+    /// teknik som `port_forward`/`socks_proxy`/`key_deploy`, används här så
+    /// output-taket kan verifieras utan manuell `authorized_keys`-uppsättning.
+    struct TestSshd {
+        child: std::process::Child,
+        port: u16,
+        dir: std::path::PathBuf,
+    }
+
+    impl TestSshd {
+        fn start() -> Option<Self> {
+            let dir = std::env::temp_dir().join(format!(
+                "bastion-ssh-output-cap-sshd-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&dir).ok()?;
+
+            let host_key = dir.join("hostkey");
+            let status = std::process::Command::new("ssh-keygen")
+                .args(["-q", "-N", "", "-t", "ed25519", "-f"])
+                .arg(&host_key)
+                .status()
+                .ok()?;
+            if !status.success() {
+                return None;
+            }
+            let client_key = dir.join("client_key");
+            let status = std::process::Command::new("ssh-keygen")
+                .args(["-q", "-N", "", "-t", "ed25519", "-f"])
+                .arg(&client_key)
+                .status()
+                .ok()?;
+            if !status.success() {
+                return None;
+            }
+            let client_pub = std::fs::read_to_string(dir.join("client_key.pub")).ok()?;
+            std::fs::write(dir.join("authorized_keys"), client_pub).ok()?;
+
+            let port = {
+                let l = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
+                l.local_addr().ok()?.port()
+            };
+            let config_path = dir.join("sshd_config");
+            std::fs::write(
+                &config_path,
+                format!(
+                    "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\n\
+                     PubkeyAuthentication yes\nPasswordAuthentication no\nUsePAM no\nStrictModes no\n\
+                     PidFile {}\n",
+                    host_key.display(),
+                    dir.join("authorized_keys").display(),
+                    dir.join("pid").display()
+                ),
+            )
+            .ok()?;
+
+            let child = std::process::Command::new("/usr/sbin/sshd")
+                .args(["-f"])
+                .arg(&config_path)
+                .args(["-D", "-e"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .ok()?;
+
+            for _ in 0..50 {
+                if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                    return Some(TestSshd { child, port, dir });
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            None
+        }
+
+        fn client_key_path(&self) -> String {
+            self.dir.join("client_key").to_string_lossy().into_owned()
+        }
+    }
+
+    impl Drop for TestSshd {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// Ett kommando som producerar betydligt mer än `MAX_COMMAND_OUTPUT_BYTES`
+    /// ska avkortas (med en tydlig markör), inte svälla minnet obegränsat.
+    #[test]
+    fn run_command_output_is_capped_not_unbounded() {
+        let Some(sshd) = TestSshd::start() else {
+            eprintln!("hoppar: kunde inte starta en test-sshd i den här miljön");
+            return;
+        };
+        let mut host = Host::new("output-cap-test".into(), "127.0.0.1".into(), whoami_user());
+        host.port = sshd.port as i64;
+        host.auth = HostAuth::KeyFile(sshd.client_key_path());
+
+        // 6 MiB rå utdata (inte avkortad av något mellanled) — väl över det
+        // 4 MiB-taket.
+        let rx = run_command(host, None, "yes a | head -c 6291456".to_string());
+        let output = rx
+            .recv_blocking()
+            .expect("kanalen stängdes utan svar")
+            .expect("kommandot misslyckades");
+        assert!(
+            output.len() < 6 * 1024 * 1024,
+            "utdatan ska ha avkortats, fick {} bytes",
+            output.len()
+        );
+        assert!(
+            output.contains("avkortad"),
+            "avkortad utdata ska ha en tydlig markör, fick slutet: {}",
+            &output[output.len().saturating_sub(80)..]
+        );
+    }
+
+    fn whoami_user() -> String {
+        std::env::var("USER").unwrap_or_else(|_| "test".into())
     }
 }
