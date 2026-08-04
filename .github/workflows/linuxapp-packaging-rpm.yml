@@ -62,6 +62,10 @@ jobs:
       # HELT FRISK Fedora-container (aldrig haft -devel-paketen installerade)
       # — samma "fel sak bevisad annars"-princip som .deb-jobbets smoke-test.
       - name: Installera och kör paketet i en frisk container
+        # Skyddsnät: samma dnf/apt-hängningsrisk som .deb-jobbet — ett
+        # kort steg-eget tak ger ett snabbt, tydligt fel i stället för att
+        # äta upp hela jobbets 20-minuterstak tyst.
+        timeout-minutes: 5
         run: |
           set -euo pipefail
           docker run --rm -v "$PWD/dist-out:/dist-out:ro" fedora:40 bash -euo pipefail -c '

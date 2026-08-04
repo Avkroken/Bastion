@@ -148,9 +148,24 @@ jobs:
       # apt, till skillnad från `dpkg -i` som bara installerar paketet och
       # lämnar olösta beroenden bakom sig.
       - name: Installera och kör paketet i en frisk container
+        # Skyddsnät: en tidigare hängning i det här steget (needrestart-
+        # prompten, se kommentaren nedan) åt upp hela jobbets 20-minuters-
+        # tak innan felet syntes någonstans (CI-fynd) — ett kort steg-eget
+        # tak ger ett snabbt, tydligt fel i stället.
+        timeout-minutes: 5
         run: |
           set -euo pipefail
-          docker run --rm -v "$PWD/dist-out:/dist-out:ro" ubuntu:24.04 bash -euo pipefail -c '
+          docker run --rm -v "$PWD/dist-out:/dist-out:ro" \
+            -e DEBIAN_FRONTEND=noninteractive -e NEEDRESTART_MODE=a \
+            ubuntu:24.04 bash -euo pipefail -c '
+            # `DEBIAN_FRONTEND=noninteractive`/`NEEDRESTART_MODE=a`: ett
+            # `apt-get install` av ett paket med `dbus`/GTK-bibliotek som
+            # beroende drar in `needrestart`, som annars öppnar en
+            # interaktiv whiptail-dialog ("vilka tjänster ska startas om?")
+            # och HÄNGER hela jobbet till 20-minuters-taket i en tom
+            # container utan TTY (CI-fynd — `xvfb-run`-bytet till manuell
+            # Xvfb ovan löste INTE detta, roten var apt-installationen
+            # själv, inte GUI-uppstarten).
             apt-get update -qq
             apt-get install -y -qq /dist-out/*.deb
             apt-get install -y -qq xvfb dbus-x11
