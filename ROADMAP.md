@@ -50,7 +50,7 @@ delvis andra, av konkreta skäl:
 | Linux-terminal (VT100/ANSI-tolk, bestående PTY-shell) | ✅ 42 fristående parser-tester gröna (`LinuxApp/Tests/`), körd (Xvfb) — riktig tangentbordsinmatning (2026-08-02, `KeyEventBridge.swift`, se "Klart"), ingen interaktiv GUI-verifiering än; inget musstöd (ingen rå gest-position-API i SwiftCrossUI) |
 | Linux-Docker-hantering (`DockerView`) | ✅ lista/start/stopp/omstart/logg/shell — motsvarar `App/DockerView.swift` |
 | Portvidarebefordran (`PortForwardView`) | ✅ lokal/fjärr/dynamisk — LinuxApp (byggd+körd, Xvfb; interaktiv klick-genom-menyn ej gjord) OCH App/ (2026-07-08, Xcode-only) |
-| ProxyJump (`ssh -J`) | ✅ `SSHSession.connect(via:)`, `bastion-cli` läser `ProxyJump` ur ssh-config automatiskt |
+| ProxyJump (`ssh -J`) | ✅ `SSHSession.connect(via:)`, `bastion-cli` läser `ProxyJump` ur ssh-config automatiskt — ✅ (2026-08-04) LinuxApp Rust (`ssh::connect_via_jump`), testat mot två oberoende riktiga `sshd`-instanser, ingen egen UI-väljare i LinuxApps host-dialog än (se "Klart") |
 | WireGuard-profiler | ✅ parsning/serialisering + lagring — LinuxApp OCH App/-UI (2026-07-08, Xcode-only) |
 | OpenSSH-certifikat | ✅ parsning + CA-signaturverifiering + `SSHUserAuth`/`HostAuth`-wiring (`.certificateFile`) — testad mot RIKTIGA `ssh-keygen -s`-certifikat, LinuxApp+App-UI klar |
 | ssh-agent-protokollklient | ✅ `SSHAgentClient.swift`, testad mot en RIKTIG `ssh-agent` — 🚫 kanal-forwarding till fjärrserver BLOCKERAD (se ROADMAP) |
@@ -354,6 +354,70 @@ delvis andra, av konkreta skäl:
    — se "Uppskjutet med avsikt"-beslutet nedan.)
 
 ## Klart
+
+- **ProxyJump (`ssh -J`) i den NYA Rust/GTK4-`LinuxApp`** (2026-08-04,
+  `LinuxApp/src/ssh.rs`/`host.rs`): `Host.jump_host_id` fanns redan (för
+  wire-format-kompatibilitet med Swift/Windows synk) men lästes tidigare
+  aldrig av något i den nya Rust-omskrivningen — en synkad värd med en
+  jump-host konfigurerad från App/(iOS/macOS) skulle tyst försöka ansluta
+  DIREKT mot target och misslyckas (eller, värre, om target råkade vara
+  nåbar direkt också: ansluta utan att gå genom den avsedda jump-hosten).
+  - `HostStore::resolve_jump` (`host.rs`): löser upp `jump_host_id` mot en
+    riktig `Host` — motsvarar `App/AuthResolver.resolveConnectionPlan`s
+    kontrakt exakt. Bara ETT hopp stöds; en jump-host som SJÄLV har en
+    `jump_host_id` avvisas explicit (`Err`, aldrig en tyst
+    direktanslutning som hoppar över resten av kedjan) — samma
+    säkerhetsprincip som Swift-sidans `jumpHost.jumpHostID == nil`-vakt.
+    En jump-host-referens som pekar på ett ID som inte finns i databasen
+    (borttagen, eller inte synkad än) avvisas likaså.
+  - `ssh::connect_via_jump` (`ssh.rs`): ansluter+autentiserar mot
+    jump-hosten (russh `connect_direct`, UTBRUTEN ur `connect_with_forwards`
+    specifikt för att undvika en rekursiv-async-fn-cykel — E0733 — mellan
+    `connect`/`connect_with_forwards`/`connect_via_jump`), öppnar en äkta
+    `direct-tcpip`-kanal genom den (`channel_open_direct_tcpip`) mot
+    target, och kör en HELT NY, oberoende SSH-handskakning
+    (`client::connect_stream` på kanalens `ChannelStream`, targets EGEN
+    TOFU-koll) ovanpå den byteströmmen — samma "SSH i SSH"-mönster som
+    `SSHSession.connect(via:)` i SSHCore. Jump-hostens `Handle` behöver
+    inte hållas vid liv explicit efter att kanalen öppnats — `Channel`
+    håller sin egen klon av sessionens sändare (russh-dokumenterat), så
+    russh:s bakgrundstråd för jump-anslutningen fortsätter servera
+    tunneln även efter att `Handle`n gått ur scope.
+    Jump-hosten autentiseras UTAN lösenordsprompt (samma begränsning som
+    Swift-sidans `resolveAuth(for: jumpHost, password: nil)`) — bara
+    nyckel-/agent-auth stöds för själva hoppet, target kan fortfarande
+    fråga efter lösenord som vanligt.
+  - `jump: Option<Host>` trädd genom HELA anropskedjan från `main.rs`s
+    UI-lager (terminal, Docker, SFTP, portvidarebefordran/SOCKS,
+    nyckeldistribution, kommandobibliotek/snippets — alla vägar som kan
+    öppna en SSH-anslutning) ner till `ssh::connect`/`run_command`/
+    `spawn_shell`, `port_forward::spawn_local_forward`/
+    `spawn_remote_forward`, `socks_proxy::spawn_dynamic_forward`,
+    `sftp::spawn`, `key_deploy::spawn_deploy_and_verify`. En trasig
+    jump-host-konfiguration upptäcks INNAN någon anslutning ens försöks
+    (`with_resolved_jump` i `main.rs`) och visas i en modal
+    `adw::AlertDialog` — ansluter aldrig direkt mot target som tyst
+    fallback.
+  - Testat GENUINT end-to-end (`ssh::tests`, INGEN kortsluten
+    loopback-gissning): TVÅ helt oberoende `TestSshd`-instanser (egna
+    portar, värdnycklar, klientnyckelpar) — en lyckad anslutning kör ett
+    riktigt kommando över den tunnlade sessionen och verifierar utdata;
+    ett separat test bevisar att ett fel i JUMP-hostens autentisering
+    pekar tydligt på jump-hosten; ett tredje bevisar att ett fel i
+    TARGET-hostens autentisering (jump redan bevisat fungera) INTE
+    felaktigt tillskrivs jump-hosten — samma distinktion som Swift-sidans
+    `ProxyJumpTests`. Plus 4 nya `HostStore::resolve_jump`-tester
+    (host.rs). 80/80 `cargo test` gröna totalt (73 innan, +4 resolve_jump
+    +3 connect_via_jump).
+  - **Kvar**: `WindowsApp`/`Android` har ingen egen SSH-implementation än
+    (se "Fas D") så frågan är inte aktuell där. LinuxApps egen
+    värdredigeringsdialog (`show_host_dialog` i `main.rs`) har INGEN
+    UI-väljare för `jump_host_id` alls — bara körningsvägen (`ssh.rs`/
+    `host.rs`) stöder det nu. En jump-host måste idag sättas från App/
+    (Xcode-only) och synkas in för att LinuxApp ska kunna använda den;
+    en egen "Anslut via"-väljare i LinuxApps host-dialog (samma som
+    App/HostEditView.swift redan har) är en mindre, avgränsad
+    uppföljning.
 
 - **ECDSA-nyckelautentisering (P256/P384/P521), okrypterad** (2026-08-03,
   `SSHKeyParser.swift`/`SSHUserAuth.swift`): OpenSSH-privatnyckelparsern läser

@@ -134,7 +134,7 @@ pub fn upload_path_recursive<'a>(
 /// Startar SFTP-anslutningen på en ny bakgrundstråd. Om själva anslutningen
 /// misslyckas svarar handtaget med samma fel på varje efterföljande
 /// kommando istället för att panika eller hänga tyst.
-pub fn spawn(host: Host, password: Option<String>) -> SftpHandle {
+pub fn spawn(host: Host, password: Option<String>, jump: Option<Host>) -> SftpHandle {
     let (tx, rx) = async_channel::unbounded::<Command>();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -142,7 +142,7 @@ pub fn spawn(host: Host, password: Option<String>) -> SftpHandle {
             .build()
             .expect("kunde inte starta tokio-runtimen för SFTP-tråden");
         rt.block_on(async move {
-            match connect_sftp(host, password).await {
+            match connect_sftp(host, password, jump).await {
                 Ok(session) => run(session, rx).await,
                 Err(e) => {
                     while let Ok(cmd) = rx.recv().await {
@@ -155,8 +155,12 @@ pub fn spawn(host: Host, password: Option<String>) -> SftpHandle {
     SftpHandle { tx }
 }
 
-async fn connect_sftp(host: Host, password: Option<String>) -> Result<SftpSession, String> {
-    let session = crate::ssh::connect(&host, password, None).await?;
+async fn connect_sftp(
+    host: Host,
+    password: Option<String>,
+    jump: Option<Host>,
+) -> Result<SftpSession, String> {
+    let session = crate::ssh::connect(&host, password, None, jump).await?;
     let channel = session
         .channel_open_session()
         .await
@@ -294,7 +298,7 @@ mod tests {
         host.auth = HostAuth::KeyFile(key_path);
 
         let dir = format!("/tmp/bastion-sftp-test-{}", uuid::Uuid::new_v4());
-        let handle = spawn(host, None);
+        let handle = spawn(host, None, None);
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
@@ -335,7 +339,7 @@ mod tests {
         host.auth = HostAuth::KeyFile(key_path);
 
         let file_path = format!("/tmp/bastion-chmod-test-{}", uuid::Uuid::new_v4());
-        let handle = spawn(host.clone(), None);
+        let handle = spawn(host.clone(), None, None);
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
@@ -343,11 +347,11 @@ mod tests {
             handle.chmod(file_path.clone(), 0o600).await.expect("chmod misslyckades");
         });
 
-        let stat_rx = crate::ssh::run_command(host.clone(), None, format!("stat -c %a {file_path}"));
+        let stat_rx = crate::ssh::run_command(host.clone(), None, format!("stat -c %a {file_path}"), None);
         let mode = stat_rx.recv_blocking().expect("kanalen stängdes").expect("stat misslyckades");
         assert_eq!(mode.trim(), "600", "chmod applicerades aldrig på riktiga servern");
 
-        let cleanup_rx = crate::ssh::run_command(host, None, format!("rm -f {file_path}"));
+        let cleanup_rx = crate::ssh::run_command(host, None, format!("rm -f {file_path}"), None);
         cleanup_rx.recv_blocking().ok();
     }
 
@@ -368,25 +372,26 @@ mod tests {
             host.clone(),
             None,
             format!("mkdir -p {dir} && echo hej-bastion > {dir}/a.txt"),
+            None,
         );
         setup_rx.recv_blocking().unwrap().expect("setup misslyckades");
 
         let compress_cmd = crate::archive::create_tar_gz_command(&["a.txt".to_string()], "out.tar.gz", &dir);
-        let compress_rx = crate::ssh::run_command(host.clone(), None, compress_cmd);
+        let compress_rx = crate::ssh::run_command(host.clone(), None, compress_cmd, None);
         compress_rx.recv_blocking().unwrap().expect("komprimering misslyckades");
 
-        let remove_rx = crate::ssh::run_command(host.clone(), None, format!("rm {dir}/a.txt"));
+        let remove_rx = crate::ssh::run_command(host.clone(), None, format!("rm {dir}/a.txt"), None);
         remove_rx.recv_blocking().unwrap().expect("kunde inte ta bort originalet");
 
         let extract_cmd = crate::archive::extract_tar_gz_command("out.tar.gz", &dir);
-        let extract_rx = crate::ssh::run_command(host.clone(), None, extract_cmd);
+        let extract_rx = crate::ssh::run_command(host.clone(), None, extract_cmd, None);
         extract_rx.recv_blocking().unwrap().expect("uppackning misslyckades");
 
-        let read_rx = crate::ssh::run_command(host.clone(), None, format!("cat {dir}/a.txt"));
+        let read_rx = crate::ssh::run_command(host.clone(), None, format!("cat {dir}/a.txt"), None);
         let content = read_rx.recv_blocking().unwrap().expect("kunde inte läsa uppackad fil");
         assert_eq!(content.trim(), "hej-bastion", "innehållet överlevde inte komprimera→packa-upp");
 
-        let cleanup_rx = crate::ssh::run_command(host, None, format!("rm -rf {dir}"));
+        let cleanup_rx = crate::ssh::run_command(host, None, format!("rm -rf {dir}"), None);
         cleanup_rx.recv_blocking().ok();
     }
 
@@ -496,7 +501,7 @@ mod tests {
         std::fs::write(local_dir.join("subdir/child.txt"), b"hej-fran-undermappen").unwrap();
 
         let remote_dir = format!("/tmp/bastion-upload-remote-{}", uuid::Uuid::new_v4());
-        let handle = spawn(host, None);
+        let handle = spawn(host, None, None);
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {

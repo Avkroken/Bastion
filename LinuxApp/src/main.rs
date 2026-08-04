@@ -154,7 +154,7 @@ fn build_ui(app: &adw::Application) {
                 .get(index as usize)
                 .map(|h| (*h).clone())
             {
-                open_session(&area, host);
+                open_session(&area, &store, host);
             }
         }
     ));
@@ -289,7 +289,15 @@ fn refresh_list(
                     .find(|x| x.id == host_id)
                     .map(|h| (*h).clone());
                 if let Some(host) = host {
-                    require_password(&area, host, open_docker_view);
+                    with_resolved_jump(&area, &store, host, clone!(
+                        #[strong]
+                        area,
+                        move |host, jump| {
+                            require_password(&area, host, move |area, host, password| {
+                                open_docker_view(area, host, password, jump.clone())
+                            });
+                        }
+                    ));
                 }
             }
         ));
@@ -312,9 +320,21 @@ fn refresh_list(
                     .map(|h| (*h).clone());
                 if let Some(host) = host {
                     let snippet_store = snippet_store.clone();
-                    require_password(&area, host, move |area, host, password| {
-                        open_command_library_view(area, host, password, &snippet_store)
-                    });
+                    with_resolved_jump(&area, &store, host, clone!(
+                        #[strong]
+                        area,
+                        move |host, jump| {
+                            require_password(&area, host, move |area, host, password| {
+                                open_command_library_view(
+                                    area,
+                                    host,
+                                    password,
+                                    &snippet_store,
+                                    jump.clone(),
+                                )
+                            });
+                        }
+                    ));
                 }
             }
         ));
@@ -334,7 +354,15 @@ fn refresh_list(
                     .find(|x| x.id == host_id)
                     .map(|h| (*h).clone());
                 if let Some(host) = host {
-                    require_password(&area, host, open_sftp_view);
+                    with_resolved_jump(&area, &store, host, clone!(
+                        #[strong]
+                        area,
+                        move |host, jump| {
+                            require_password(&area, host, move |area, host, password| {
+                                open_sftp_view(area, host, password, jump.clone())
+                            });
+                        }
+                    ));
                 }
             }
         ));
@@ -354,7 +382,15 @@ fn refresh_list(
                     .find(|x| x.id == host_id)
                     .map(|h| (*h).clone());
                 if let Some(host) = host {
-                    require_password(&area, host, open_port_forward_view);
+                    with_resolved_jump(&area, &store, host, clone!(
+                        #[strong]
+                        area,
+                        move |host, jump| {
+                            require_password(&area, host, move |area, host, password| {
+                                open_port_forward_view(area, host, password, jump.clone())
+                            });
+                        }
+                    ));
                 }
             }
         ));
@@ -374,17 +410,29 @@ fn refresh_list(
                     .find(|x| x.id == host_id)
                     .map(|h| (*h).clone());
                 if let Some(host) = host {
-                    require_password(
-                        &area,
-                        host,
-                        clone!(
-                            #[strong]
-                            store,
-                            move |area, host, password| open_key_deploy_view(
-                                area, host, password, &store
-                            )
-                        ),
-                    );
+                    with_resolved_jump(&area, &store, host, clone!(
+                        #[strong]
+                        area,
+                        #[strong]
+                        store,
+                        move |host, jump| {
+                            require_password(
+                                &area,
+                                host,
+                                clone!(
+                                    #[strong]
+                                    store,
+                                    move |area, host, password| open_key_deploy_view(
+                                        area,
+                                        host,
+                                        password,
+                                        &store,
+                                        jump.clone()
+                                    )
+                                ),
+                            );
+                        }
+                    ));
                 }
             }
         ));
@@ -992,14 +1040,50 @@ impl SessionArea {
 /// Öppnar en riktig SSH-session för `host` i en ny flik. Exit/Ctrl+D i
 /// fjärrskalet stänger fliken automatiskt (samma UX-mål som iOS, se
 /// commit 4e9270b).
-fn open_session(area: &Rc<SessionArea>, host: host::Host) {
-    if matches!(host.auth, host::HostAuth::AskPassword) {
-        prompt_password_then(area, host, |area, host, password| {
-            start_session(area, host, Some(password))
-        });
-    } else {
-        start_session(area, host, None);
+/// Visar ett kort felmeddelande i en modal dialog — bara för fel som
+/// upptäcks INNAN någon anslutning ens försöks (just nu bara en trasig
+/// jump-host-konfiguration, se `host::HostStore::resolve_jump`). Fel som
+/// upptäcks EFTER att anslutningen startat visas i respektive vys egen
+/// felyta (statusrad/röd text i terminalen) som redan fanns — den här
+/// dialogen är bara för "kunde inte ens börja".
+fn show_connect_error(area: &Rc<SessionArea>, message: &str) {
+    let dialog = adw::AlertDialog::new(Some("Kunde inte ansluta"), Some(message));
+    dialog.add_response("ok", "OK");
+    dialog.set_default_response(Some("ok"));
+    dialog.present(Some(&area.overlay));
+}
+
+/// Löser upp `host`s jump-host (om någon) och kör `then` med resultatet —
+/// delad av alla vy-öppnare (terminal/Docker/SFTP/tunnlar/nyckeldistribution)
+/// så att ETT ställe känner till `resolve_jump`s felkontrakt. En trasig
+/// jump-host-konfiguration visar felet direkt och avbryter — ansluter
+/// ALDRIG direkt mot target och hoppar tyst över en konfigurerad jump-host.
+fn with_resolved_jump(
+    area: &Rc<SessionArea>,
+    store: &Rc<RefCell<HostStore>>,
+    host: host::Host,
+    then: impl FnOnce(host::Host, Option<host::Host>) + 'static,
+) {
+    match store.borrow().resolve_jump(&host) {
+        Ok(jump) => then(host, jump),
+        Err(e) => show_connect_error(area, &e),
     }
+}
+
+fn open_session(area: &Rc<SessionArea>, store: &Rc<RefCell<HostStore>>, host: host::Host) {
+    with_resolved_jump(area, store, host, clone!(
+        #[strong]
+        area,
+        move |host, jump| {
+            if matches!(host.auth, host::HostAuth::AskPassword) {
+                prompt_password_then(&area, host, move |area, host, password| {
+                    start_session(area, host, Some(password), jump.clone())
+                });
+            } else {
+                start_session(&area, host, None, jump);
+            }
+        }
+    ));
 }
 
 /// Ger `on_password` antingen direkt (`None`, ingen prompt behövs) eller
@@ -1087,12 +1171,17 @@ fn prompt_password_then(
     win.present();
 }
 
-fn start_session(area: &Rc<SessionArea>, host: host::Host, password: Option<String>) {
+fn start_session(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    jump: Option<host::Host>,
+) {
     let terminal = vte::Terminal::builder().vexpand(true).hexpand(true).build();
 
     let cols = 80u32;
     let rows = 24u32;
-    let session = ssh::spawn_shell(host.clone(), password, cols, rows);
+    let session = ssh::spawn_shell(host.clone(), password, cols, rows, jump);
 
     // Lagras på widgeten så close-page-hanteraren kan droppa sändaren och
     // därmed stänga SSH-anslutningen när fliken stängs manuellt.
@@ -1147,7 +1236,12 @@ fn start_session(area: &Rc<SessionArea>, host: host::Host, password: Option<Stri
 /// Öppnar Docker-vyn för `host` i en ny flik: en containerlista med
 /// start/stopp/omstart/loggar/shell per rad. Port av App/DockerView.swift
 /// till en fristående SSH-engångskörning per anrop (`ssh::run_command`).
-fn open_docker_view(area: &Rc<SessionArea>, host: host::Host, password: Option<String>) {
+fn open_docker_view(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    jump: Option<host::Host>,
+) {
     let list = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
         .css_classes(["boxed-list"])
@@ -1194,18 +1288,25 @@ fn open_docker_view(area: &Rc<SessionArea>, host: host::Host, password: Option<S
         host,
         #[strong]
         password,
+        #[strong]
+        jump,
         #[weak]
         list,
-        move |_| refresh_docker_list(&area, host.clone(), password.clone(), &list)
+        move |_| refresh_docker_list(&area, host.clone(), password.clone(), &list, jump.clone())
     ));
 
-    refresh_docker_list(area, host, password, &list);
+    refresh_docker_list(area, host, password, &list, jump);
 }
 
 /// Öppnar en "Tunnel"-flik för `host`: startar/stoppar en lokal
 /// portvidarebefordran (motsvarar `App/PortForwardView.swift`, bara lokal
 /// `-L` hittills — se `port_forward.rs`, fjärr/dynamisk kvarstår).
-fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Option<String>) {
+fn open_port_forward_view(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    jump: Option<host::Host>,
+) {
     // "Lokal" = `ssh -L` (vi lyssnar, servern kopplar mot målet). "Fjärr" =
     // `ssh -R` (servern lyssnar åt oss, vi kopplar mot målet) — samma
     // fältuppsättning som Lokal, bara vem som lyssnar skiljer. "Dynamisk" =
@@ -1299,6 +1400,8 @@ fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Op
         #[strong]
         password,
         #[strong]
+        jump,
+        #[strong]
         direction_row,
         #[strong]
         bind_port_row,
@@ -1351,6 +1454,8 @@ fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Op
                 #[strong]
                 password,
                 #[strong]
+                jump,
+                #[strong]
                 status_label,
                 #[strong]
                 start_button,
@@ -1373,6 +1478,7 @@ fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Op
                                 bind_port,
                                 target_host_value,
                                 target_port,
+                                jump,
                             );
                             match rx.recv().await {
                                 Ok(r) => r.map(port_forward::ActiveForward::Remote),
@@ -1385,6 +1491,7 @@ fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Op
                                 password,
                                 "127.0.0.1".to_string(),
                                 bind_port,
+                                jump,
                             );
                             match rx.recv().await {
                                 Ok(r) => r.map(port_forward::ActiveForward::Dynamic),
@@ -1399,6 +1506,7 @@ fn open_port_forward_view(area: &Rc<SessionArea>, host: host::Host, password: Op
                                 bind_port,
                                 target_host_value,
                                 target_port,
+                                jump,
                             );
                             match rx.recv().await {
                                 Ok(r) => r.map(port_forward::ActiveForward::Local),
@@ -1458,6 +1566,7 @@ fn open_key_deploy_view(
     host: host::Host,
     password: Option<String>,
     store: &Rc<RefCell<HostStore>>,
+    jump: Option<host::Host>,
 ) {
     let comment_row = adw::EntryRow::builder()
         .title("Kommentar (valfri)")
@@ -1557,6 +1666,8 @@ fn open_key_deploy_view(
         #[strong]
         password,
         #[strong]
+        jump,
+        #[strong]
         comment_row,
         #[strong]
         public_key_view,
@@ -1596,6 +1707,7 @@ fn open_key_deploy_view(
                 password.clone(),
                 pair.public_key_line.clone(),
                 key_path.clone(),
+                jump.clone(),
             );
             glib::spawn_future_local(clone!(
                 #[strong]
@@ -1633,6 +1745,8 @@ fn open_key_deploy_view(
         host,
         #[strong]
         password,
+        #[strong]
+        jump,
         #[strong]
         comment_row,
         #[strong]
@@ -1677,6 +1791,7 @@ fn open_key_deploy_view(
                 password.clone(),
                 pair.public_key_line.clone(),
                 key_path.clone(),
+                jump.clone(),
             );
             glib::spawn_future_local(clone!(
                 #[strong]
@@ -1782,8 +1897,14 @@ fn refresh_docker_list(
     host: host::Host,
     password: Option<String>,
     list: &gtk::ListBox,
+    jump: Option<host::Host>,
 ) {
-    let rx = ssh::run_command(host.clone(), password.clone(), docker::list_command(true));
+    let rx = ssh::run_command(
+        host.clone(),
+        password.clone(),
+        docker::list_command(true),
+        jump.clone(),
+    );
     glib::spawn_future_local(clone!(
         #[weak]
         list,
@@ -1793,6 +1914,8 @@ fn refresh_docker_list(
         host,
         #[strong]
         password,
+        #[strong]
+        jump,
         async move {
             while let Some(row) = list.row_at_index(0) {
                 list.remove(&row);
@@ -1801,7 +1924,7 @@ fn refresh_docker_list(
                 Ok(Ok(output)) => {
                     for container in docker::parse_list(&output) {
                         list.append(&build_container_row(
-                            &area, &host, &password, &list, container,
+                            &area, &host, &password, &list, container, &jump,
                         ));
                     }
                 }
@@ -1825,6 +1948,7 @@ fn build_container_row(
     password: &Option<String>,
     list: &gtk::ListBox,
     container: docker::DockerContainer,
+    jump: &Option<host::Host>,
 ) -> adw::ActionRow {
     let row = adw::ActionRow::builder()
         .title(&container.name)
@@ -1841,10 +1965,11 @@ fn build_container_row(
         let area = area.clone();
         let host = host.clone();
         let password = password.clone();
+        let jump = jump.clone();
         let list = list.clone();
         move |command: Result<String, String>| {
             let Ok(command) = command else { return };
-            let rx = ssh::run_command(host.clone(), password.clone(), command);
+            let rx = ssh::run_command(host.clone(), password.clone(), command, jump.clone());
             glib::spawn_future_local(clone!(
                 #[strong]
                 area,
@@ -1853,10 +1978,12 @@ fn build_container_row(
                 #[strong]
                 password,
                 #[strong]
+                jump,
+                #[strong]
                 list,
                 async move {
                     let _ = rx.recv().await;
-                    refresh_docker_list(&area, host, password, &list);
+                    refresh_docker_list(&area, host, password, &list, jump);
                 }
             ));
         }
@@ -1891,6 +2018,8 @@ fn build_container_row(
             #[strong]
             password,
             #[strong]
+            jump,
+            #[strong]
             container,
             move |_| {
                 if let Ok(cmd) = docker::exec_shell_command(&container.id) {
@@ -1901,7 +2030,7 @@ fn build_container_row(
                     let mut shell_host = host.clone();
                     shell_host.startup_command = Some(cmd);
                     shell_host.alias = format!("{}: {}", host.alias, container.name);
-                    start_session(&area, shell_host, password.clone());
+                    start_session(&area, shell_host, password.clone(), jump.clone());
                 }
             }
         ));
@@ -1931,8 +2060,10 @@ fn build_container_row(
         #[strong]
         password,
         #[strong]
+        jump,
+        #[strong]
         container,
-        move |_| show_docker_logs(&area, &host, &password, &container)
+        move |_| show_docker_logs(&area, &host, &password, &container, &jump)
     ));
     suffix.append(&logs_btn);
 
@@ -1945,6 +2076,7 @@ fn show_docker_logs(
     host: &host::Host,
     password: &Option<String>,
     container: &docker::DockerContainer,
+    jump: &Option<host::Host>,
 ) {
     let Ok(cmd) = docker::logs_command(&container.id, 200) else {
         return;
@@ -1973,7 +2105,7 @@ fn show_docker_logs(
         .build();
     win.present();
 
-    let rx = ssh::run_command(host.clone(), password.clone(), cmd);
+    let rx = ssh::run_command(host.clone(), password.clone(), cmd, jump.clone());
     glib::spawn_future_local(clone!(
         #[weak]
         text_view,
@@ -1996,6 +2128,7 @@ fn open_command_library_view(
     host: host::Host,
     password: Option<String>,
     snippet_store: &Rc<RefCell<snippet::SnippetStore>>,
+    jump: Option<host::Host>,
 ) {
     let list = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
@@ -2044,6 +2177,8 @@ fn open_command_library_view(
         #[strong]
         password,
         #[strong]
+        jump,
+        #[strong]
         snippet_store,
         #[weak]
         list,
@@ -2053,11 +2188,12 @@ fn open_command_library_view(
             password.clone(),
             &snippet_store,
             &list,
-            None
+            None,
+            jump.clone()
         )
     ));
 
-    refresh_command_library_list(area, &host, &password, snippet_store, &list);
+    refresh_command_library_list(area, &host, &password, snippet_store, &list, &jump);
 }
 
 fn refresh_command_library_list(
@@ -2066,6 +2202,7 @@ fn refresh_command_library_list(
     password: &Option<String>,
     snippet_store: &Rc<RefCell<snippet::SnippetStore>>,
     list: &gtk::ListBox,
+    jump: &Option<host::Host>,
 ) {
     while let Some(row) = list.row_at_index(0) {
         list.remove(&row);
@@ -2079,10 +2216,11 @@ fn refresh_command_library_list(
             snippet_store,
             s.clone(),
             list,
+            jump,
         ));
     }
     for entry in command_library::all() {
-        list.append(&build_library_entry_row(area, host, password, entry));
+        list.append(&build_library_entry_row(area, host, password, entry, jump));
     }
 }
 
@@ -2093,6 +2231,7 @@ fn build_snippet_row(
     snippet_store: &Rc<RefCell<snippet::SnippetStore>>,
     snippet: snippet::Snippet,
     list: &gtk::ListBox,
+    jump: &Option<host::Host>,
 ) -> adw::ActionRow {
     let row = adw::ActionRow::builder()
         .title(&snippet.name)
@@ -2114,8 +2253,10 @@ fn build_snippet_row(
         #[strong]
         password,
         #[strong]
+        jump,
+        #[strong]
         snippet,
-        move |_| run_snippet(&area, host.clone(), password.clone(), snippet.clone())
+        move |_| run_snippet(&area, host.clone(), password.clone(), snippet.clone(), jump.clone())
     ));
 
     let edit_button = gtk::Button::from_icon_name("document-edit-symbolic");
@@ -2128,6 +2269,8 @@ fn build_snippet_row(
         #[strong]
         password,
         #[strong]
+        jump,
+        #[strong]
         snippet_store,
         #[weak]
         list,
@@ -2139,7 +2282,8 @@ fn build_snippet_row(
             password.clone(),
             &snippet_store,
             &list,
-            Some(snippet.clone())
+            Some(snippet.clone()),
+            jump.clone()
         )
     ));
 
@@ -2153,6 +2297,8 @@ fn build_snippet_row(
         #[strong]
         password,
         #[strong]
+        jump,
+        #[strong]
         snippet_store,
         #[weak]
         list,
@@ -2163,7 +2309,7 @@ fn build_snippet_row(
                 eprintln!("kunde inte ta bort snippeten: {e}");
                 return;
             }
-            refresh_command_library_list(&area, &host, &password, &snippet_store, &list);
+            refresh_command_library_list(&area, &host, &password, &snippet_store, &list, &jump);
         }
     ));
 
@@ -2179,6 +2325,7 @@ fn build_library_entry_row(
     host: &host::Host,
     password: &Option<String>,
     entry: command_library::Entry,
+    jump: &Option<host::Host>,
 ) -> adw::ActionRow {
     let mut subtitle = format!("[{}] {}", entry.category.label(), entry.summary);
     if let Some(example) = entry.example {
@@ -2214,10 +2361,12 @@ fn build_library_entry_row(
         host,
         #[strong]
         password,
+        #[strong]
+        jump,
         move |_| {
             let snippet =
                 snippet::Snippet::new(entry.summary.to_string(), entry.command.to_string());
-            run_snippet(&area, host.clone(), password.clone(), snippet);
+            run_snippet(&area, host.clone(), password.clone(), snippet, jump.clone());
         }
     ));
     suffix.append(&run_button);
@@ -2233,6 +2382,7 @@ fn run_snippet(
     host: host::Host,
     password: Option<String>,
     snippet: snippet::Snippet,
+    jump: Option<host::Host>,
 ) {
     if snippet.variable_names().is_empty() {
         launch_rendered_command(
@@ -2241,9 +2391,10 @@ fn run_snippet(
             password,
             &snippet.name,
             snippet.rendered(&std::collections::HashMap::new()),
+            jump,
         );
     } else {
-        prompt_snippet_variables(area, host, password, snippet);
+        prompt_snippet_variables(area, host, password, snippet, jump);
     }
 }
 
@@ -2253,11 +2404,12 @@ fn launch_rendered_command(
     password: Option<String>,
     title_suffix: &str,
     command: String,
+    jump: Option<host::Host>,
 ) {
     let mut h = host;
     h.startup_command = Some(command);
     h.alias = format!("{}: {title_suffix}", h.alias);
-    start_session(area, h, password);
+    start_session(area, h, password, jump);
 }
 
 fn prompt_snippet_variables(
@@ -2265,6 +2417,7 @@ fn prompt_snippet_variables(
     host: host::Host,
     password: Option<String>,
     snippet: snippet::Snippet,
+    jump: Option<host::Host>,
 ) {
     let names = snippet.variable_names();
     let group = adw::PreferencesGroup::builder()
@@ -2326,6 +2479,8 @@ fn prompt_snippet_variables(
         #[strong]
         password,
         #[strong]
+        jump,
+        #[strong]
         snippet,
         move |_| {
             let values: std::collections::HashMap<String, String> = entries
@@ -2340,6 +2495,7 @@ fn prompt_snippet_variables(
                 password.clone(),
                 &snippet.name,
                 rendered,
+                jump.clone(),
             );
         }
     ));
@@ -2354,6 +2510,7 @@ fn show_snippet_edit_dialog(
     snippet_store: &Rc<RefCell<snippet::SnippetStore>>,
     list: &gtk::ListBox,
     existing: Option<snippet::Snippet>,
+    jump: Option<host::Host>,
 ) {
     let is_edit = existing.is_some();
     let name_row = adw::EntryRow::builder().title("Namn").build();
@@ -2414,6 +2571,8 @@ fn show_snippet_edit_dialog(
         #[strong]
         password,
         #[strong]
+        jump,
+        #[strong]
         snippet_store,
         #[weak]
         list,
@@ -2436,7 +2595,7 @@ fn show_snippet_edit_dialog(
                 eprintln!("kunde inte spara snippeten: {e}");
                 return;
             }
-            refresh_command_library_list(&area, &host, &password, &snippet_store, &list);
+            refresh_command_library_list(&area, &host, &password, &snippet_store, &list, &jump);
             win.close();
         }
     ));
@@ -2456,14 +2615,21 @@ struct SftpContext {
     handle: sftp::SftpHandle,
     host: host::Host,
     password: Option<String>,
+    jump: Option<host::Host>,
 }
 
-fn open_sftp_view(area: &Rc<SessionArea>, host: host::Host, password: Option<String>) {
-    let handle = sftp::spawn(host.clone(), password.clone());
+fn open_sftp_view(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    jump: Option<host::Host>,
+) {
+    let handle = sftp::spawn(host.clone(), password.clone(), jump.clone());
     let ctx = SftpContext {
         handle,
         host,
         password,
+        jump,
     };
     let current_path = Rc::new(RefCell::new(".".to_string()));
 
@@ -2879,7 +3045,7 @@ fn build_sftp_entry_row(
                 let archive_name = format!("../{}.tar.gz", entry.name);
                 let command =
                     archive::create_tar_gz_command(&[".".to_string()], &archive_name, &full_dir);
-                let rx = ssh::run_command(ctx.host.clone(), ctx.password.clone(), command);
+                let rx = ssh::run_command(ctx.host.clone(), ctx.password.clone(), command, ctx.jump.clone());
                 glib::spawn_future_local(async move {
                     if let Ok(Err(e)) = rx.recv().await {
                         list.append(&error_row(&e));
@@ -2915,7 +3081,7 @@ fn build_sftp_entry_row(
                 } else {
                     archive::extract_tar_gz_command(&entry.name, &path)
                 };
-                let rx = ssh::run_command(ctx.host.clone(), ctx.password.clone(), command);
+                let rx = ssh::run_command(ctx.host.clone(), ctx.password.clone(), command, ctx.jump.clone());
                 glib::spawn_future_local(clone!(
                     #[strong]
                     area,

@@ -140,7 +140,13 @@ impl client::Handler for ClientHandler {
 
 /// Startar SSH-anslutningen på en ny bakgrundstråd och returnerar kanalerna
 /// direkt — anropas från GTK-huvudtråden, blockerar inte den.
-pub fn spawn_shell(host: Host, password: Option<String>, cols: u32, rows: u32) -> SshSession {
+pub fn spawn_shell(
+    host: Host,
+    password: Option<String>,
+    cols: u32,
+    rows: u32,
+    jump: Option<Host>,
+) -> SshSession {
     let (input_tx, input_rx) = async_channel::unbounded::<Vec<u8>>();
     let (output_tx, output_rx) = async_channel::unbounded::<SshEvent>();
 
@@ -158,6 +164,7 @@ pub fn spawn_shell(host: Host, password: Option<String>, cols: u32, rows: u32) -
                 input_rx,
                 output_tx.clone(),
                 None,
+                jump,
             )
             .await
             {
@@ -190,16 +197,19 @@ const MAX_COMMAND_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 
 /// Ansluter och autentiserar — delad av den interaktiva shell-sessionen
 /// (`run`) och engångskommandon (`run_command_once`, t.ex. Docker-anrop).
+/// `jump`: se `connect_with_forwards`.
 pub(crate) async fn connect(
     host: &Host,
     password: Option<String>,
     known_hosts_path_override: Option<std::path::PathBuf>,
+    jump: Option<Host>,
 ) -> Result<Handle<ClientHandler>, String> {
     connect_with_forwards(
         host,
         password,
         known_hosts_path_override,
         RemoteForwards::default(),
+        jump,
     )
     .await
 }
@@ -208,35 +218,151 @@ pub(crate) async fn connect(
 /// `ClientHandler` slår upp mot när servern öppnar en `forwarded-tcpip`-kanal
 /// — `connect()` skickar bara med en tom (oanvänd) karta, bara
 /// `spawn_remote_forward` (`port_forward.rs`) behöver fylla på den efteråt.
+///
+/// `jump`: motsvarar `SSHSession.connect(via:)`/`SSHConnectionChain` i Swift
+/// (`ssh -J`/ProxyJump) — redan UPPLÖST mot en riktig `Host` av anroparen
+/// (`host::HostStore::resolve_jump`, som även avvisar kedjor med mer än ett
+/// hopp). `None` betyder en vanlig direktanslutning.
 pub(crate) async fn connect_with_forwards(
     host: &Host,
     password: Option<String>,
     known_hosts_path_override: Option<std::path::PathBuf>,
     remote_forwards: RemoteForwards,
+    jump: Option<Host>,
 ) -> Result<Handle<ClientHandler>, String> {
     let known_hosts = Arc::new(KnownHosts::open(Some(
-        known_hosts_path_override.unwrap_or_else(KnownHosts::default_path),
+        known_hosts_path_override
+            .clone()
+            .unwrap_or_else(KnownHosts::default_path),
     )));
-    let config = Arc::new(client::Config::default());
-    let addr = (host.host_name.as_str(), host.port as u16);
-    let handler = ClientHandler {
+    let target_handler = ClientHandler {
         host: host.host_name.clone(),
         port: host.port as u16,
         known_hosts,
         remote_forwards,
     };
-    let mut session: Handle<ClientHandler> =
-        tokio::time::timeout(CONNECT_TIMEOUT, client::connect(config, addr, handler))
-            .await
-            .map_err(|_| {
-                format!(
-                    "anslutningen svarade inte inom {}s",
-                    CONNECT_TIMEOUT.as_secs()
-                )
-            })?
-            .map_err(|e| format!("anslutning misslyckades: {e}"))?;
+
+    let mut session: Handle<ClientHandler> = match jump {
+        None => connect_direct(host, target_handler).await?,
+        Some(jump_host) => {
+            connect_via_jump(&jump_host, host, target_handler, known_hosts_path_override).await?
+        }
+    };
     authenticate(&mut session, host, password).await?;
     Ok(session)
+}
+
+/// Direktanslutningen (TCP + SSH-handskaka), UTAN jump-gren — utbruten ur
+/// `connect_with_forwards` så att `connect_via_jump` kan återanvända EXAKT
+/// samma logik för att ansluta till jump-hosten SJÄLV, utan att `connect`/
+/// `connect_with_forwards`/`connect_via_jump` bildar en (statiskt sett
+/// oändlig) rekursiv async-fn-cykel — `rustc` kan inte bevisa att
+/// `connect_via_jump`s eget anrop alltid skickar `jump: None` och därmed
+/// aldrig faktiskt rekurserar i praktiken (E0733, "recursion in an async fn
+/// requires boxing"), så cykeln bryts strukturellt istället för via
+/// `Box::pin`.
+async fn connect_direct(
+    host: &Host,
+    handler: ClientHandler,
+) -> Result<Handle<ClientHandler>, String> {
+    let config = Arc::new(client::Config::default());
+    let addr = (host.host_name.as_str(), host.port as u16);
+    tokio::time::timeout(CONNECT_TIMEOUT, client::connect(config, addr, handler))
+        .await
+        .map_err(|_| {
+            format!(
+                "anslutningen svarade inte inom {}s",
+                CONNECT_TIMEOUT.as_secs()
+            )
+        })?
+        .map_err(|e| format!("anslutning misslyckades: {e}"))
+}
+
+/// Ansluter GENOM en redan uppkopplad jump-host (`ssh -J`/ProxyJump) —
+/// motsvarar `SSHSession.connect(via:)` i SSHCore. `jump_host` autentiseras
+/// FÖRST (helt separat handskakning/TOFU-koll mot SIG SJÄLV), sedan öppnas
+/// en `direct-tcpip`-kanal från jump-sessionen till `target_host`s
+/// `host_name:port` — och en HELT NY, oberoende SSH-handskakning
+/// (`client::connect_stream`, `target_handler`s EGEN TOFU-koll mot target)
+/// körs direkt ovanpå den kanalens byteström. Samma "SSH i SSH"-mönster som
+/// en riktig `ssh -J` gör på trådnivå.
+///
+/// Jump-hosten autentiseras UTAN lösenordsprompt (`connect(jump_host, None,
+/// …)`) — samma begränsning som `App/AuthResolver.resolveConnectionPlan`
+/// (`resolveAuth(for: jumpHost, password: nil)`): en jump-host som kräver
+/// `AskPassword`-auth kan inte användas som hopp i dagsläget (misslyckas
+/// tydligt via `authenticate`s "lösenord krävs men saknades" nedan), bara
+/// nyckel-/agent-baserad auth stöds för SJÄLVA HOPPET. Target-hosten kan
+/// fortfarande fråga efter lösenord som vanligt.
+///
+/// Jump-sessionens `Handle` behöver INTE hållas vid liv explicit efter att
+/// kanalen öppnats: `Channel::into_stream()` ger en `ChannelStream` som
+/// håller sin EGEN klon av sessionens interna sändare (russh dokumenterar
+/// `Channel` som "allows you to read and write from a channel without
+/// borrowing the session") — russh:s bakgrundstråd för jump-anslutningen
+/// fortsätter därför vidarebefordra tunnelns data så länge kanalen används,
+/// oavsett att `jump_session` går ur scope här. `drop(jump_session)` nedan
+/// är därför medvetet, inte en läcka.
+async fn connect_via_jump(
+    jump_host: &Host,
+    target_host: &Host,
+    target_handler: ClientHandler,
+    known_hosts_path_override: Option<std::path::PathBuf>,
+) -> Result<Handle<ClientHandler>, String> {
+    let jump_known_hosts = Arc::new(KnownHosts::open(Some(
+        known_hosts_path_override.unwrap_or_else(KnownHosts::default_path),
+    )));
+    let jump_handler = ClientHandler {
+        host: jump_host.host_name.clone(),
+        port: jump_host.port as u16,
+        known_hosts: jump_known_hosts,
+        remote_forwards: RemoteForwards::default(),
+    };
+    let mut jump_session = connect_direct(jump_host, jump_handler)
+        .await
+        .map_err(|e| format!("kunde inte ansluta till jump-hosten \"{}\": {e}", jump_host.alias))?;
+    authenticate(&mut jump_session, jump_host, None)
+        .await
+        .map_err(|e| format!("autentisering mot jump-hosten \"{}\" misslyckades: {e}", jump_host.alias))?;
+
+    let channel = jump_session
+        .channel_open_direct_tcpip(
+            target_host.host_name.clone(),
+            target_host.port as u32,
+            "127.0.0.1",
+            0,
+        )
+        .await
+        .map_err(|e| {
+            format!(
+                "kunde inte öppna en tunnel genom jump-hosten \"{}\": {e}",
+                jump_host.alias
+            )
+        })?;
+    let stream = channel.into_stream();
+
+    let config = Arc::new(client::Config::default());
+    let target_session = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        client::connect_stream(config, stream, target_handler),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "anslutningen genom jump-hosten \"{}\" svarade inte inom {}s",
+            jump_host.alias,
+            CONNECT_TIMEOUT.as_secs()
+        )
+    })?
+    .map_err(|e| {
+        format!(
+            "anslutning genom jump-hosten \"{}\" misslyckades: {e}",
+            jump_host.alias
+        )
+    })?;
+
+    drop(jump_session);
+    Ok(target_session)
 }
 
 /// Kör ETT kommando över en fristående anslutning (ingen pty, ingen
@@ -248,6 +374,7 @@ pub fn run_command(
     host: Host,
     password: Option<String>,
     command: String,
+    jump: Option<Host>,
 ) -> async_channel::Receiver<Result<String, String>> {
     let (tx, rx) = async_channel::bounded(1);
     std::thread::spawn(move || {
@@ -255,7 +382,7 @@ pub fn run_command(
             .enable_all()
             .build()
             .expect("kunde inte starta tokio-runtimen för kommandotråden");
-        let result = rt.block_on(run_command_once(host, password, command, None));
+        let result = rt.block_on(run_command_once(host, password, command, None, jump));
         let _ = tx.send_blocking(result);
     });
     rx
@@ -266,8 +393,9 @@ async fn run_command_once(
     password: Option<String>,
     command: String,
     known_hosts_path_override: Option<std::path::PathBuf>,
+    jump: Option<Host>,
 ) -> Result<String, String> {
-    let session = connect(&host, password, known_hosts_path_override).await?;
+    let session = connect(&host, password, known_hosts_path_override, jump).await?;
     tokio::time::timeout(COMMAND_TIMEOUT, run_command_on_session(&session, &command))
         .await
         .map_err(|_| format!("kommandot svarade inte inom {}s", COMMAND_TIMEOUT.as_secs()))?
@@ -324,8 +452,9 @@ async fn run(
     input_rx: async_channel::Receiver<Vec<u8>>,
     output_tx: async_channel::Sender<SshEvent>,
     known_hosts_path_override: Option<std::path::PathBuf>,
+    jump: Option<Host>,
 ) -> Result<(), String> {
-    let session = connect(&host, password, known_hosts_path_override).await?;
+    let session = connect(&host, password, known_hosts_path_override, jump).await?;
 
     let mut channel = session
         .channel_open_session()
@@ -464,6 +593,7 @@ fn spawn_shell_with_known_hosts(
                 input_rx,
                 output_tx.clone(),
                 Some(known_hosts_path),
+                None,
             )
             .await
             {
@@ -515,7 +645,7 @@ mod tests {
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
 
-        let session = spawn_shell(host, None, 80, 24);
+        let session = spawn_shell(host, None, 80, 24, None);
         assert!(
             drain_until_data_error_or_closed(&session, Duration::from_secs(10)).is_ok(),
             "fick aldrig någon data tillbaka från fjärrskalet"
@@ -571,7 +701,7 @@ mod tests {
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
 
-        let rx = run_command(host, None, "echo bastion-run-command-ok".to_string());
+        let rx = run_command(host, None, "echo bastion-run-command-ok".to_string(), None);
         let result = rx.recv_blocking().expect("kanalen stängdes utan svar");
         assert_eq!(result.unwrap().trim(), "bastion-run-command-ok");
     }
@@ -588,7 +718,7 @@ mod tests {
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
 
-        let rx = run_command(host, None, crate::docker::list_command(true));
+        let rx = run_command(host, None, crate::docker::list_command(true), None);
         let output = rx
             .recv_blocking()
             .expect("kanalen stängdes utan svar")
@@ -613,7 +743,7 @@ mod tests {
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
 
-        let session = spawn_shell(host, None, 80, 24);
+        let session = spawn_shell(host, None, 80, 24, None);
         // Vänta in första skalpromptens data innan vi skriver något, annars
         // kan "exit\n" hamna innan skalet ens är redo att läsa stdin.
         drain_until_data_error_or_closed(&session, Duration::from_secs(10))
@@ -744,7 +874,7 @@ mod tests {
 
         // 6 MiB rå utdata (inte avkortad av något mellanled) — väl över det
         // 4 MiB-taket.
-        let rx = run_command(host, None, "yes a | head -c 6291456".to_string());
+        let rx = run_command(host, None, "yes a | head -c 6291456".to_string(), None);
         let output = rx
             .recv_blocking()
             .expect("kanalen stängdes utan svar")
@@ -763,5 +893,117 @@ mod tests {
 
     fn whoami_user() -> String {
         std::env::var("USER").unwrap_or_else(|_| "test".into())
+    }
+
+    /// Bygger en `Host` som pekar mot en `TestSshd`-instans, med dess egen
+    /// klientnyckel som auth.
+    fn host_for(sshd: &TestSshd, alias: &str) -> Host {
+        let mut host = Host::new(alias.into(), "127.0.0.1".into(), whoami_user());
+        host.port = sshd.port as i64;
+        host.auth = HostAuth::KeyFile(sshd.client_key_path());
+        host
+    }
+
+    /// GENUIN ProxyJump-verifiering (`ssh -J`), inte en kortsluten
+    /// loopback-gissning: TVÅ HELT OBEROENDE `TestSshd`-instanser (egna
+    /// portar, egna värdnycklar, egna klientnyckelpar) — `connect_via_jump`
+    /// måste alltså (1) autentisera mot jump-hosten på RIKTIGT, (2) öppna en
+    /// äkta `direct-tcpip`-kanal genom den, och (3) köra en HELT SEPARAT
+    /// SSH-handskakning+autentisering mot target-sshd:n ÖVER den kanalens
+    /// byteström — innan kommandot ens kan exekvera. Motsvarar
+    /// `SSHConnectionChain.connect`-testerna i SSHCoreTests, fast mot en
+    /// riktig `sshd`-process istället för `LoopbackServer`.
+    #[tokio::test]
+    async fn connect_via_jump_reaches_the_real_separate_target_sshd() {
+        let Some(jump) = TestSshd::start() else {
+            eprintln!("hoppar: kunde inte starta en test-sshd i den här miljön");
+            return;
+        };
+        let Some(target) = TestSshd::start() else {
+            eprintln!("hoppar: kunde inte starta en test-sshd i den här miljön");
+            return;
+        };
+        let jump_host = host_for(&jump, "jump");
+        let target_host = host_for(&target, "target");
+
+        let session = connect(&target_host, None, None, Some(jump_host))
+            .await
+            .expect("anslutning genom jump-hosten misslyckades");
+        let output = run_command_on_session(&session, "echo bastion-proxyjump-ok")
+            .await
+            .expect("kommandot över den tunnlade sessionen misslyckades");
+        assert_eq!(output.trim(), "bastion-proxyjump-ok");
+
+        // Sanity: target-sshd:n är en genuint egen, självständigt fungerande
+        // process — inte bara ett hål som råkar svara p.g.a. jump-hosten.
+        // Bevisar att testets "två oberoende servrar"-premiss faktiskt
+        // stämmer, inte bara antas.
+        let direct = connect(&target_host, None, None, None).await;
+        assert!(
+            direct.is_ok(),
+            "target-sshd:n borde vara nåbar även direkt (utan jump) i den här testmiljön"
+        );
+    }
+
+    /// Om jump-hosten SJÄLV inte går att autentisera mot (fel nyckel) ska
+    /// felet peka tydligt på JUMP-hosten — täcker samma risk som Swifts
+    /// `ProxyJumpTests` (se `KeyManagement.swift`s kommentar om
+    /// `testConnectionChainClosesJumpWhenTargetAuthFails`): ett fel får
+    /// aldrig tystas eller felaktigt tillskrivas fel hopp i kedjan.
+    #[tokio::test]
+    async fn connect_via_jump_fails_clearly_when_the_jump_cant_authenticate() {
+        let Some(jump) = TestSshd::start() else {
+            eprintln!("hoppar: kunde inte starta en test-sshd i den här miljön");
+            return;
+        };
+        let Some(target) = TestSshd::start() else {
+            eprintln!("hoppar: kunde inte starta en test-sshd i den här miljön");
+            return;
+        };
+        // Fel nyckel för jump-hosten (target-sshd:ns egen — giltig NYCKEL,
+        // men inte en jump-sshd:n litar på).
+        let mut jump_host = host_for(&jump, "jump");
+        jump_host.auth = HostAuth::KeyFile(target.client_key_path());
+        let target_host = host_for(&target, "target");
+
+        // `Handle<ClientHandler>` implementerar inte `Debug` — `expect_err`
+        // kräver det, så felet plockas ut manuellt istället.
+        let err = match connect(&target_host, None, None, Some(jump_host)).await {
+            Ok(_) => panic!("anslutningen skulle ha misslyckats — jump-hosten avvisar nyckeln"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("jump-hosten"),
+            "felet ska tydligt peka på jump-hosten, fick: {err}"
+        );
+    }
+
+    /// Om jump-hosten autentiserar rent men target-hosten avvisar nyckeln
+    /// SKA felet fortfarande vara tydligt (inte en generisk tunnel-krasch) —
+    /// samma distinktion som Swift-sidans kedjelogik gör mellan ett
+    /// jump-fel och ett target-fel.
+    #[tokio::test]
+    async fn connect_via_jump_fails_clearly_when_the_target_cant_authenticate() {
+        let Some(jump) = TestSshd::start() else {
+            eprintln!("hoppar: kunde inte starta en test-sshd i den här miljön");
+            return;
+        };
+        let Some(target) = TestSshd::start() else {
+            eprintln!("hoppar: kunde inte starta en test-sshd i den här miljön");
+            return;
+        };
+        let jump_host = host_for(&jump, "jump");
+        // Fel nyckel för target — jump-hosten sen tidigare bevisat fungera.
+        let mut target_host = host_for(&target, "target");
+        target_host.auth = HostAuth::KeyFile(jump.client_key_path());
+
+        let err = match connect(&target_host, None, None, Some(jump_host)).await {
+            Ok(_) => panic!("anslutningen skulle ha misslyckats — target avvisar nyckeln"),
+            Err(e) => e,
+        };
+        assert!(
+            !err.contains("jump-hosten"),
+            "felet ska INTE felaktigt tillskrivas jump-hosten (den autentiserade rent), fick: {err}"
+        );
     }
 }

@@ -350,6 +350,43 @@ impl HostStore {
         let json = serde_json::to_string_pretty(&self.state)?;
         crate::fsutil::atomic_write(&self.path, json.as_bytes())
     }
+
+    /// Löser upp `host.jump_host_id` mot en riktig `Host` i den här
+    /// databasen — motsvarar `AuthResolver.resolveConnectionPlan`s regel i
+    /// Swift (`App/AuthResolver.swift`). Bara ETT hopp stöds: en jump-host
+    /// som SJÄLV har en `jump_host_id` satt avvisas explicit istället för
+    /// att tyst koppla genom sin egen jump och ignorera resten av kedjan —
+    /// det vore en säkerhetsregression för den som medvetet satte upp en
+    /// längre kedja (t.ex. redigerad i App/ efter att den här värden redan
+    /// pekade på den). En jump-host-referens som pekar på ett ID som inte
+    /// (längre) finns i databasen avvisas likaså — anslut ALDRIG direkt
+    /// mot target och hoppa tyst över en konfigurerad jump-host bara för
+    /// att den saknas (t.ex. inte hunnit synkas än).
+    pub fn resolve_jump(&self, host: &Host) -> Result<Option<Host>, String> {
+        let Some(jump_id) = host.jump_host_id else {
+            return Ok(None);
+        };
+        let jump_host = self
+            .all()
+            .into_iter()
+            .find(|h| h.id == jump_id)
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "\"{}\" är inställd att ansluta via en jump-host som inte finns i databasen \
+                     (borttagen, eller inte synkad än)",
+                    host.alias
+                )
+            })?;
+        if jump_host.jump_host_id.is_some() {
+            return Err(format!(
+                "jump-hosten \"{}\" har själv en jump-host satt — kedjor med mer än ett hopp \
+                 stöds inte",
+                jump_host.alias
+            ));
+        }
+        Ok(Some(jump_host))
+    }
 }
 
 #[cfg(test)]
@@ -466,5 +503,57 @@ mod tests {
         assert_eq!(reopened.all().len(), 1);
         assert_eq!(reopened.all()[0].id, id);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    fn store_with(hosts: Vec<Host>) -> HostStore {
+        let dir = std::env::temp_dir().join(format!("bastion-jump-test-{}", Uuid::new_v4()));
+        let mut store = HostStore::open(dir.join("hosts.json")).unwrap();
+        for h in hosts {
+            store.upsert(h).unwrap();
+        }
+        store
+    }
+
+    #[test]
+    fn resolve_jump_returns_none_when_no_jump_host_is_set() {
+        let host = Host::new("direkt".into(), "1.2.3.4".into(), "u".into());
+        let store = store_with(vec![host.clone()]);
+        assert!(store.resolve_jump(&host).unwrap().is_none());
+    }
+
+    #[test]
+    fn resolve_jump_finds_the_configured_jump_host() {
+        let jump = Host::new("bastionvard".into(), "10.0.0.1".into(), "u".into());
+        let mut target = Host::new("innanfor".into(), "192.168.1.5".into(), "u".into());
+        target.jump_host_id = Some(jump.id);
+        let store = store_with(vec![jump.clone(), target.clone()]);
+
+        let resolved = store.resolve_jump(&target).unwrap();
+        assert_eq!(resolved.unwrap().id, jump.id);
+    }
+
+    #[test]
+    fn resolve_jump_rejects_a_missing_jump_host_instead_of_connecting_directly() {
+        let mut target = Host::new("innanfor".into(), "192.168.1.5".into(), "u".into());
+        target.jump_host_id = Some(Uuid::new_v4());
+        let store = store_with(vec![target.clone()]);
+
+        assert!(store.resolve_jump(&target).is_err());
+    }
+
+    #[test]
+    fn resolve_jump_rejects_a_chained_jump_host() {
+        let grandparent = Host::new("c".into(), "3.3.3.3".into(), "u".into());
+        let mut parent = Host::new("b".into(), "2.2.2.2".into(), "u".into());
+        parent.jump_host_id = Some(grandparent.id);
+        let mut target = Host::new("a".into(), "1.1.1.1".into(), "u".into());
+        target.jump_host_id = Some(parent.id);
+        let store = store_with(vec![grandparent, parent, target.clone()]);
+
+        let err = store.resolve_jump(&target).unwrap_err();
+        assert!(
+            err.contains("mer än ett hopp"),
+            "felmeddelandet ska förklara VARFÖR, fick: {err}"
+        );
     }
 }
