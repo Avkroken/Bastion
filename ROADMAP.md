@@ -355,6 +355,63 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **S3-kompatibel objektlagring i den NYA Rust/GTK4-`LinuxApp`**
+  (2026-08-04, `LinuxApp/src/s3.rs`): helt saknades i den nya
+  Rust-omskrivningen. Byte-för-byte-port av `Sources/SSHCore/S3Client.swift`
+  + `S3ConnectionStore.swift` — AWS Signature Version 4-signering, fungerar
+  mot riktig AWS S3 OCH S3-kompatibla leverantörer (Ceph RGW m.fl.) eftersom
+  SigV4 är en delad spec, inte en AWS-hemlighet.
+  - **Signeringen verifierad mot EXAKT samma fixerade testvektor som
+    Swift-sidan** (`sigv4_matches_verified_reference_vector`, härledd ur en
+    oberoende Python-referensimplementation som fick ett genuint 200 OK mot
+    Hostups riktiga S3-kompatibla tjänst) — samma indata gav samma
+    `Authorization`-header byte för byte. Algoritmen är alltså bevisat
+    korrekt portad, inte bara "ser rimlig ut".
+  - HTTP via `reqwest` (`rustls-tls`, inget systemberoende OpenSSL), XML-
+    svarstolkning via `quick-xml` (pull-baserad, samma SAX-liknande
+    "spåra aktuell tagg + en `in_target`-flagga"-mönster som Swift-sidans
+    `XMLParser`-delegat). Path-style URL:er (`https://endpoint/bucket/key`),
+    inte virtual-hosted — samma val som Swift-sidan.
+  - En redan percent-encodad sökväg/frågesträng (SigV4:s exakta
+    encodningsregler) byggs ihop till URL:en som en FÄRDIG sträng och
+    parsas med `Url::parse`, ALDRIG via `Url::set_path`/`set_query` — de
+    mutatorerna hade percent-encodat en gång TILL (t.ex. `%20` →
+    `%2520`), vilket bryter signaturen. Motsvarar varför Swift-sidan sätter
+    `URLComponents.percentEncodedPath` direkt istället för `.path`.
+  - `S3Client`: `list_buckets`/`create_bucket`/`delete_bucket`/
+    `list_objects`/`put_object`/`get_object`/`delete_object` — alla
+    portade och genuint testade (se nedan), men bara `list_buckets` (via
+    en "Testa anslutning"-knapp) är kopplad till UI:t hittills.
+  - `S3ConnectionStore`: persistent JSON-databas för sparade anslutningar
+    (namn/endpoint/region/nycklar — nycklarna sparas i klartext, samma
+    medvetna v1-avgränsning som `WireGuardProfile`s privatnycklar, ingen
+    Keychain-motsvarighet på Linux än), samma CRUD-mönster som
+    `WireGuardProfileStore`. Ny "S3-anslutningar"-knapp i sidopanelens
+    header: lista + redigeringsdialog med en "Testa anslutning"-knapp som
+    kör ett riktigt `list_buckets`-anrop mot de fält som STÅR i formuläret
+    just nu (inte den senast sparade versionen — samma resonemang som
+    `key_deploy`s "verifiera innan lösenordet tas bort").
+  - Testat: den låsta SigV4-vektorn, XML-tolkning av tre riktiga
+    svarsformat (fångade från Hostups tjänst, samma fixturer som Swift-
+    sidan), Host-header-kantfall (port inkluderad/utelämnad beroende på
+    schema/standardport — samma CodeRabbit-fynd, PR #90, som Swift-sidan
+    redan fångat) + TVÅ genuina end-to-end-tester mot en riktig, minimal
+    HTTP/1.1-server (rå TCP, inget ramverk): bevisar att HELA vägen —
+    URL-byggande, signering, riktiga `reqwest`-anrop, XML-tolkning av
+    svaret — fungerar ihop, inte bara `sign`/`parse_*` isolerat (en
+    verifierar att `list_buckets` skickar en korrekt signerad begäran och
+    tolkar svaret rätt, en att `put_object` skickar kropp OCH
+    `Content-Type`-headern). Port av `S3ClientTests.swift`/
+    `S3ConnectionStoreTests.swift` rakt av (utom det Hostup-specifika
+    live-testet, som kräver riktiga kontouppgifter i miljön — samma skäl
+    Swift-sidans motsvarighet hoppas över i CI). 128/128 `cargo test`
+    gröna totalt.
+  - **Kvar**: en riktig bucket-/objektbläddare i UI:t (skapa/ta bort
+    bucket, lista/ladda upp/ladda ner/ta bort objekt) — backend är redo
+    och testad, bara ytlagret saknas, samma "backend klart, UI en
+    avgränsad uppföljning"-mönster som synkmotorn hade innan dess UI kom
+    på plats.
+
 - **WireGuard-profiler i den NYA Rust/GTK4-`LinuxApp`** (2026-08-04,
   `LinuxApp/src/wireguard.rs`): helt saknades i den nya Rust-omskrivningen.
   Byte-för-byte-port av `Sources/SSHCore/WireGuardConfig.swift` +
