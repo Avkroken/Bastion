@@ -25,6 +25,7 @@ mod sync;
 mod sync_crypto;
 mod tailscale;
 mod telnet;
+mod terminal_theme;
 mod wake_on_lan;
 mod wireguard;
 
@@ -1112,6 +1113,22 @@ fn show_settings_dialog(
     group.add(&commands_row);
     group.add(&sftp_row);
 
+    // Ren lokal preferens (INTE synkad, se `terminal_theme.rs`s
+    // modulkommentar) — motsvarar App/TerminalThemeSettingsView.swift.
+    let theme_store = terminal_theme::TerminalThemeStore::open(terminal_theme::TerminalThemeStore::default_path());
+    let themes = terminal_theme::all();
+    let theme_names: Vec<&str> = themes.iter().map(|t| t.name).collect();
+    let theme_row = adw::ComboRow::builder().title("Terminalfärgtema").build();
+    let theme_model = gtk::StringList::new(&theme_names);
+    theme_row.set_model(Some(&theme_model));
+    let current_theme_id = theme_store.selected_id();
+    let current_theme = terminal_theme::theme(current_theme_id.as_deref());
+    if let Some(pos) = themes.iter().position(|t| t.id == current_theme.id) {
+        theme_row.set_selected(pos as u32);
+    }
+    let terminal_group = adw::PreferencesGroup::builder().title("Terminal").build();
+    terminal_group.add(&theme_row);
+
     let sync_folder_row = adw::ActionRow::builder()
         .title("Synkmapp")
         .subtitle(
@@ -1165,6 +1182,7 @@ fn show_settings_dialog(
 
     let page = adw::PreferencesPage::new();
     page.add(&group);
+    page.add(&terminal_group);
     page.add(&sync_group);
 
     let close_button = gtk::Button::with_label("Klar");
@@ -1253,6 +1271,32 @@ fn show_settings_dialog(
                 eprintln!("kunde inte spara inställningarna: {e}");
             }
             refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store);
+        }
+    ));
+
+    theme_row.connect_selected_notify(clone!(
+        #[strong]
+        area,
+        move |row| {
+            let themes = terminal_theme::all();
+            let Some(t) = themes.get(row.selected() as usize) else { return };
+            if let Err(e) = theme_store.set_selected_id(t.id) {
+                eprintln!("kunde inte spara terminaltemat: {e}");
+                return;
+            }
+            // Bara REDAN ÖPPNA flikar behöver uppdateras här — nästa
+            // session skapas alltid med `new_themed_terminal()`, som läser
+            // det nyss sparade valet direkt. `AdwTabView` har ingen
+            // `nth_page`; `pages()` (ett `gio::ListModel`) är den
+            // dokumenterade vägen att räkna upp alla flikar.
+            let theme = terminal_theme::theme(Some(t.id));
+            let pages = area.tab_view.pages();
+            for i in 0..pages.n_items() {
+                let Some(page) = pages.item(i).and_downcast::<adw::TabPage>() else { continue };
+                if let Some(terminal) = page.child().downcast_ref::<vte::Terminal>() {
+                    terminal_theme::apply(terminal, theme);
+                }
+            }
         }
     ));
 
@@ -1650,13 +1694,24 @@ fn prompt_password_then(
     win.present();
 }
 
+/// Bygger en ny terminalwidget med det sparade terminalfärgtemat applicerat
+/// (`terminal_theme::apply`) — anropas från alla tre sessionsstartare
+/// (SSH/Telnet/Seriell) i stället för att var och en läser
+/// `TerminalThemeStore` och sätter färger separat.
+fn new_themed_terminal() -> vte::Terminal {
+    let terminal = vte::Terminal::builder().vexpand(true).hexpand(true).build();
+    let store = terminal_theme::TerminalThemeStore::open(terminal_theme::TerminalThemeStore::default_path());
+    terminal_theme::apply(&terminal, terminal_theme::theme(store.selected_id().as_deref()));
+    terminal
+}
+
 fn start_session(
     area: &Rc<SessionArea>,
     host: host::Host,
     password: Option<String>,
     jump: Option<host::Host>,
 ) {
-    let terminal = vte::Terminal::builder().vexpand(true).hexpand(true).build();
+    let terminal = new_themed_terminal();
 
     let cols = 80u32;
     let rows = 24u32;
@@ -1721,7 +1776,7 @@ fn start_session(
 /// så den redan existerande generiska close-page-städningen (`SessionArea::
 /// new`) fungerar identiskt utan telnet-specifik kod där.
 fn start_telnet_session(area: &Rc<SessionArea>, host: String, port: u16) {
-    let terminal = vte::Terminal::builder().vexpand(true).hexpand(true).build();
+    let terminal = new_themed_terminal();
     let handle = telnet::spawn(host.clone(), port);
 
     unsafe {
@@ -1844,7 +1899,7 @@ fn show_telnet_connect_dialog(app: &adw::Application, area: &Rc<SessionArea>) {
 }
 
 fn start_serial_session(area: &Rc<SessionArea>, path: String, baud_rate: u32) {
-    let terminal = vte::Terminal::builder().vexpand(true).hexpand(true).build();
+    let terminal = new_themed_terminal();
     let handle = serial::spawn(serial::SerialConfig { path: path.clone(), baud_rate });
 
     unsafe {

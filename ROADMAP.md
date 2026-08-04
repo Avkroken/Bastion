@@ -355,6 +355,38 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **Terminalfärgteman i den NYA Rust/GTK4-`LinuxApp`** (2026-08-05,
+  `LinuxApp/src/terminal_theme.rs`): fanns i Swift-sidan
+  (`App/TerminalTheme.swift`, 25 inbyggda teman) men Rust-terminalen
+  (VTE4) körde bara vad GTK-temat råkade ge — inget eget färgval, inget
+  motsvarande gap tidigare dokumenterat eftersom det inte är en "saknad
+  funktion" i samma bemärkelse som t.ex. Telnet/S3, bara en aldrig
+  ifylld detalj.
+  - Alla 25 temans hex-värden avskrivna rad för rad från
+    `TerminalTheme.swift` (Dracula, Nord, Solarized, Gruvbox, Monokai,
+    One Dark, Tokyo Night ×2, Catppuccin ×4, Ayu ×2, Everforest, Rosé
+    Pine, Kanagawa, Nightfox, Oxocarbon, m.fl.) — inte nya val.
+  - `vte_terminal_set_colors` (bakgrund/förgrund/16-färgers ANSI-palett i
+    ett anrop) + `set_color_cursor`/`set_color_highlight` separat, samma
+    tre extra fält `TerminalView.swift` sätter utöver SwiftTerms egen
+    motsvarighet till `set_colors`. Samma strikta "#RRGGBB"-parsning
+    (svart som fallback vid fel längd/tecken) som Swift-sidans `HexRGB`.
+  - **Till skillnad från** `settings::FeatureToggles`
+    (`~/.bastion/settings.json`, delas/synkas mellan enheter): valt tema
+    är en ren LOKAL preferens (`~/.bastion/linuxapp-terminal-theme.json`)
+    — Swift-sidan sparar det i `UserDefaults`, aldrig i den synkade
+    `AppSettings`-modellen, så en delad hemkatalog ska inte plötsligt
+    synka ett rent UI-val mellan Mac och Linux.
+  - Ny "Terminal"-preferensgrupp i inställningsdialogen (`adw::ComboRow`
+    med alla 25 namn) — redan öppna flikar uppdateras direkt vid byte
+    (`AdwTabView::pages()`, inget `nth_page` finns i libadwaita-API:t),
+    nya sessioner skapas alltid via en delad `new_themed_terminal()`-
+    hjälpfunktion som läser det sparade valet.
+  - 5 nya tester (unika id:n, alfabetisk sortering, giltig 16-färgers
+    palett per tema, hex-parsning inkl. svart-fallback, lagringens
+    round-trip). 152/152 `cargo test` gröna totalt, `cargo build`/
+    `clippy` helt tysta.
+
 - **OpenSSH-certifikatautentisering i den NYA Rust/GTK4-`LinuxApp`**
   (2026-08-05, `LinuxApp/src/ssh.rs` + auth-väljare i `main.rs`):
   `HostAuth::CertificateFile` fanns redan som fält i datamodellen (wire-
