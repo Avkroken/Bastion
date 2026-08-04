@@ -23,6 +23,7 @@ mod sync_crypto;
 mod tailscale;
 mod telnet;
 mod wake_on_lan;
+mod wireguard;
 
 use host::{Host, HostStore};
 use ssh::SshEvent;
@@ -46,6 +47,10 @@ fn build_ui(app: &adw::Application) {
     let snippet_store = Rc::new(RefCell::new(
         snippet::SnippetStore::open(snippet::SnippetStore::default_path())
             .expect("kunde inte öppna snippet-databasen"),
+    ));
+    let wireguard_store = Rc::new(RefCell::new(
+        wireguard::WireGuardProfileStore::open(wireguard::WireGuardProfileStore::default_path())
+            .expect("kunde inte öppna wireguard-profildatabasen"),
     ));
     let sync_config = Rc::new(RefCell::new(sync::SyncConfig::load(
         &sync::SyncConfig::default_path(),
@@ -128,6 +133,16 @@ fn build_ui(app: &adw::Application) {
         )
     ));
 
+    let wireguard_button = gtk::Button::from_icon_name("network-vpn-symbolic");
+    wireguard_button.set_tooltip_text(Some("WireGuard-profiler"));
+    wireguard_button.connect_clicked(clone!(
+        #[weak]
+        app,
+        #[strong]
+        wireguard_store,
+        move |_| show_wireguard_profile_list(&app, &wireguard_store)
+    ));
+
     let settings_button = gtk::Button::from_icon_name("preferences-system-symbolic");
     settings_button.set_tooltip_text(Some("Funktioner"));
     settings_button.connect_clicked(clone!(
@@ -160,6 +175,7 @@ fn build_ui(app: &adw::Application) {
     sidebar_header.pack_end(&add_button);
     sidebar_header.pack_end(&telnet_button);
     sidebar_header.pack_end(&tailscale_button);
+    sidebar_header.pack_end(&wireguard_button);
     sidebar_header.pack_end(&settings_button);
 
     let sidebar_content = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -1721,6 +1737,222 @@ fn show_tailscale_discovery_dialog(
                     ));
                 }
             }
+        }
+    ));
+
+    win.present();
+}
+
+/// Lista över sparade WireGuard-profiler — toppnivå, inte kopplat till en
+/// specifik `Host` (en profil beskriver en VPN-anslutning, inte en
+/// SSH-värd). Samma v1-avgränsning som App/-motsvarigheten: profilhantering
+/// (klistra in/visa/redigera/ta bort `.conf`-text), INTE att faktiskt
+/// upprätta tunneln — se `wireguard.rs`s doc-kommentar.
+fn show_wireguard_profile_list(
+    app: &adw::Application,
+    wireguard_store: &Rc<RefCell<wireguard::WireGuardProfileStore>>,
+) {
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(12)
+        .margin_bottom(12)
+        .build();
+    let scrolled = gtk::ScrolledWindow::builder().child(&list).vexpand(true).build();
+
+    let add_button = gtk::Button::from_icon_name("list-add-symbolic");
+    add_button.set_tooltip_text(Some("Ny profil"));
+    let header = adw::HeaderBar::new();
+    header.pack_end(&add_button);
+    header.set_title_widget(Some(&adw::WindowTitle::new("WireGuard-profiler", "")));
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&scrolled);
+
+    let win = adw::Window::builder()
+        .transient_for(&app.active_window().expect("inget aktivt fönster"))
+        .modal(true)
+        .default_width(420)
+        .default_height(480)
+        .content(&content)
+        .build();
+
+    refresh_wireguard_profile_list(app, wireguard_store, &list, &win);
+
+    add_button.connect_clicked(clone!(
+        #[strong]
+        app,
+        #[strong]
+        wireguard_store,
+        #[weak]
+        list,
+        #[weak]
+        win,
+        move |_| show_wireguard_profile_edit(
+            &app,
+            &wireguard_store,
+            &list,
+            &win,
+            wireguard::WireGuardProfile::new(String::new(), wireguard::WireGuardConfig::default()),
+        )
+    ));
+
+    win.present();
+}
+
+fn refresh_wireguard_profile_list(
+    app: &adw::Application,
+    wireguard_store: &Rc<RefCell<wireguard::WireGuardProfileStore>>,
+    list: &gtk::ListBox,
+    parent_win: &adw::Window,
+) {
+    while let Some(row) = list.row_at_index(0) {
+        list.remove(&row);
+    }
+    for profile in wireguard_store.borrow().all() {
+        let address = profile
+            .config
+            .interface
+            .address
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "ingen adress".to_string());
+        let peer_word = if profile.config.peers.len() == 1 { "peer" } else { "peers" };
+        let row = adw::ActionRow::builder()
+            .title(&profile.name)
+            .subtitle(format!("{address} · {} {peer_word}", profile.config.peers.len()))
+            .activatable(true)
+            .build();
+
+        let delete_button = gtk::Button::from_icon_name("user-trash-symbolic");
+        delete_button.set_tooltip_text(Some("Ta bort"));
+        delete_button.add_css_class("flat");
+        delete_button.connect_clicked(clone!(
+            #[strong]
+            app,
+            #[strong]
+            wireguard_store,
+            #[weak]
+            list,
+            #[weak]
+            parent_win,
+            #[strong(rename_to = profile_id)]
+            profile.id,
+            move |_| {
+                if let Err(e) = wireguard_store.borrow_mut().delete(profile_id) {
+                    eprintln!("kunde inte ta bort wireguard-profilen: {e}");
+                    return;
+                }
+                refresh_wireguard_profile_list(&app, &wireguard_store, &list, &parent_win);
+            }
+        ));
+        row.add_suffix(&delete_button);
+
+        row.connect_activated(clone!(
+            #[strong]
+            app,
+            #[strong]
+            wireguard_store,
+            #[weak]
+            list,
+            #[weak]
+            parent_win,
+            #[strong]
+            profile,
+            move |_| show_wireguard_profile_edit(&app, &wireguard_store, &list, &parent_win, profile.clone())
+        ));
+
+        list.append(&row);
+    }
+}
+
+/// Redigerar en `WireGuardProfile` som rå `.conf`-text — enklare och mer
+/// direkt begripligt för en användare som redan har filen (från sin
+/// VPN-leverantör/router) än ett fält-för-fält-formulär. `WireGuardConfig::
+/// parse` är förlåtande (okända rader hoppas tyst över) så ogiltig text ger
+/// bara en tom/ofullständig profil, inte en krasch.
+fn show_wireguard_profile_edit(
+    app: &adw::Application,
+    wireguard_store: &Rc<RefCell<wireguard::WireGuardProfileStore>>,
+    list: &gtk::ListBox,
+    parent_win: &adw::Window,
+    profile: wireguard::WireGuardProfile,
+) {
+    let name_row = adw::EntryRow::builder().title("Namn").text(&profile.name).build();
+    let group = adw::PreferencesGroup::new();
+    group.add(&name_row);
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+
+    let text_view = gtk::TextView::builder().monospace(true).build();
+    text_view.buffer().set_text(&profile.config.rendered());
+    let text_scrolled = gtk::ScrolledWindow::builder()
+        .child(&text_view)
+        .min_content_height(240)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_bottom(12)
+        .vexpand(true)
+        .build();
+
+    let save_button = gtk::Button::with_label("Spara");
+    save_button.add_css_class("suggested-action");
+    let cancel_button = gtk::Button::with_label("Avbryt");
+    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    header.pack_start(&cancel_button);
+    header.pack_end(&save_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&page);
+    content.append(&text_scrolled);
+
+    let win = adw::Window::builder()
+        .transient_for(parent_win)
+        .modal(true)
+        .default_width(460)
+        .default_height(500)
+        .title("WireGuard-profil")
+        .content(&content)
+        .build();
+
+    cancel_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        move |_| win.close()
+    ));
+    save_button.connect_clicked(clone!(
+        #[strong]
+        app,
+        #[strong]
+        wireguard_store,
+        #[weak]
+        list,
+        #[strong]
+        parent_win,
+        #[weak]
+        win,
+        #[strong]
+        profile,
+        move |_| {
+            let name = name_row.text().trim().to_string();
+            if name.is_empty() {
+                return;
+            }
+            let buffer = text_view.buffer();
+            let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
+            let mut updated = profile.clone();
+            updated.name = name;
+            updated.config = wireguard::WireGuardConfig::parse(&text);
+            if let Err(e) = wireguard_store.borrow_mut().upsert(updated) {
+                eprintln!("kunde inte spara wireguard-profilen: {e}");
+                return;
+            }
+            refresh_wireguard_profile_list(&app, &wireguard_store, &list, &parent_win);
+            win.close();
         }
     ));
 

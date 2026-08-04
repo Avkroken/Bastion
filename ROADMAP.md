@@ -355,6 +355,45 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **WireGuard-profiler i den NYA Rust/GTK4-`LinuxApp`** (2026-08-04,
+  `LinuxApp/src/wireguard.rs`): helt saknades i den nya Rust-omskrivningen.
+  Byte-för-byte-port av `Sources/SSHCore/WireGuardConfig.swift` +
+  `WireGuardProfileStore.swift` — samma v1-avgränsning som Swift-sidan:
+  parsning/lagring/redigering av `.conf`-profiler, INTE att faktiskt
+  upprätta tunneln (kräver `wg`-binären + root, eller ett helt eget
+  kryptoprotokoll utan den — separat, mycket större arbete, se
+  "Native WireGuard/Tailscale — inget externt beroende" nedan).
+  - Parsern hanterar precis det `wg(8)`/`wg-quick(8)`-formatet Swift-sidan
+    redan verifierat: `[Interface]`/`[Peer]`-sektioner (skiftlägesokänsliga
+    rubriker), `#`-kommentarer (även en rad som BÖRJAR med `#` — samma
+    CodeRabbit-fynd, PR #79, som Swift-sidan redan vaktar mot), upprepade
+    `Address`/`AllowedIPs`-rader som ackumuleras istället för att skriva
+    över, flera `[Peer]`-sektioner.
+  - `WireGuardProfileStore` — persistent JSON-databas,
+    `~/.bastion/wireguard.json`, samma CRUD-mönster som `SnippetStore`
+    (`camelCase`-fältnamn för framtida cross-platform-kompatibilitet,
+    trunkerad/skadad fil ger ett fel istället för att tyst tömmas).
+  - Ny "WireGuard"-knapp i sidopanelens header: en profillista (namn +
+    sammanfattning: första adressen + antal peers), "+"/radklick öppnar en
+    redigeringsdialog som visar/redigerar profilen som RÅ `.conf`-text
+    (enklare och mer direkt begripligt för en användare som redan har
+    filen, än ett fält-för-fält-formulär — samma designval som
+    `App/WireGuardProfileView.swift`; `WireGuardConfig::parse` är
+    förlåtande, så ogiltig text ger bara en tom/ofullständig profil, inte
+    en krasch).
+  - Testat: 12 parser-/serialiseringstester (samma fixturer/scenarier som
+    `WireGuardConfigTests.swift` — round-trip genom `rendered()`, tomma
+    valfria fält, kommentarhantering, ackumulerande adressrader) + 2
+    lagringstester (upsert/get/delete/sortering, persistens mellan
+    store-instanser, en FULL round-trip text→config→profil→JSON-på-disk→
+    ny store→tillbaka till `.conf`-text) + en korrupt-fil-regression. Port
+    av `WireGuardConfigTests.swift`/`WireGuardProfileStoreTests.swift` rakt
+    av. 115/115 `cargo test` gröna totalt.
+  - **Kvar**: fil-import (`.fileImporter` i Swift-sidan) — LinuxApp har
+    bara klistra-in-textfältet, ingen egen filväljarknapp än. Profilerna
+    är inte kopplade till någon specifik `Host` i UI:t (matchar Swift-
+    sidan — en profil beskriver en VPN-anslutning, inte en SSH-värd).
+
 - **Tailscale-värdförslag i den NYA Rust/GTK4-`LinuxApp`** (2026-08-04,
   `LinuxApp/src/tailscale.rs`): helt saknades i den nya Rust-omskrivningen
   (bara ett par statiska referensrader i Command Library — inte en riktig
