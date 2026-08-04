@@ -7,6 +7,7 @@ use vte::prelude::*;
 
 mod archive;
 mod command_library;
+mod dashboard;
 mod docker;
 mod fsutil;
 mod host;
@@ -432,6 +433,34 @@ fn refresh_list(
                 refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store);
             }
         ));
+        let dashboard_action = gtk::gio::SimpleAction::new("dashboard", None);
+        dashboard_action.connect_activate(clone!(
+            #[strong]
+            store,
+            #[strong]
+            area,
+            #[strong(rename_to = host_id)]
+            h.id,
+            move |_, _| {
+                let host = store
+                    .borrow()
+                    .all()
+                    .iter()
+                    .find(|x| x.id == host_id)
+                    .map(|h| (*h).clone());
+                if let Some(host) = host {
+                    with_resolved_jump(&area, &store, host, clone!(
+                        #[strong]
+                        area,
+                        move |host, jump| {
+                            require_password(&area, host, move |area, host, password| {
+                                open_dashboard_view(area, host, password, jump.clone())
+                            });
+                        }
+                    ));
+                }
+            }
+        ));
         let docker_action = gtk::gio::SimpleAction::new("docker", None);
         docker_action.connect_activate(clone!(
             #[strong]
@@ -598,6 +627,7 @@ fn refresh_list(
         action_group.add_action(&edit_action);
         action_group.add_action(&wake_action);
         action_group.add_action(&delete_action);
+        action_group.add_action(&dashboard_action);
         action_group.add_action(&docker_action);
         action_group.add_action(&commands_action);
         action_group.add_action(&sftp_action);
@@ -616,6 +646,11 @@ fn refresh_list(
 fn gio_menu_for(toggles: &settings::FeatureToggles, mac_address: &Option<String>) -> gtk::gio::Menu {
     let menu = gtk::gio::Menu::new();
     menu.append(Some("Redigera"), Some("host.edit"));
+    // Ingen `FeatureToggles`-gate — precis som App/DashboardView.swift har
+    // ingen egen "visa/dölj"-inställning i `AppSettings.swift` (till
+    // skillnad från Docker/Snippets/SFTP/Tunnel/Nyckel, som alla är
+    // valfria sidofunktioner), så systemöversikten är alltid tillgänglig.
+    menu.append(Some("Systemöversikt"), Some("host.dashboard"));
     if mac_address.is_some() {
         menu.append(Some("Väck (Wake-on-LAN)"), Some("host.wake"));
     }
@@ -3403,6 +3438,181 @@ fn open_docker_view(
     ));
 
     refresh_docker_list(area, host, password, &list, jump);
+}
+
+/// Öppnar en "Systemöversikt"-flik för `host`: EN kombinerad SSH-round-trip
+/// (`dashboard::COMMAND`) ger last/minne/disk/uptime/OS/Docker i ett svep —
+/// motsvarar `App/DashboardView.swift`. Ingen auto-poll (Swift-sidans
+/// `DashboardModel.startPolling()`, 15 s) än, se ROADMAP "Kvar" — bara
+/// manuell uppdatering via knappen.
+fn open_dashboard_view(area: &Rc<SessionArea>, host: host::Host, password: Option<String>, jump: Option<host::Host>) {
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(12)
+        .margin_bottom(12)
+        .build();
+    let scrolled = gtk::ScrolledWindow::builder().child(&list).vexpand(true).build();
+
+    let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
+    refresh_button.set_tooltip_text(Some("Uppdatera"));
+    let toolbar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .build();
+    toolbar.append(
+        &gtk::Label::builder()
+            .label(format!("Systemöversikt: {}", host.alias))
+            .hexpand(true)
+            .halign(gtk::Align::Start)
+            .build(),
+    );
+    toolbar.append(&refresh_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&toolbar);
+    content.append(&scrolled);
+
+    let page = area.tab_view.append(&content);
+    page.set_title(&format!("Översikt: {}", host.alias));
+    area.tab_view.set_selected_page(&page);
+    area.update_placeholder();
+
+    refresh_button.connect_clicked(clone!(
+        #[strong]
+        host,
+        #[strong]
+        password,
+        #[strong]
+        jump,
+        #[weak]
+        list,
+        move |_| refresh_dashboard(host.clone(), password.clone(), &list, jump.clone())
+    ));
+
+    refresh_dashboard(host, password, &list, jump);
+}
+
+fn refresh_dashboard(host: host::Host, password: Option<String>, list: &gtk::ListBox, jump: Option<host::Host>) {
+    let rx = ssh::run_command(host, password, dashboard::COMMAND.to_string(), jump);
+    glib::spawn_future_local(clone!(
+        #[weak]
+        list,
+        async move {
+            while let Some(row) = list.row_at_index(0) {
+                list.remove(&row);
+            }
+            match rx.recv().await {
+                Ok(Ok(output)) => {
+                    for row in build_dashboard_rows(&dashboard::parse(&output)) {
+                        list.append(&row);
+                    }
+                }
+                Ok(Err(e)) => list.append(&error_row(&e)),
+                Err(_) => list.append(&error_row("SSH-anslutningen avbröts oväntat")),
+            }
+        }
+    ));
+}
+
+/// Formaterar en `SystemSnapshot` som en rad `adw::ActionRow`-poster —
+/// sammanfattning, drifttid, last, minne, en rad per disk, en rad per
+/// Docker-container (med en play/stop-ikon efter `is_running()`, samma
+/// signal som Swift-sidans gröna/röda statuspunkt).
+fn build_dashboard_rows(snap: &dashboard::SystemSnapshot) -> Vec<adw::ActionRow> {
+    let mut rows = Vec::new();
+
+    let mut summary = Vec::new();
+    if let Some(os) = &snap.os {
+        summary.push(os.clone());
+    }
+    if let Some(kernel) = &snap.kernel {
+        summary.push(kernel.clone());
+    }
+    if let Some(cpu) = snap.cpu_count {
+        summary.push(format!("{cpu} kärnor"));
+    }
+    rows.push(
+        adw::ActionRow::builder()
+            .title(snap.hostname.clone().unwrap_or_else(|| "Värd".to_string()))
+            .subtitle(if summary.is_empty() { "Ingen systemdata".to_string() } else { summary.join(" · ") })
+            .build(),
+    );
+
+    if let Some(uptime) = snap.uptime_seconds {
+        rows.push(adw::ActionRow::builder().title("Drifttid").subtitle(format_uptime(uptime)).build());
+    }
+    if let Some(load) = snap.load {
+        rows.push(
+            adw::ActionRow::builder()
+                .title("Systemlast")
+                .subtitle(format!("{:.2} / {:.2} / {:.2} (1/5/15 min)", load.one, load.five, load.fifteen))
+                .build(),
+        );
+    }
+    if let Some(mem) = snap.memory {
+        rows.push(
+            adw::ActionRow::builder()
+                .title("Minne")
+                .subtitle(format!(
+                    "{} / {} ({:.0} %)",
+                    format_bytes(mem.used_bytes()),
+                    format_bytes(mem.total_bytes),
+                    mem.used_fraction() * 100.0
+                ))
+                .build(),
+        );
+    }
+    for disk in &snap.disks {
+        rows.push(
+            adw::ActionRow::builder()
+                .title(disk.mount.clone())
+                .subtitle(format!(
+                    "{} / {} ({} %) — {}",
+                    format_bytes(disk.used_bytes),
+                    format_bytes(disk.size_bytes),
+                    disk.capacity_percent,
+                    disk.filesystem
+                ))
+                .build(),
+        );
+    }
+    for c in &snap.containers {
+        let row = adw::ActionRow::builder().title(c.name.clone()).subtitle(format!("{} — {}", c.image, c.status)).build();
+        let icon_name = if c.is_running() { "media-playback-start-symbolic" } else { "media-playback-stop-symbolic" };
+        row.add_prefix(&gtk::Image::from_icon_name(icon_name));
+        rows.push(row);
+    }
+    rows
+}
+
+fn format_bytes(bytes: i64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes.max(0) as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit])
+}
+
+fn format_uptime(seconds: f64) -> String {
+    let total = seconds.max(0.0) as u64;
+    let days = total / 86400;
+    let hours = (total % 86400) / 3600;
+    let minutes = (total % 3600) / 60;
+    if days > 0 {
+        format!("{days}d {hours}h {minutes}m")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else {
+        format!("{minutes}m")
+    }
 }
 
 /// Öppnar en "Tunnel"-flik för `host`: startar/stoppar en lokal
