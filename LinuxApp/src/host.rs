@@ -327,6 +327,25 @@ impl HostStore {
         self.persist()
     }
 
+    /// Importerar värdar ur en `~/.ssh/config`-text — motsvarar
+    /// `HostStore.importSSHConfig` i Swift. Alias som redan finns
+    /// (skiftlägesokänsligt) hoppas över, så ett omimport av samma fil
+    /// inte skapar dubbletter. Returnerar antalet FAKTISKT importerade.
+    pub fn import_ssh_config(&mut self, text: &str) -> std::io::Result<usize> {
+        let existing: std::collections::HashSet<String> =
+            self.all().iter().map(|h| h.alias.to_lowercase()).collect();
+        let config = crate::ssh_config::SSHConfig::parse(text);
+        let fresh: Vec<Host> = crate::ssh_config::imported_hosts(&config)
+            .into_iter()
+            .filter(|h| !existing.contains(&h.alias.to_lowercase()))
+            .collect();
+        let count = fresh.len();
+        for host in fresh {
+            self.upsert(host)?;
+        }
+        Ok(count)
+    }
+
     /// Full synkrunda mot en transport: hämta fjärrtillstånd, slå ihop
     /// lokalt, skriv tillbaka det sammanslagna — motsvarar
     /// `HostStore.sync(with:)` i Swift. Se `crate::sync`.

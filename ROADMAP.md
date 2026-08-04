@@ -355,6 +355,45 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **Importera `~/.ssh/config` i den NYA Rust/GTK4-`LinuxApp`** (2026-08-05,
+  `LinuxApp/src/ssh_config.rs`): fanns redan i Swift/CLI-sidan
+  (`Sources/SSHCore/SSHConfig.swift` + `HostStore.importSSHConfig`, se
+  status­raden ovan) men aldrig porterad till Rust-om­skrivningen — samma
+  gap-mönster som Tailscale/WireGuard/S3/Telnet.
+  - Egen, beroendefri tokenizer/parser (ingen regex-motor) som stöder
+    `Host`-block med jokertecken (`*`, `?`) och negation (`!`), `Key Value`/
+    `Key=Value`/`Key = Value`-syntax, citerade värden och `#`-kommentarer.
+    `Match`-block hoppas medvetet över (matchar aldrig) — exakt samma
+    avgränsning som Swift-sidan gör.
+  - Semantik enligt riktig OpenSSH, inte en förenkling: **första värdet
+    vinner** per nyckel (senare `Host`-block kan inte skriva över ett
+    tidigare matchat block), nycklar FÖRE första `Host`-raden gäller
+    globalt, och `!mönster` exkluderar en värd även om ett senare
+    positivt mönster (t.ex. en catch-all `*`) annars skulle matcha den.
+    Jokerteckenmatchningen (`glob()`) är samma iterativa två-pekar-
+    algoritm (med backtrack-markör för `*`) som Swift-sidan använder,
+    inte en naiv `str::contains`-genväg.
+  - `HostStore::import_ssh_config` importerar varje KONKRET alias (inga
+    jokertecken/negationer, de kan inte bli en enskild host-post) som
+    saknar `User` hoppas över (kan inte anslutas ändå utan användarnamn).
+    Dedup vid ominmport: matchar på alias, importerar inte samma värd två
+    gånger om man klistrar in samma config igen.
+  - Ny "Importera"-knapp i sidopanelens header: en klistra-in-text-dialog
+    (ingen filväljare — configen kan komma från vilken maskin som helst,
+    inte nödvändigtvis en lokal `~/.ssh/config`), motsvarar
+    `App/ImportConfigView.swift`. Visar antal importerade värdar efteråt.
+  - 12 enhetstester porterade rakt av från `Tests/SSHCoreTests/
+    SSHConfigTests.swift` + `ImportAndExecTests.swift` (exakt alias,
+    andra mönstret på samma `Host`-rad, jokerteckensuffix/-prefix,
+    `ProxyJump` via jokertecken, "första vinner", negation, okänt alias
+    träffar catch-all, `=`-syntax, jokertecken-glob-tester separat,
+    alias hoppar över jokertecken, import hoppar över anvädar­lösa/
+    jokertecken-poster, dedup vid ominmport mot en riktig `HostStore` på
+    disk). 144/144 `cargo test` gröna totalt, `cargo build`/`clippy`
+    helt tysta.
+  - **Kvar**: `Match`-block (t.ex. `Match host` / `Match exec`) stöds
+    inte — samma medvetna avgränsning som Swift-sidan.
+
 - **Seriell/USB-anslutning i den NYA Rust/GTK4-`LinuxApp`** (2026-08-05,
   `LinuxApp/src/serial.rs`): helt saknades — Termius har detta, Bastion
   saknade det helt (samma gap-lista Swift-sidans `Serial.swift`
