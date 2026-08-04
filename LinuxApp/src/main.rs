@@ -20,6 +20,7 @@ mod socks_proxy;
 mod ssh;
 mod sync;
 mod sync_crypto;
+mod tailscale;
 mod telnet;
 mod wake_on_lan;
 
@@ -102,6 +103,31 @@ fn build_ui(app: &adw::Application) {
         move |_| show_telnet_connect_dialog(&app, &area)
     ));
 
+    let tailscale_button = gtk::Button::from_icon_name("network-workgroup-symbolic");
+    tailscale_button.set_tooltip_text(Some("Tailscale"));
+    tailscale_button.connect_clicked(clone!(
+        #[weak]
+        app,
+        #[strong]
+        store,
+        #[weak]
+        list,
+        #[strong]
+        area,
+        #[strong]
+        settings_store,
+        #[strong]
+        snippet_store,
+        move |_| show_tailscale_discovery_dialog(
+            &app,
+            &store,
+            &list,
+            &area,
+            &settings_store,
+            &snippet_store
+        )
+    ));
+
     let settings_button = gtk::Button::from_icon_name("preferences-system-symbolic");
     settings_button.set_tooltip_text(Some("Funktioner"));
     settings_button.connect_clicked(clone!(
@@ -133,6 +159,7 @@ fn build_ui(app: &adw::Application) {
     let sidebar_header = adw::HeaderBar::new();
     sidebar_header.pack_end(&add_button);
     sidebar_header.pack_end(&telnet_button);
+    sidebar_header.pack_end(&tailscale_button);
     sidebar_header.pack_end(&settings_button);
 
     let sidebar_content = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -1464,6 +1491,236 @@ fn show_telnet_connect_dialog(app: &adw::Application, area: &Rc<SessionArea>) {
             }
             win.close();
             start_telnet_session(&area, host, port);
+        }
+    ));
+
+    win.present();
+}
+
+/// Föreslå SSH-värdar ur ett tailnet — två källor att välja mellan
+/// (användaren avgör vad som är bekvämast, inte appen): den här enheten
+/// (`tailscale::fetch_local`) eller en redan sparad fjärrvärd
+/// (`tailscale::fetch_remote`, samma jump-host-medvetna anslutningsväg som
+/// alla andra engångskommandon). Motsvarar `App/TailscaleDiscoveryView.swift`.
+/// "Lägg till" öppnar samma "Ny värd"-dialog som +-knappen, bara förifyllt
+/// med tailnet-adressen — Tailscale känner inte till SSH-användarnamnet,
+/// så det sista steget är alltid det vanliga redigeringsläget.
+fn show_tailscale_discovery_dialog(
+    app: &adw::Application,
+    store: &Rc<RefCell<HostStore>>,
+    list: &gtk::ListBox,
+    area: &Rc<SessionArea>,
+    settings_store: &Rc<RefCell<settings::AppSettingsStore>>,
+    snippet_store: &Rc<RefCell<snippet::SnippetStore>>,
+) {
+    let hosts = store.borrow().all().into_iter().cloned().collect::<Vec<_>>();
+    let mut source_labels: Vec<String> = vec!["Denna enhet".to_string()];
+    source_labels.extend(hosts.iter().map(|h| h.alias.clone()));
+    let source_row = adw::ComboRow::builder().title("Källa").build();
+    let source_labels_refs: Vec<&str> = source_labels.iter().map(String::as_str).collect();
+    source_row.set_model(Some(&gtk::StringList::new(&source_labels_refs)));
+
+    let group = adw::PreferencesGroup::new();
+    group.add(&source_row);
+
+    let fetch_button = gtk::Button::with_label("Hämta");
+    fetch_button.add_css_class("suggested-action");
+    let status_label = gtk::Label::builder()
+        .label("Inte hämtat")
+        .margin_start(12)
+        .margin_end(12)
+        .halign(gtk::Align::Start)
+        .wrap(true)
+        .build();
+
+    let results_list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .margin_bottom(12)
+        .build();
+    let results_scrolled = gtk::ScrolledWindow::builder()
+        .child(&results_list)
+        .min_content_height(240)
+        .vexpand(true)
+        .build();
+
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+
+    let close_button = gtk::Button::with_label("Klar");
+    let header = adw::HeaderBar::builder()
+        .show_end_title_buttons(false)
+        .build();
+    header.pack_start(&close_button);
+    header.pack_end(&fetch_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&page);
+    content.append(&status_label);
+    content.append(&results_scrolled);
+
+    let win = adw::Window::builder()
+        .transient_for(&app.active_window().expect("inget aktivt fönster"))
+        .modal(true)
+        .default_width(460)
+        .default_height(480)
+        .title("Tailscale")
+        .content(&content)
+        .build();
+
+    close_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        move |_| win.close()
+    ));
+
+    fetch_button.connect_clicked(clone!(
+        #[strong]
+        app,
+        #[strong]
+        store,
+        #[weak]
+        list,
+        #[strong]
+        area,
+        #[strong]
+        settings_store,
+        #[strong]
+        snippet_store,
+        #[strong]
+        hosts,
+        #[weak]
+        results_list,
+        #[strong]
+        status_label,
+        #[strong]
+        fetch_button,
+        #[weak]
+        win,
+        move |_| {
+            while let Some(row) = results_list.row_at_index(0) {
+                results_list.remove(&row);
+            }
+            status_label.set_label("Hämtar…");
+            fetch_button.set_sensitive(false);
+
+            let selected = source_row.selected();
+            let remote_host = if selected == 0 {
+                None
+            } else {
+                hosts.get((selected - 1) as usize).cloned()
+            };
+
+            let finish = clone!(
+                #[strong]
+                app,
+                #[strong]
+                store,
+                #[strong]
+                list,
+                #[strong]
+                area,
+                #[strong]
+                settings_store,
+                #[strong]
+                snippet_store,
+                #[strong]
+                results_list,
+                #[strong]
+                status_label,
+                #[strong]
+                fetch_button,
+                #[strong]
+                win,
+                move |result: Result<tailscale::TailscaleStatus, tailscale::TailscaleError>| {
+                    fetch_button.set_sensitive(true);
+                    match result {
+                        Ok(status) => {
+                            let suggested = status.suggested_hosts();
+                            if suggested.is_empty() {
+                                status_label.set_label("Inga peers online med en Tailscale-IP hittades.");
+                            } else {
+                                status_label.set_label(&format!("{} förslag", suggested.len()));
+                            }
+                            for (host_name, address) in suggested {
+                                let row = adw::ActionRow::builder()
+                                    .title(&host_name)
+                                    .subtitle(&address)
+                                    .build();
+                                let add_button = gtk::Button::with_label("Lägg till");
+                                add_button.connect_clicked(clone!(
+                                    #[strong]
+                                    app,
+                                    #[strong]
+                                    store,
+                                    #[strong]
+                                    list,
+                                    #[strong]
+                                    area,
+                                    #[strong]
+                                    settings_store,
+                                    #[strong]
+                                    snippet_store,
+                                    #[strong]
+                                    host_name,
+                                    #[strong]
+                                    address,
+                                    #[weak]
+                                    win,
+                                    move |_| {
+                                        let prefilled = Host::new(host_name.clone(), address.clone(), String::new());
+                                        win.close();
+                                        show_host_dialog(
+                                            &app,
+                                            &store,
+                                            &list,
+                                            &area,
+                                            &settings_store,
+                                            &snippet_store,
+                                            Some(prefilled),
+                                        );
+                                    }
+                                ));
+                                row.add_suffix(&add_button);
+                                results_list.append(&row);
+                            }
+                        }
+                        Err(e) => status_label.set_label(&format!("Fel: {e}")),
+                    }
+                }
+            );
+
+            match remote_host {
+                None => {
+                    let rx = tailscale::spawn_fetch_local();
+                    glib::spawn_future_local(async move {
+                        let result = rx.recv().await.unwrap_or_else(|_| {
+                            Err(tailscale::TailscaleError::Io("kanalen stängdes oväntat".to_string()))
+                        });
+                        finish(result);
+                    });
+                }
+                Some(host) => {
+                    with_resolved_jump(&area, &store, host, clone!(
+                        #[strong]
+                        area,
+                        move |host, jump| {
+                            require_password(&area, host, move |_area, host, password| {
+                                let finish = finish.clone();
+                                let jump = jump.clone();
+                                glib::spawn_future_local(async move {
+                                    let result = tailscale::fetch_remote(host, password, jump).await;
+                                    finish(result);
+                                });
+                            });
+                        }
+                    ));
+                }
+            }
         }
     ));
 

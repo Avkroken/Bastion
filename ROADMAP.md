@@ -355,6 +355,44 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **Tailscale-värdförslag i den NYA Rust/GTK4-`LinuxApp`** (2026-08-04,
+  `LinuxApp/src/tailscale.rs`): helt saknades i den nya Rust-omskrivningen
+  (bara ett par statiska referensrader i Command Library — inte en riktig
+  integration). Byte-för-byte-port av `Sources/SSHCore/TailscaleStatus.swift`
+  (samma JSON-fältnamn, samma `suggestedHosts`-filtrering: bara online-
+  peers med minst en Tailscale-IP, `DNSName`/MagicDNS föredraget framför
+  `HostName` när det finns). Två källor, precis som Swift-sidan:
+  - `tailscale::fetch_local` — kör `tailscale status --json` LOKALT
+    (`std::process::Command`, ingen sandbox-begränsning på skrivbordet,
+    till skillnad från iOS där `Foundation.Process` saknas helt).
+    `tailscale::spawn_fetch_local` kör den på en egen bakgrundstråd — ett
+    rakt anrop hade blockerat GTK:s huvudloop under hela processkörningen,
+    samma resonemang som Swift-sidans `Task.detached`-kommentar i
+    `TailscaleDiscoveryModel.fetch`.
+  - `tailscale::fetch_remote` — kör samma kommando över en redan
+    konfigurerad fjärrvärd via `ssh::run_command`, alltså AUTOMATISKT
+    jump-host-medveten (samma anslutningsväg som allt annat
+    engångskommando i appen, ingen egen kod behövdes för det).
+  - Ny "Tailscale"-knapp i sidopanelens header, öppnar en dialog: välj
+    källa (denna enhet eller en sparad värd) → "Hämta" → lista med
+    föreslagna `värdnamn:adress`-rader, var och en med en "Lägg till"-
+    knapp som öppnar den vanliga host-dialogen förifylld (alias=värdnamn,
+    IP=adress) — Tailscale känner inte till SSH-användarnamnet, så det
+    sista steget är alltid det vanliga redigeringsläget, samma designval
+    som `App/TailscaleDiscoveryView.swift`.
+  - Testat: 5 enhetstester (parsning av en RIKTIG `tailscale status
+    --json`-fixtur — samma fångade utskrift som Swift-sidans
+    `TailscaleStatusTests`, filtrering av offline/IP-lösa peers) + 2
+    genuina process-tester (`fetch_local` mot ett riktigt, kortlivat
+    `/bin/sh`-skript — inte mockat — både lyckad utskrift och en
+    icke-noll-exitkod med stderr). Port av `TailscaleStatusTests.swift`
+    rakt av. 101/101 `cargo test` gröna totalt.
+  - **Kvar**: `fetch(over:)`-motsvarigheten (köra kommandot över en
+    ANNAN, redan öppen SSH-session — t.ex. dashboard-datan) fanns bara
+    som en optimering i Swift-sidan; LinuxApp öppnar en ny engångs-
+    anslutning varje gång istället (`fetch_remote`), samma avvägning som
+    resten av appens Docker-/kommandokörningar redan gör.
+
 - **Telnet (RFC 854) i den NYA Rust/GTK4-`LinuxApp`** (2026-08-04,
   `LinuxApp/src/telnet.rs`): helt saknades i den nya Rust-omskrivningen —
   Telnet delar ingen kod med SSH-lagret (rå TCP, ingen kryptering, egen
