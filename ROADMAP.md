@@ -411,6 +411,30 @@ ordning nyttan per arbetsinsats är störst):
 
 ## Klart
 
+- **Två flikbuggar som bara syntes när appen kördes** (2026-08-05,
+  `LinuxApp/src/main.rs` + nya `LinuxApp/src/tab_title.rs`):
+  - **`page_position` som existensfråga loggade en CRITICAL.** Fem
+    ställen frågade `area.tab_view.page_position(&page) >= 0` för att få
+    veta om fliken fanns kvar — men `adw_tab_view_get_page_position`
+    SVARAR inte för en sida som inte hör till vyn, den loggar
+    `assertion 'page_belongs_to_this_view (self, page)' failed`. Varje
+    flik som stängdes innan dess anslutning hann ge upp skrev alltså ut
+    en CRITICAL. Reproducerat med enbart mus (öppna en session mot en
+    oanträffbar adress, stäng fliken, vänta ut försöket), så det var
+    inte något kortkommandona införde. Ersatt av `tab_view_contains`,
+    som går igenom `pages()` och faktiskt svarar.
+  - **Snabbanslutningens flikar saknade namn.** De sparas aldrig i
+    värdlistan och får därför tomt alias, vilket gick rakt in i
+    fliknamnet — fliken hette bokstavligen ingenting, eller " (2)" när
+    det fanns fler än en. Faller nu tillbaka på `användare@värd`, samma
+    form som `ssh` självt. Verifierat på skärm: två anslutningar mot
+    samma värd ger `provare@10.255.255.1` och
+    `provare@10.255.255.1 (2)`.
+  - **Titellogiken lyftes ur `main.rs` till `tab_title.rs`** just för
+    att den skulle kunna testas — `main.rs` har ingen
+    `#[cfg(test)]`-täckning av hävd, så allt testvärt behöver bo
+    utanför. Sju tester, varav ett för vartdera felet ovan (203 → 210).
+
 - **Dialogfönstren byggs genom en gemensam hjälpare i stället för
   tjugo handplockade pixelpar** (2026-08-05, `LinuxApp/src/main.rs`):
   - **Problemet var inte ett fel utan en form.** Var och en av appens
