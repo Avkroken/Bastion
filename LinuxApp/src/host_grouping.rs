@@ -149,4 +149,39 @@ mod tests {
         let filtered = filter_groups(groups.clone(), "   "); // bara blanktecken
         assert_eq!(filtered.len(), groups.len());
     }
+
+    /// REGRESSIONSSKYDD för en riktig bugg (fixad 2026-08-05): värdlistans
+    /// rader kopplades tidigare till en `ListBox::connect_row_activated`
+    /// som slog upp värden via radens INDEX i `HostStore::all()`. Det
+    /// fungerade så länge listan var platt och i exakt samma ordning som
+    /// `all()` — men efter sektioneringen stämmer de inte längre överens,
+    /// och ett klick öppnade en session mot FEL VÄRD.
+    ///
+    /// Testet visar exakt varför index-uppslag är ogiltigt här, så att en
+    /// framtida "förenkling" tillbaka till index inte går obemärkt förbi:
+    /// den utplattade sektionsordningen har både ANNAN ordning och FLER
+    /// element än rålistan. Fixen är att fånga värdens `id` per rad
+    /// (se `refresh_list` i `main.rs`).
+    #[test]
+    fn flattened_group_order_does_not_match_raw_store_order() {
+        // Råordning (som `HostStore::all()` skulle ge): zeta, alpha, beta.
+        let hosts = vec![
+            host("zeta", &["prod", "eu"], false), // två taggar → TVÅ rader
+            host("alpha", &[], true),             // favorit → egen sektion först
+            host("beta", &["prod"], false),
+        ];
+        let groups = grouped_hosts(&hosts);
+        let flattened: Vec<&str> = groups
+            .iter()
+            .flat_map(|(_, hosts)| hosts.iter().map(|h| h.alias.as_str()))
+            .collect();
+
+        // Favoriten först, sedan taggsektionerna alfabetiskt ("eu" före
+        // "prod"), och `zeta` förekommer i BÅDA sina taggsektioner.
+        assert_eq!(flattened, vec!["alpha", "zeta", "beta", "zeta"]);
+
+        let raw: Vec<&str> = hosts.iter().map(|h| h.alias.as_str()).collect();
+        assert_ne!(flattened, raw, "utplattad ordning får inte råka matcha råordningen");
+        assert!(flattened.len() > raw.len(), "en multi-taggad värd ska ge fler rader än värdar");
+    }
 }
