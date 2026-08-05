@@ -363,23 +363,9 @@ fn build_ui(app: &adw::Application) {
         .child(&content_box)
         .build();
 
-    list.connect_row_activated(clone!(
-        #[strong]
-        store,
-        #[strong]
-        area,
-        move |_, row| {
-            let index = row.index();
-            if let Some(host) = store
-                .borrow()
-                .all()
-                .get(index as usize)
-                .map(|h| (*h).clone())
-            {
-                open_session(&area, &store, host);
-            }
-        }
-    ));
+    // (Radaktivering kopplas PER RAD i `refresh_list`, med värdens `id`
+    // fångat — se kommentaren där om varför ett index-baserat uppslag mot
+    // `store.all()` slutade fungera när listan blev sektionerad.)
 
     let split_view = adw::NavigationSplitView::builder()
         .sidebar(&sidebar_page)
@@ -455,20 +441,67 @@ fn refresh_list(
             .active(h.is_favorite)
             .build();
         favorite_button.connect_toggled(clone!(
+            #[weak]
+            app,
             #[strong]
             store,
+            #[weak]
+            list,
+            #[strong]
+            area,
+            #[strong]
+            settings_store,
+            #[strong]
+            snippet_store,
+            #[strong]
+            search_query,
             #[strong(rename_to = host_id)]
             h.id,
             move |btn| {
                 let is_favorite = btn.is_active();
-                btn.set_icon_name(if is_favorite { "starred-symbolic" } else { "non-starred-symbolic" });
                 let existing = store.borrow().all().iter().find(|x| x.id == host_id).map(|h| (*h).clone());
-                if let Some(mut host) = existing {
-                    host.is_favorite = is_favorite;
-                    if let Err(e) = store.borrow_mut().upsert(host) {
-                        eprintln!("kunde inte spara favorit-status: {e}");
-                    }
+                let Some(mut host) = existing else { return };
+                // Ingen skillnad mot det sparade värdet → gör ingenting.
+                // Skyddar mot en omtoggling som bara speglar en redan
+                // sparad ändring (och därmed mot att `refresh_list`
+                // nedan skulle kunna trigga sig själv i en loop).
+                if host.is_favorite == is_favorite {
+                    return;
                 }
+                host.is_favorite = is_favorite;
+                if let Err(e) = store.borrow_mut().upsert(host) {
+                    eprintln!("kunde inte spara favorit-status: {e}");
+                    return;
+                }
+                // Bygg om listan så värden faktiskt flyttas in i/ut ur
+                // "★ Favoriter"-sektionen direkt — samma beteende som
+                // Swift-sidans `toggleFavorite` → `save` → `reload()`.
+                // UPPSKJUTET till nästa huvudloopsvarv (`idle_add_local_once`)
+                // i stället för att köras rakt av: `refresh_list` river
+                // ut ALLA rader, inklusive den rad vars knapp just nu står
+                // mitt i sin egen signalhantering. GTK håller visserligen
+                // en referens under signalemissionen (ingen use-after-free),
+                // men att låta hanteraren returnera FÖRST och rebuilda
+                // efteråt undviker hela frågan.
+                glib::idle_add_local_once(clone!(
+                    #[weak]
+                    app,
+                    #[strong]
+                    store,
+                    #[weak]
+                    list,
+                    #[strong]
+                    area,
+                    #[strong]
+                    settings_store,
+                    #[strong]
+                    snippet_store,
+                    #[strong]
+                    search_query,
+                    move || {
+                        refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store, &search_query);
+                    }
+                ));
             }
         ));
         row.add_suffix(&favorite_button);
@@ -795,6 +828,32 @@ fn refresh_list(
         action_group.add_action(&forward_action);
         action_group.add_action(&key_deploy_action);
         row.insert_action_group("host", Some(&action_group));
+
+        // Anslut PER RAD, med värdens `id` fångat direkt — INTE via en
+        // `ListBox::connect_row_activated` som slår upp `store.all()`
+        // på radens INDEX. Det senare fungerade bara så länge listan var
+        // platt och i exakt samma ordning som `all()`: efter
+        // sektioneringen (rubrikrader, alias-sortering inom varje
+        // sektion, favoriter urplockade ur sina taggsektioner, en
+        // multi-taggad värd som förekommer i FLERA sektioner) — och
+        // dessutom när sökfältet filtrerar bort rader — pekar index inte
+        // längre på rätt värd, så ett klick öppnade en session mot FEL
+        // värd. `id`-uppslag är dessutom robust mot att listan hinner
+        // ändras mellan att raden byggs och att den klickas.
+        row.connect_activated(clone!(
+            #[strong]
+            store,
+            #[strong]
+            area,
+            #[strong(rename_to = host_id)]
+            h.id,
+            move |_| {
+                let host = store.borrow().all().iter().find(|x| x.id == host_id).map(|h| (*h).clone());
+                if let Some(host) = host {
+                    open_session(&area, &store, host);
+                }
+            }
+        ));
 
         list.append(&row);
         }

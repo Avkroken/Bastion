@@ -355,6 +355,45 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **BUGGFIX: klick i värdlistan öppnade session mot FEL VÄRD** (2026-08-05,
+  `main.rs` + regressionstest i `host_grouping.rs`): en riktig bugg som
+  infördes av den sektionerade listvyn tidigare samma dag och hittades
+  vid egen genomläsning av koden (CodeRabbit togs bort ur repot under
+  sessionen — självgranskning + CI/dependabot är det som finns kvar).
+  - Rotorsak: raderna kopplades via en `ListBox::connect_row_activated`
+    som slog upp värden på radens INDEX i `HostStore::all()`. Det var
+    korrekt så länge listan var platt och i exakt samma ordning som
+    `all()` — men den sektionerade vyn lägger till rubrikrader, sorterar
+    på alias inom varje sektion, plockar ut favoriter ur sina
+    taggsektioner och låter en multi-taggad värd förekomma i FLERA
+    sektioner. Dessutom filtrerar sökfältet bort rader. Index pekade
+    därför på fel post — ett klick anslöt till en annan värd än den man
+    klickade på.
+  - Fix: `adw::ActionRow::connect_activated` PER RAD, med värdens `id`
+    fångat direkt i closuren (samma mönster som radens övriga
+    host-åtgärder redan använde). Robust även mot att listan hinner
+    ändras mellan att raden byggs och att den klickas.
+  - Regressionstest (`flattened_group_order_does_not_match_raw_store_order`)
+    som visar exakt varför index-uppslag är ogiltigt: den utplattade
+    sektionsordningen har både annan ordning OCH fler element än
+    rålistan. Skyddar mot en framtida "förenkling" tillbaka till index.
+
+- **BUGGFIX: favoritstjärnan uppdaterade inte listans gruppering**
+  (2026-08-05, `main.rs`): att stjärnmärka en värd sparade till disk men
+  byggde inte om listan, så värden låg kvar i sin gamla sektion tills
+  något annat råkade trigga en uppdatering. Swift-sidans `toggleFavorite`
+  → `save` → `reload()` gör det direkt. Fixat, med två detaljer värda
+  att notera:
+  - Ombyggnaden är UPPSKJUTEN till nästa huvudloopsvarv
+    (`glib::idle_add_local_once`) i stället för att köras rakt av —
+    `refresh_list` river ut alla rader, inklusive den rad vars knapp just
+    står mitt i sin egen signalhantering. GTK håller en referens under
+    signalemissionen (ingen use-after-free), men att låta hanteraren
+    returnera först undviker hela frågan.
+  - Vakt mot att en toggling som bara speglar ett redan sparat värde
+    triggar en onödig ombyggnad (och därmed mot att ombyggnaden i
+    förlängningen skulle kunna trigga sig själv).
+
 - **Interaktiv OAuth2/PKCE-inloggning i den NYA Rust/GTK4-`LinuxApp`**
   (2026-08-05, `LinuxApp/src/oauth.rs` + `main.rs`): den del av
   OAuth-portningen (#256) som medvetet sköts upp — öppna en
