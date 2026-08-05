@@ -226,10 +226,53 @@ async fn deploy_and_verify(
         .exec(true, command.as_bytes())
         .await
         .map_err(|e| format!("kunde inte köra distributionskommandot: {e}"))?;
-    while let Some(msg) = channel.wait().await {
-        if matches!(msg, russh::ChannelMsg::ExitStatus { .. }) {
-            break;
+    // Exitkoden IGNORERADES tidigare helt. Misslyckades distributions-
+    // kommandot (skrivskyddad `~/.ssh`, full disk, saknad `mkdir`-rätt)
+    // upptäcktes det visserligen ändå — verifieringsanslutningen nedan
+    // faller då — men felmeddelandet blev missvisande: "deployades men
+    // verifieringen misslyckades", när sanningen var att deployen aldrig
+    // lyckades. Nu rapporteras det verkliga felet, med serverns egen
+    // stderr när den finns.
+    //
+    // Läser tills kanalen är HELT stängd (`wait()` ger `None`) — bryter
+    // varken på `ExitStatus` eller på `Eof`/`Close`:
+    //
+    // * `ExitStatus` duger inte som slutvillkor (samma lärdom som i
+    //   `ssh::run_command_on_session`): utdata kan fortfarande ligga kvar
+    //   i kön när den kommer, och här behövs stderr till felmeddelandet.
+    // * `Eof`/`Close` duger heller inte HÄR — empiriskt verifierat mot en
+    //   riktig `sshd` att de anländer FÖRE `exit-status` i det här
+    //   flödet, så ett break där tappade exitkoden helt (först tolkat som
+    //   "kommandot lyckades"). `exit-status` är en kanalFÖRFRÅGAN, inte
+    //   data, och får legitimt komma efter EOF — till skillnad från
+    //   utdata, som per definition inte kan det.
+    //
+    // `COMMAND_TIMEOUT` skyddar mot en server som aldrig stänger kanalen.
+    let mut exit_status: Option<u32> = None;
+    let mut stderr = Vec::new();
+    let drain = async {
+        while let Some(msg) = channel.wait().await {
+            match msg {
+                russh::ChannelMsg::ExitStatus { exit_status: code } => exit_status = Some(code),
+                russh::ChannelMsg::ExtendedData { ref data, .. } => stderr.extend_from_slice(data),
+                _ => {}
+            }
         }
+    };
+    tokio::time::timeout(crate::ssh::COMMAND_TIMEOUT, drain)
+        .await
+        .map_err(|_| format!("distributionskommandot svarade inte inom {}s", crate::ssh::COMMAND_TIMEOUT.as_secs()))?;
+
+    if let Some(code) = exit_status
+        && code != 0
+    {
+        let detail = String::from_utf8_lossy(&stderr);
+        let detail = detail.trim();
+        return Err(if detail.is_empty() {
+            format!("distributionskommandot misslyckades (exitkod {code}) — nyckeln deployades INTE")
+        } else {
+            format!("distributionskommandot misslyckades (exitkod {code}): {detail} — nyckeln deployades INTE")
+        });
     }
 
     // Ny, HELT SEPARAT anslutning som bara litar på den nya nyckeln — bevisar
@@ -540,5 +583,47 @@ mod tests {
 
     fn whoami_user() -> String {
         std::env::var("USER").unwrap_or_else(|_| "test".into())
+    }
+
+    /// Ett distributionskommando som MISSLYCKAS ska rapportera det
+    /// verkliga felet — inte det missvisande "deployades men
+    /// verifieringen misslyckades" som exitkoden tidigare ignorerades
+    /// till förmån för.
+    ///
+    /// Framkallas genom att peka `authorized_keys` på en sökväg under en
+    /// befintlig FIL (`.../authorized_keys/omöjlig`) — då kan varken
+    /// `mkdir -p` eller omdirigeringen lyckas, och kommandot avslutar
+    /// med nollskild kod, precis som vid en skrivskyddad `~/.ssh` på en
+    /// riktig server.
+    #[tokio::test]
+    async fn a_failing_deploy_command_reports_the_real_error_not_a_verification_failure() {
+        let Some(sshd) = TestSshd::start() else {
+            eprintln!("hoppar: kunde inte starta en test-sshd i den här miljön");
+            return;
+        };
+
+        let mut host = Host::new("keydeploy-fail-test".into(), "127.0.0.1".into(), whoami_user());
+        host.port = sshd.port as i64;
+        host.auth = HostAuth::KeyFile(sshd.client_key_path());
+
+        let pair = generate_ed25519("bastion-keydeploy-fail-test").unwrap();
+        let key_path = save_private_key(&pair.private_key_pem).unwrap();
+
+        // `authorized_keys` ÄR en fil — att använda den som KATALOG går inte.
+        let impossible = sshd.dir.join("authorized_keys").join("omöjlig").to_string_lossy().into_owned();
+        let err = deploy_and_verify(host, None, pair.public_key_line, key_path.clone(), Some(&impossible), None)
+            .await
+            .expect_err("ett misslyckat distributionskommando ska ge Err");
+
+        assert!(
+            err.contains("distributionskommandot misslyckades"),
+            "felet ska peka ut distributionen, inte verifieringen, fick: {err}"
+        );
+        assert!(
+            err.contains("deployades INTE"),
+            "felet ska vara tydligt med att nyckeln inte kom fram, fick: {err}"
+        );
+
+        std::fs::remove_file(key_path).ok();
     }
 }

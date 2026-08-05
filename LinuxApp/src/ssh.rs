@@ -199,7 +199,7 @@ const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 /// Hur länge ett engångskommando (`run_command_once`, Docker-listor/-loggar
 /// m.fl.) får köra innan det avbryts — samma resonemang som `CONNECT_TIMEOUT`,
 /// fast för fjärrkommandot självt (en hängande shell/process på fjärrsidan).
-const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+pub(crate) const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// Tak på hur mycket utdata ett engångskommando ackumulerar i minnet —
 /// `docker logs` utan `--tail` eller en oavsiktlig `cat` av en stor fil ska
 /// inte kunna svälta GUI-processen. 4 MiB räcker gott för det här
