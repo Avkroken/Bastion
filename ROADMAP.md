@@ -355,6 +355,23 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **`rust-version = "1.92"` (MSRV) deklarerad i `LinuxApp/Cargo.toml`**
+  (2026-08-05): fältet saknades helt, så den som hade en för gammal
+  toolchain fick ett kryptiskt syntaxfel någonstans i ett beroende i
+  stället för ett tydligt besked. Nu står `bastion-linuxapp@0.1.0
+  requires rustc 1.92` överst i felutskriften.
+  - **Siffran är VERIFIERAD, inte antagen.** Första gissningen var 1.88
+    (let-chains, som är det nyaste vår EGEN kod använder) — den var FEL.
+    Ett riktigt `cargo +1.88 build` visade att golvet i stället sätts av
+    GTK-stacken: `gdk4`/`cairo-rs`/`gio` kräver 1.92. Sedan kördes
+    `cargo +1.92 build` OCH hela testsviten (203/203) på just den
+    toolchainen för att bekräfta att den faktiskt duger.
+  - `edition = "2024"` kräver i sig bara 1.85 — MSRV:n kommer alltså helt
+    från beroendena, vilket är precis varför den behöver mätas om vid
+    varje större beroendeuppgradering.
+  - CI kör `dtolnay/rust-toolchain@stable`, alltså alltid senaste stabila.
+    MSRV:n är golvet, inte vad vi bygger med till vardags.
+
 - **SÄKERHET: russh 0.45 → 0.62.5, stänger 13 dependabot-varningar**
   (2026-08-05, `Cargo.toml` + `ssh.rs`/`key_deploy.rs`/`port_forward.rs`):
   samtliga öppna sårbarhetsvarningar i repot satt i `russh` — SSH-
