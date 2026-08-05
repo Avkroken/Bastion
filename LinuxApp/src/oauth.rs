@@ -314,24 +314,60 @@ pub async fn finish_login(session: LoginSession, client: &reqwest::Client, provi
     exchange_code_for_token(client, provider, &code, &session.verifier, &session.redirect_uri).await
 }
 
+/// Hur länge EN enskild anslutning får vara tyst innan den överges. En
+/// webbläsare som redan öppnat en TCP-anslutning skickar sin begäran
+/// omedelbart; en tom, spekulativ "preconnect" gör det aldrig.
+const CONNECTION_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Tar emot anslutningar tills EN av dem visar sig vara den riktiga
+/// redirecten (eller ett uttryckligt fel från leverantören).
+///
+/// Loopar medvetet i stället för att binda sig till den FÖRSTA anslutningen:
+/// webbläsare öppnar rutinmässigt anslutningar som INTE är redirecten —
+/// spekulativ TCP-"preconnect" (öppnas, skickar aldrig något) och
+/// `/favicon.ico` efter att svarssidan renderats. Med bara ett enda
+/// `accept()` hade en preconnect kunnat sluka platsen och låta den riktiga
+/// redirecten vänta obesvarad tills 5-minuterstimeouten löpte ut
+/// (inloggningen "hänger" utan förklaring), och en tidig favicon-begäran
+/// hade gett ett förvirrande "leverantören returnerade ett fel".
 async fn await_redirect(listener: tokio::net::TcpListener, expected_state: &str) -> Result<String, String> {
+    loop {
+        let (socket, _) = listener.accept().await.map_err(|e| format!("kunde inte ta emot redirect-anropet: {e}"))?;
+        if let Some(result) = handle_redirect_connection(socket, expected_state).await {
+            return result;
+        }
+        // Inte redirecten (tyst preconnect, favicon, någon annan probe) —
+        // fortsätt lyssna på nästa anslutning.
+    }
+}
+
+/// `None` = den här anslutningen var inte redirecten, fortsätt lyssna.
+/// `Some(..)` = ett slutgiltigt utfall (kod eller fel) som avslutar
+/// inloggningen.
+async fn handle_redirect_connection(mut socket: tokio::net::TcpStream, expected_state: &str) -> Option<Result<String, String>> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let (mut socket, _) = listener.accept().await.map_err(|e| format!("kunde inte ta emot redirect-anropet: {e}"))?;
     let mut buf = vec![0u8; 8192];
-    let n = socket.read(&mut buf).await.map_err(|e| format!("kunde inte läsa redirect-begäran: {e}"))?;
+    let n = match tokio::time::timeout(CONNECTION_READ_TIMEOUT, socket.read(&mut buf)).await {
+        Ok(Ok(n)) if n > 0 => n,
+        // Timeout (tyst preconnect), läsfel, eller stängd utan data.
+        _ => return None,
+    };
     let request = String::from_utf8_lossy(&buf[..n]).into_owned();
-    let path_and_query = request
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .ok_or_else(|| "ogiltig HTTP-begäran från webbläsaren".to_string())?
-        .to_string();
-    let url = reqwest::Url::parse(&format!("http://127.0.0.1{path_and_query}")).map_err(|e| format!("kunde inte tolka redirect-URL:en: {e}"))?;
+    let path_and_query = request.lines().next().and_then(|line| line.split_whitespace().nth(1))?.to_string();
+    let url = reqwest::Url::parse(&format!("http://127.0.0.1{path_and_query}")).ok()?;
     let params: std::collections::HashMap<String, String> = url.query_pairs().into_owned().collect();
+
+    // Varken `code` eller `error` → inte ett OAuth-svar alls (favicon
+    // m.m.). Svara artigt 404 och låt anroparen vänta vidare.
+    if !params.contains_key("code") && !params.contains_key("error") {
+        let _ = socket.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+        let _ = socket.shutdown().await;
+        return None;
+    }
 
     let result = match (params.get("code"), params.get("state")) {
         (Some(code), Some(state)) if state == expected_state => Ok(code.clone()),
-        (Some(_), Some(_)) => Err("state matchade inte — möjlig CSRF eller en gammal inloggningsbegäran".to_string()),
+        (Some(_), _) => Err("state matchade inte — möjlig CSRF eller en gammal inloggningsbegäran".to_string()),
         _ => {
             let error = params.get("error").cloned().unwrap_or_else(|| "okänt fel".to_string());
             Err(format!("leverantören returnerade ett fel: {error}"))
@@ -348,7 +384,7 @@ async fn await_redirect(listener: tokio::net::TcpListener, expected_state: &str)
     );
     let _ = socket.write_all(response.as_bytes()).await;
     let _ = socket.shutdown().await;
-    result
+    Some(result)
 }
 
 /// Läser/skriver token lokalt (se modulkommentaren om avgränsningen mot
@@ -620,6 +656,27 @@ mod tests {
         let request_head = rx.await.expect("token-servern fick aldrig någon begäran");
         assert!(request_head.contains("code=the-code"), "{request_head}");
         assert!(request_head.contains("grant_type=authorization_code"), "{request_head}");
+    }
+
+    /// Webbläsare öppnar rutinmässigt anslutningar som INTE är redirecten
+    /// (`/favicon.ico`, diverse prober). Ett enda `accept()` hade tolkat
+    /// den första av dem som "svaret" och gett ett förvirrande fel —
+    /// loopen ska i stället svara 404 på den och vänta in den riktiga.
+    #[tokio::test]
+    async fn await_redirect_ignores_a_stray_request_and_waits_for_the_real_callback() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            // Strö-begäran utan code/state — ska besvaras men inte avsluta.
+            let stray = reqwest::get(format!("http://127.0.0.1:{port}/favicon.ico")).await;
+            assert_eq!(stray.expect("strö-begäran fick inget svar").status(), 404);
+            // Sedan den RIKTIGA redirecten.
+            let _ = reqwest::get(format!("http://127.0.0.1:{port}/callback?code=real-code&state=the-state")).await;
+        });
+
+        let code = await_redirect(listener, "the-state").await.expect("den riktiga redirecten skulle ha accepterats");
+        assert_eq!(code, "real-code");
     }
 
     #[tokio::test]
