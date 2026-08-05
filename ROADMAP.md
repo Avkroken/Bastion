@@ -355,6 +355,46 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **Bitwarden-autentisering (`HostAuth::BitwardenItem`) i den NYA
+  Rust/GTK4-`LinuxApp`** (2026-08-05, `LinuxApp/src/bitwarden.rs` +
+  auth-väljare i `main.rs`): port av `Sources/SSHCore/BitwardenClient.swift`
+  — men INTE bara paritet med en redan fungerande Apple-funktion.
+  **Linux är faktiskt den ENDA plattformen där det här kan fungera i
+  praktiken**: `App/AuthResolver.swift`s `resolveAuth` returnerar
+  ALLTID `nil` för `.bitwardenItem` på båda Apple-plattformarna — iOS
+  saknar `Foundation.Process` helt, och macOS-målets App Sandbox dödar
+  `bw`-processen med ett okatchbart SIGTRAP, empiriskt verifierat på
+  riktig macOS-hårdvara (se `AuthResolver.swift`s kommentar, som
+  uttryckligen konstaterar att `bw` "faktiskt fungerar" på Linux-sidan).
+  Ett tidigare felaktigt antagande i `ssh.rs`s modulkommentar grupperade
+  `BitwardenItem` ihop med den genuint Apple-specifika `KeychainKey` som
+  "saknar Linux-motsvarighet" — det stämde aldrig för `BitwardenItem`.
+  - `std::process::Command::output()` (ingen manuell konkurrent
+    pipe-läsning behövs, till skillnad från Swift-sidans egna
+    `ProcessRunner` — Rusts `.output()` gör redan det säkert internt).
+    Session skickas via `BW_SESSION`-miljövariabeln (INTE argv
+    `--session`, som läcker via `/proc/*/cmdline`), `--nointeraction`
+    förhindrar att `bw` hänger på ett interaktivt huvudlösenords-prompt
+    Bastion inte har någon terminal att svara i. Bara den avslutande
+    radbrytningen `bw` lägger till trimmas — ett riktigt lösenord med
+    avsiktligt ledande/inre whitespace korrumperas INTE.
+  - 6 tester porterade rakt av från `Tests/SSHCoreTests/
+    BitwardenClientTests.swift` — riktiga körbara `/bin/sh`-fixturer,
+    samma teknik som `TestSshd`. Ett genuint (om obskyrt) test-bara
+    `ETXTBSY`-("Text file busy")-race hittades och fixades under
+    verifieringen: `cargo test`s parallella trådar inom SAMMA process
+    kan tillfälligt neka `execve()` på ett just skrivet skript om en
+    ANNAN tråd forkar (t.ex. `TestSshd`) medan filhandtaget hunnit
+    ärvas men inte stängts än — 100 % reproducerbart borta med
+    `--test-threads=1`, alltså bevisligen inte ett fel i
+    `fetch_password` själv. Löst med ett lokalt lås + en kort
+    omförsöksloop specifikt i testkoden (aldrig i produktionsvägen).
+  - Ny "Bitwarden"-post i auth-väljaren (från cert-auth-PR:en) med ett
+    item-id/namn-fält, motsvarar `HostEditView`s
+    `bitwardenItemIDText`-fält.
+  - 188/188 `cargo test` gröna totalt, `cargo build`/`clippy` helt
+    tysta.
+
 - **Sektionerad värdlista (favoriter + taggrupper) + sökfält i den NYA
   Rust/GTK4-`LinuxApp`** (2026-08-05, `LinuxApp/src/host_grouping.rs` +
   `main.rs`): "Kvar" från föregående PR — den riktiga omstruktureringen
