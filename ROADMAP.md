@@ -355,6 +355,32 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **Favoritmarkering + taggar (Host::is_favorite/tags), grunddata + redigering, i
+  den NYA Rust/GTK4-`LinuxApp`** (2026-08-05, `main.rs`): ännu ett
+  "fältet finns i datamodellen, ingen UI-koppling"-fynd — samma mönster
+  som `color_tag` (samma PR-serie). Medvetet avgränsad till DATA +
+  redigering + ograpperad visning i det här steget, INTE den fulla
+  sektionerade listvyn Swift-sidan har (se "Kvar").
+  - Stjärnknapp direkt i värdlistans rad — sparas OMEDELBART vid klick
+    (ingen "spara"-knapp krävs), samma "Favorit"/"Ta bort favorit"-
+    växling som `App/HostListView.swift`s context-meny. Ikonnamnen
+    (`starred-symbolic`/`non-starred-symbolic`) är GNOME/Adwaitas
+    standardnamn, samma som Nautilus/GNOME Webs bokmärkesknappar.
+  - Taggfält (kommaseparerat) i värdredigeringsdialogen — EXAKT samma
+    tolkning som Swift-sidans `save()`: dela på komma, trimma
+    blanktecken, kasta tomma segment (ett kvarglömt avslutande komma
+    ska inte ge en spöktagg).
+  - Taggarna visas i värdlistans undertext (`"user@host:port · tag1,
+    tag2"`) så de är synliga/redigerbara redan nu, men grupperar/
+    filtrerar INTE listan än.
+  - Ren GTK-limkod, ingen ny modul/inga nya tester. 174/174 `cargo test`
+    fortsatt gröna, `clippy` tyst.
+  - **Kvar**: den sektionerade listvyn `App/HostListView.swift` har
+    (favoriter i en egen sektion överst, resten grupperat per tagg,
+    otaggade i en "Övriga"-kategori) samt sökfältets tagg-matchning —
+    en riktig omstrukturering av `refresh_list`s platta `gtk::ListBox`,
+    inte en enkelradsändring, avsiktligt ett eget, senare steg.
+
 - **Färgmärkning av värdar (`Host::color_tag`) i den NYA Rust/GTK4-
   `LinuxApp`** (2026-08-05, `main.rs`): fältet har funnits i datamodellen
   sedan starten (wire-kompatibelt med Swift-sidans `colorTag`, se

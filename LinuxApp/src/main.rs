@@ -367,15 +367,53 @@ fn refresh_list(
     }
     let toggles = settings_store.borrow().current();
     for h in store.borrow().all() {
+        // Taggarna grupperar/filtrerar INTE listan än (se ROADMAP.md
+        // "Kvar" — det är ett eget, större steg som kräver en sektionerad
+        // vy à la App/HostListView.swift), men visas i undertexten så de
+        // åtminstone är synliga/redigerbara redan nu.
+        let subtitle = if h.tags.is_empty() {
+            format!("{}@{}:{}", h.user, h.host_name, h.port)
+        } else {
+            format!("{}@{}:{} · {}", h.user, h.host_name, h.port, h.tags.join(", "))
+        };
         let row = adw::ActionRow::builder()
             .title(&h.alias)
-            .subtitle(format!("{}@{}:{}", h.user, h.host_name, h.port))
+            .subtitle(subtitle)
             .activatable(true)
             .build();
 
         if let Some(dot) = host_color_dot(&h.color_tag) {
             row.add_prefix(&dot);
         }
+
+        // Favorit-stjärna: sparas direkt vid klick, samma "Favorit"/"Ta
+        // bort favorit"-växling som App/HostListView.swifts context-meny
+        // (ikonnamnen är GNOME/Adwaitas standardnamn för fyllt/ofyllt stjärn-
+        // märke, samma som Nautilus/GNOME Webs bokmärkesknappar använder).
+        let favorite_button = gtk::ToggleButton::builder()
+            .icon_name(if h.is_favorite { "starred-symbolic" } else { "non-starred-symbolic" })
+            .valign(gtk::Align::Center)
+            .css_classes(["flat"])
+            .active(h.is_favorite)
+            .build();
+        favorite_button.connect_toggled(clone!(
+            #[strong]
+            store,
+            #[strong(rename_to = host_id)]
+            h.id,
+            move |btn| {
+                let is_favorite = btn.is_active();
+                btn.set_icon_name(if is_favorite { "starred-symbolic" } else { "non-starred-symbolic" });
+                let existing = store.borrow().all().iter().find(|x| x.id == host_id).map(|h| (*h).clone());
+                if let Some(mut host) = existing {
+                    host.is_favorite = is_favorite;
+                    if let Err(e) = store.borrow_mut().upsert(host) {
+                        eprintln!("kunde inte spara favorit-status: {e}");
+                    }
+                }
+            }
+        ));
+        row.add_suffix(&favorite_button);
 
         let menu_button = gtk::MenuButton::builder()
             .icon_name("view-more-symbolic")
@@ -869,6 +907,13 @@ fn show_host_dialog(
         .visible(false)
         .build();
 
+    // Favorit + taggar: precis som `color_tag`, fält som funnits i
+    // datamodellen sedan starten men saknade UI-koppling i den här
+    // dialogen. Motsvarar `Toggle("Favorit", ...)` +
+    // `tagsText`-fältet i `App/HostEditView.swift`.
+    let favorite_row = adw::SwitchRow::builder().title("Favorit").build();
+    let tags_row = adw::EntryRow::builder().title("Taggar (kommaseparerat)").build();
+
     // Färgmärkning: `host.color_tag` fanns i datamodellen sedan starten men
     // saknade helt en väljare i den här dialogen (och en visuell markering
     // i listan, se `host_color_dot`) — motsvarar `HostColorPicker` i
@@ -987,6 +1032,10 @@ fn show_host_dialog(
         if let Some(mac) = &h.mac_address {
             mac_row.set_text(mac);
         }
+        favorite_row.set_active(h.is_favorite);
+        if !h.tags.is_empty() {
+            tags_row.set_text(&h.tags.join(", "));
+        }
         if let Some(color) = &h.color_tag {
             *color_selection.borrow_mut() = Some(color.clone());
             if let Some((_, btn)) = color_buttons.iter().find(|(name, _)| name == color) {
@@ -1064,6 +1113,8 @@ fn show_host_dialog(
     group.add(&port_row);
     group.add(&platform_row);
     group.add(&mac_row);
+    group.add(&favorite_row);
+    group.add(&tags_row);
     group.add(&color_row);
     group.add(&auth_row);
     group.add(&key_file_row);
@@ -1134,6 +1185,10 @@ fn show_host_dialog(
         auth_error_label,
         #[strong]
         color_selection,
+        #[strong]
+        favorite_row,
+        #[strong]
+        tags_row,
         move |_| {
             let alias = alias_row.text().to_string();
             let host_name = host_row.text().to_string();
@@ -1187,6 +1242,16 @@ fn show_host_dialog(
             };
             auth_error_label.set_visible(false);
             let color_tag = color_selection.borrow().clone();
+            let is_favorite = favorite_row.is_active();
+            // Samma tolkning som Swift-sidans `save()`: dela på komma,
+            // trimma, kasta bort tomma segment (t.ex. ett kvarglömt
+            // avslutande komma).
+            let tags: Vec<String> = tags_row
+                .text()
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
             let host = if let Some(mut h) = existing.clone() {
                 h.alias = alias;
                 h.host_name = host_name;
@@ -1195,6 +1260,8 @@ fn show_host_dialog(
                 h.platform = platform;
                 h.mac_address = mac_address;
                 h.color_tag = color_tag;
+                h.is_favorite = is_favorite;
+                h.tags = tags;
                 if !preserve_apple_only_auth {
                     h.auth = new_auth;
                 }
@@ -1205,6 +1272,8 @@ fn show_host_dialog(
                 h.platform = platform;
                 h.mac_address = mac_address;
                 h.color_tag = color_tag;
+                h.is_favorite = is_favorite;
+                h.tags = tags;
                 h.auth = new_auth;
                 h
             };
