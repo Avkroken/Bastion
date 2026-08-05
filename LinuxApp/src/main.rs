@@ -1740,6 +1740,27 @@ fn new_themed_terminal() -> vte::Terminal {
     terminal
 }
 
+/// Flikar mot SAMMA värd (öppna en till session medan en redan är igång)
+/// ser annars identiska ut i flikraden — numrerar dem "(2)", "(3)" osv.,
+/// samma UX-regel som `App/MultiSessionView.swifts` `displayLabel`. Räknar
+/// befintliga flikar med titeln `alias` eller `alias (N)` via
+/// `AdwTabView::pages()` (inget `nth_page` i libadwaita-API:t, se
+/// `terminal_theme`-portens motsvarande kommentar).
+fn unique_session_tab_title(area: &Rc<SessionArea>, alias: &str) -> String {
+    let prefix = format!("{alias} (");
+    let pages = area.tab_view.pages();
+    let mut existing = 0u32;
+    for i in 0..pages.n_items() {
+        let Some(page) = pages.item(i).and_downcast::<adw::TabPage>() else { continue };
+        let title = page.title();
+        let t = title.as_str();
+        if t == alias || t.starts_with(&prefix) {
+            existing += 1;
+        }
+    }
+    if existing == 0 { alias.to_string() } else { format!("{alias} ({})", existing + 1) }
+}
+
 fn start_session(
     area: &Rc<SessionArea>,
     host: host::Host,
@@ -1759,7 +1780,7 @@ fn start_session(
     }
 
     let page = area.tab_view.append(&terminal);
-    page.set_title(&host.alias);
+    page.set_title(&unique_session_tab_title(area, &host.alias));
     area.tab_view.set_selected_page(&page);
     area.update_placeholder();
 
