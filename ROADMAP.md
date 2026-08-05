@@ -355,6 +355,34 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **`ExternalBinaryFetcher` — generisk hämta+verifiera+cacha-hjälpare för
+  externa binärer, i den NYA Rust/GTK4-`LinuxApp`** (2026-08-05,
+  `LinuxApp/src/external_binary_fetcher.rs`): port av
+  `Sources/SSHCore/ExternalBinaryFetcher.swift` — **medvetet
+  framåtblickande infrastruktur, inte en stängd lucka**: varken denna
+  Rust-modul eller Swift-referensen har någon anropare än. Byggstenen
+  för VISION.md "Native WireGuard/Tailscale — inget externt beroende"
+  (se Swift-sidans "första byggstenen"-notering, 2026-08-03).
+  - Genererar+jämför SHA256 av de NEDLADDADE bytesen INNAN något skrivs
+    till disk — en manipulerad/fel binär hamnar aldrig i cachen ens
+    tillfälligt. En redan cachad fil med fel checksumma (korrupt eller
+    ett gammalt felaktigt försök) städas bort och laddas ner på nytt.
+    Skriver till en temporär fil i SAMMA katalog, byter sedan namn — en
+    process som läser destinationen mitt under en nedladdning kan
+    aldrig se en halvskriven fil. `chmod 755` på Unix.
+  - 4 tester porterade rakt av från `Tests/SSHCoreTests/
+    ExternalBinaryFetcherTests.swift` — RIKTIGA nätverksanrop mot en
+    pinnad, oföränderlig GitHub-tagg (`raw.githubusercontent.com/
+    torvalds/linux/v6.6/COPYING`), samma URL/checksumma som Swift-
+    sidans tester, inte mockat. Verifierar att en cache-träff genuint
+    undviker nätverket helt (andra anropet pekas mot en overksam URL —
+    om cachningen INTE fungerade hade anropet failat, inte tyst
+    returnerat rätt svar av misstag).
+  - 192/192 `cargo test` gröna totalt (alla 4 nya gick igenom mot
+    riktigt nätverk, ingen skippning), `cargo build`/`clippy` helt
+    tysta (modulen är `#![allow(dead_code)]` tills en faktisk
+    WireGuard-/Tailscale-nedladdningsfunktion kopplar in den).
+
 - **Reglage för Portvidarebefordran/SSH-nyckel-knapparna i
   Funktioner-inställningarna i den NYA Rust/GTK4-`LinuxApp`**
   (2026-08-05, `main.rs`): `settings::FeatureToggles::show_port_forward`/

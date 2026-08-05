@@ -10,6 +10,7 @@ mod bitwarden;
 mod command_library;
 mod dashboard;
 mod docker;
+mod external_binary_fetcher;
 mod fsutil;
 mod host;
 mod host_grouping;
