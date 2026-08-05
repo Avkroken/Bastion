@@ -355,6 +355,30 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **BUGGFIX: kommandoutdata kunde tappas HELT (tom systemöversikt/
+  Docker-lista)** (2026-08-05, `ssh.rs`): såg först ut som ett flakigt
+  test, visade sig vara en riktig produktionsbugg.
+  - `run_command_on_session` gjorde `ChannelMsg::ExitStatus => break`.
+    Men SSH garanterar INTE att all `Data` hunnit levereras innan
+    `exit-status` — servern skickar typiskt `exit-status` så fort
+    processen dör, medan utdatan fortfarande kan ligga kvar i kanalens
+    kö. Kom meddelandena i den ordningen returnerade kommandot **tom
+    sträng trots att det lyckats**.
+  - Drabbar allt som läser kommandoutdata: systemöversikten
+    (`dashboard.rs`), Docker-listan/-loggarna, Tailscale-hämtning över
+    SSH, nyckeldistributionens verifiering. Symptom: en tom vy, utan
+    felmeddelande. Lastberoende — därför sporadiskt.
+  - Upptäckt genom att `connect_via_jump_reaches_the_real_separate_
+    target_sshd` föll i CI TVÅ gånger (PR #263 och #268) med
+    `left: ""` medan den passerade lokalt. Första gången avfärdad som
+    CI-resurskonkurrens; andra gången granskades loopen ordentligt och
+    orsaken hittades. **Lärdom: ett "flakigt" test som alltid failar på
+    SAMMA sätt är en bugghypotes, inte brus.**
+  - Fix: `Eof`/`Close` (eller att `wait()` ger `None`) är de enda
+    korrekta slutvillkoren — efter `Eof` kommer per definition ingen mer
+    data. `COMMAND_TIMEOUT` skyddar redan mot en server som aldrig
+    stänger kanalen.
+
 - **BUGGFIX: seriell läs-tråd + filbeskrivare läckte vid varje stängd
   flik** (2026-08-05, `serial.rs`): hittad vid egen genomläsning av
   sessionens egna moduler (CodeRabbit borttaget ur repot).
