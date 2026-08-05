@@ -411,6 +411,43 @@ ordning nyttan per arbetsinsats är störst):
 
 ## Klart
 
+- **Kortkommandon — appen hade inga alls** (2026-08-05,
+  `LinuxApp/src/main.rs`), första steget i Termius-prioriteringen ovan:
+  - **`Ctrl+Shift`, inte `Ctrl`.** Appen ÄR en terminal: `Ctrl+T`,
+    `Ctrl+W` och `Ctrl+K` tillhör readline på andra sidan (transponera
+    tecken, radera ord bakåt, klipp rad). Tar appen dem försvinner de ur
+    skalet. Därför `Ctrl+Shift`+bokstav och `Alt`+siffra, samma val som
+    GNOME Terminal och Ptyxis. Termius använder `Ctrl+T`/`Ctrl+J` — här
+    är det avsiktligt INTE härmat. Att vara bättre än riktmärket betyder
+    ibland att inte kopiera det.
+  - `Ctrl+Shift+N` ny värd · `Ctrl+Shift+T` snabbanslutning ·
+    `Ctrl+Shift+W` stäng flik · `Ctrl+Shift+F` sök värdar ·
+    `Ctrl+,` inställningar · `Alt+1`–`Alt+9` växla flik.
+  - **Åtgärderna flyttades till APPEN** (`app.new-host` osv.) i stället
+    för gruppen som lades på sidopanelens behållare i föregående PR.
+    Skälet är tvingande: `set_accels_for_action` når bara `app.`- och
+    `win.`-prefix, inte en egen grupp på en widget. Vinsten är att meny,
+    knapp och tangentbord nu delar EN definition — knapparna fick
+    `set_action_name` i stället för egna stängningar, och GTK ritar ut
+    kortkommandot bredvid menyposten av sig självt (verifierat på skärm:
+    "Ctrl+," står bredvid Funktioner utan att texten skrivits någonstans).
+  - **Escape stänger dialoger.** GTK4 gör inte det av sig självt —
+    `GtkDialog` hade beteendet och är avvecklad. Ingen av appens tjugo
+    dialoger gick alltså att avbryta från tangentbordet; man var tvungen
+    att sikta på "Avbryt" med musen. Fixat på ETT ställe tack vare att
+    `dialog_window` blev enda vägen in i föregående PR, via en
+    `ShortcutController` mot GTK:s inbyggda `window.close` — knappen och
+    tangenten gör bokstavligen samma sak.
+  - **Två defekter i den nya koden hittades genom att köra den**, inte
+    genom att bygga den: `Alt+2` med bara en flik öppen gav en
+    Adwaita-CRITICAL i loggen (`ListModel::item` svarar normalt `None`
+    utanför intervallet, men den här modellen går via
+    `adw_tab_view_get_nth_page` som i stället loggar) och snabbt
+    upprepat `Ctrl+Shift+W` kunde röra en flik på väg ut. Båda kollar
+    nu antalet först. Ingenting av det syntes i UI:t — bara i loggen.
+  - **Kvar**: kommandopaletten (steg 1 i Termius-listan är därmed halv),
+    och ett fönster som listar kortkommandona.
+
 - **Dialogfönstren byggs genom en gemensam hjälpare i stället för
   tjugo handplockade pixelpar** (2026-08-05, `LinuxApp/src/main.rs`):
   - **Problemet var inte ett fel utan en form.** Var och en av appens
