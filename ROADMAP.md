@@ -355,6 +355,38 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **Sektionerad värdlista (favoriter + taggrupper) + sökfält i den NYA
+  Rust/GTK4-`LinuxApp`** (2026-08-05, `LinuxApp/src/host_grouping.rs` +
+  `main.rs`): "Kvar" från föregående PR — den riktiga omstruktureringen
+  av `refresh_list`s tidigare platta lista, port av
+  `HostListModel.groups` + `HostListView.filteredGroups` i
+  `App/HostListView.swift`.
+  - Grupperingsalgoritmen EXAKT som Swift-sidan, inte en förenkling:
+    favoriter (oavsett tagg) i en egen "★ Favoriter"-sektion FÖRST (bara
+    om icke-tom), resten grupperat per tagg (alfabetiskt,
+    skiftlägesokänsligt) — otaggade värdar hamnar i en "Övriga"-sektion,
+    en värd med FLERA taggar förekommer i VARJE sin taggs sektion
+    (medvetet, matchar Swift rakt av, inte en bugg). Varje sektions
+    värdar sorteras på alias, skiftlägesokänsligt.
+  - Nytt sökfält (`gtk::SearchEntry`) i sidopanelen: filtrerar på alias/
+    värdnamn/användare/taggar, skiftlägesokänsligt — tomma sektioner
+    (ingen träff i gruppen) faller bort helt, inte bara döms osynliga.
+  - Grupperings-/filtreringslogiken bruten ut till en egen, GTK-fri
+    modul (`host_grouping.rs`) just för att kunna TESTAS på riktigt —
+    till skillnad från resten av `main.rs`s GTK-limkod, som bara
+    verifieras via en lyckad `cargo build`. 8 nya tester (favorit-
+    sektionens ordning/dedupliceringen mot taggsektioner, "Övriga"-
+    fallback, multi-tagg-förekomst, skiftlägesokänslig sortering/
+    sökning, tomma-sektioner-faller-bort).
+  - Sökfiltrets tillstånd delas via en `Rc<RefCell<String>>` (samma
+    mönster som `settings_store`/`snippet_store`) i stället för att
+    trädas igenom `refresh_list`s ~10 anropsplatser som en vanlig
+    parameter skulle krävt ändå — `refresh_list`/`show_host_dialog`/
+    `show_settings_dialog`/`show_ssh_config_import_dialog`/
+    `show_tailscale_discovery_dialog` fick alla den nya parametern,
+    `#[allow(clippy::too_many_arguments)]` där antalet redan var åtta.
+  - 182/182 `cargo test` gröna totalt, `cargo build`/`clippy` helt tysta.
+
 - **Favoritmarkering + taggar (Host::is_favorite/tags), grunddata + redigering, i
   den NYA Rust/GTK4-`LinuxApp`** (2026-08-05, `main.rs`): ännu ett
   "fältet finns i datamodellen, ingen UI-koppling"-fynd — samma mönster

@@ -11,6 +11,7 @@ mod dashboard;
 mod docker;
 mod fsutil;
 mod host;
+mod host_grouping;
 mod key_deploy;
 mod known_hosts;
 mod oauth;
@@ -120,6 +121,12 @@ fn build_ui(app: &adw::Application) {
         &sync::SyncConfig::default_path(),
     )));
 
+    // Delat sökfilter-tillstånd — `refresh_list` läser det själv i stället
+    // för att söktexten skulle behöva trädas igenom varje enskild
+    // anropsplats separat (samma mönster som `settings_store`/
+    // `snippet_store`s delade `Rc<RefCell<...>>`-tillstånd).
+    let search_query: Rc<RefCell<String>> = Rc::new(RefCell::new(String::new()));
+
     let list = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
         .css_classes(["boxed-list"])
@@ -129,7 +136,34 @@ fn build_ui(app: &adw::Application) {
         .margin_bottom(12)
         .build();
     let area = SessionArea::new();
-    refresh_list(&list, &store, app, &area, &settings_store, &snippet_store);
+    refresh_list(&list, &store, app, &area, &settings_store, &snippet_store, &search_query);
+
+    let search_entry = gtk::SearchEntry::builder()
+        .placeholder_text("Sök (alias, värdnamn, användare, taggar)")
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .build();
+    search_entry.connect_search_changed(clone!(
+        #[weak]
+        app,
+        #[strong]
+        store,
+        #[weak]
+        list,
+        #[strong]
+        area,
+        #[strong]
+        settings_store,
+        #[strong]
+        snippet_store,
+        #[strong]
+        search_query,
+        move |entry| {
+            *search_query.borrow_mut() = entry.text().to_string();
+            refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store, &search_query);
+        }
+    ));
 
     let scrolled = gtk::ScrolledWindow::builder()
         .child(&list)
@@ -151,6 +185,8 @@ fn build_ui(app: &adw::Application) {
         settings_store,
         #[strong]
         snippet_store,
+        #[strong]
+        search_query,
         move |_| show_host_dialog(
             &app,
             &store,
@@ -158,6 +194,7 @@ fn build_ui(app: &adw::Application) {
             &area,
             &settings_store,
             &snippet_store,
+            &search_query,
             None
         )
     ));
@@ -187,7 +224,9 @@ fn build_ui(app: &adw::Application) {
         settings_store,
         #[strong]
         snippet_store,
-        move |_| show_ssh_config_import_dialog(&app, &store, &list, &area, &settings_store, &snippet_store)
+        #[strong]
+        search_query,
+        move |_| show_ssh_config_import_dialog(&app, &store, &list, &area, &settings_store, &snippet_store, &search_query)
     ));
 
     let telnet_button = gtk::Button::from_icon_name("utilities-terminal-symbolic");
@@ -225,13 +264,16 @@ fn build_ui(app: &adw::Application) {
         settings_store,
         #[strong]
         snippet_store,
+        #[strong]
+        search_query,
         move |_| show_tailscale_discovery_dialog(
             &app,
             &store,
             &list,
             &area,
             &settings_store,
-            &snippet_store
+            &snippet_store,
+            &search_query
         )
     ));
 
@@ -274,6 +316,8 @@ fn build_ui(app: &adw::Application) {
         snippet_store,
         #[strong]
         sync_config,
+        #[strong]
+        search_query,
         move |_| show_settings_dialog(
             &app,
             &settings_store,
@@ -281,7 +325,8 @@ fn build_ui(app: &adw::Application) {
             &list,
             &area,
             &snippet_store,
-            &sync_config
+            &sync_config,
+            &search_query
         )
     ));
 
@@ -298,6 +343,7 @@ fn build_ui(app: &adw::Application) {
 
     let sidebar_content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     sidebar_content.append(&sidebar_header);
+    sidebar_content.append(&search_entry);
     sidebar_content.append(&scrolled);
 
     let sidebar_page = adw::NavigationPage::builder()
@@ -361,16 +407,26 @@ fn refresh_list(
     area: &Rc<SessionArea>,
     settings_store: &Rc<RefCell<settings::AppSettingsStore>>,
     snippet_store: &Rc<RefCell<snippet::SnippetStore>>,
+    search_query: &Rc<RefCell<String>>,
 ) {
     while let Some(row) = list.row_at_index(0) {
         list.remove(&row);
     }
     let toggles = settings_store.borrow().current();
-    for h in store.borrow().all() {
-        // Taggarna grupperar/filtrerar INTE listan än (se ROADMAP.md
-        // "Kvar" — det är ett eget, större steg som kräver en sektionerad
-        // vy à la App/HostListView.swift), men visas i undertexten så de
-        // åtminstone är synliga/redigerbara redan nu.
+    let all_hosts: Vec<Host> = store.borrow().all().into_iter().cloned().collect();
+    let query = search_query.borrow().clone();
+    let groups = host_grouping::filter_groups(host_grouping::grouped_hosts(&all_hosts), &query);
+    for (section_title, section_hosts) in &groups {
+        let header = gtk::Label::builder()
+            .label(section_title)
+            .halign(gtk::Align::Start)
+            .margin_start(4)
+            .margin_top(if list.row_at_index(0).is_some() { 12 } else { 0 })
+            .css_classes(["heading", "dim-label"])
+            .build();
+        let header_row = gtk::ListBoxRow::builder().activatable(false).selectable(false).child(&header).build();
+        list.append(&header_row);
+        for h in section_hosts {
         let subtitle = if h.tags.is_empty() {
             format!("{}@{}:{}", h.user, h.host_name, h.port)
         } else {
@@ -439,6 +495,8 @@ fn refresh_list(
             settings_store,
             #[strong]
             snippet_store,
+            #[strong]
+            search_query,
             #[strong(rename_to = host_id)]
             h.id,
             move |_, _| {
@@ -456,6 +514,7 @@ fn refresh_list(
                         &area,
                         &settings_store,
                         &snippet_store,
+                        &search_query,
                         Some(host),
                     );
                 }
@@ -517,6 +576,8 @@ fn refresh_list(
             settings_store,
             #[strong]
             snippet_store,
+            #[strong]
+            search_query,
             #[strong(rename_to = host_id)]
             h.id,
             move |_, _| {
@@ -528,7 +589,7 @@ fn refresh_list(
                     eprintln!("kunde inte ta bort värden: {e}");
                     return;
                 }
-                refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store);
+                refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store, &search_query);
             }
         ));
         let dashboard_action = gtk::gio::SimpleAction::new("dashboard", None);
@@ -734,6 +795,7 @@ fn refresh_list(
         row.insert_action_group("host", Some(&action_group));
 
         list.append(&row);
+        }
     }
 }
 
@@ -784,6 +846,7 @@ fn show_ssh_config_import_dialog(
     area: &Rc<SessionArea>,
     settings_store: &Rc<RefCell<settings::AppSettingsStore>>,
     snippet_store: &Rc<RefCell<snippet::SnippetStore>>,
+    search_query: &Rc<RefCell<String>>,
 ) {
     let text_view = gtk::TextView::builder().monospace(true).build();
     let text_scrolled = gtk::ScrolledWindow::builder()
@@ -848,6 +911,8 @@ fn show_ssh_config_import_dialog(
         #[strong]
         snippet_store,
         #[strong]
+        search_query,
+        #[strong]
         status_label,
         #[weak]
         win,
@@ -859,7 +924,7 @@ fn show_ssh_config_import_dialog(
             }
             match store.borrow_mut().import_ssh_config(&text) {
                 Ok(n) => {
-                    refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store);
+                    refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store, &search_query);
                     if n > 0 {
                         win.close();
                     } else {
@@ -875,6 +940,11 @@ fn show_ssh_config_import_dialog(
 }
 
 /// Lägg till/redigera-dialogen. `existing = None` skapar en ny värd.
+/// Åtta parametrar — alla delat, per-fönster GTK-tillstånd (store/list/area/
+/// inställningar/sökfilter) som funktionen genuint behöver för att kunna
+/// spara och trigga en `refresh_list`, inte en signatur som går att slå
+/// ihop utan att införa en egen struct bara för det.
+#[allow(clippy::too_many_arguments)]
 fn show_host_dialog(
     app: &adw::Application,
     store: &Rc<RefCell<HostStore>>,
@@ -882,6 +952,7 @@ fn show_host_dialog(
     area: &Rc<SessionArea>,
     settings_store: &Rc<RefCell<settings::AppSettingsStore>>,
     snippet_store: &Rc<RefCell<snippet::SnippetStore>>,
+    search_query: &Rc<RefCell<String>>,
     existing: Option<Host>,
 ) {
     let is_edit = existing.is_some();
@@ -1189,6 +1260,8 @@ fn show_host_dialog(
         favorite_row,
         #[strong]
         tags_row,
+        #[strong]
+        search_query,
         move |_| {
             let alias = alias_row.text().to_string();
             let host_name = host_row.text().to_string();
@@ -1285,7 +1358,7 @@ fn show_host_dialog(
                 eprintln!("kunde inte spara värden: {e}");
                 return;
             }
-            refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store);
+            refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store, &search_query);
             win.close();
         }
     ));
@@ -1298,6 +1371,8 @@ fn show_host_dialog(
 /// SSH-nyckeldistribution har ingen vy att gömma i LinuxApp än (se
 /// ROADMAP.md), så deras fält finns i `settings::FeatureToggles` (för att
 /// inte tappa en delad settings.json-fils övriga värden) men saknar UI här.
+/// Åtta parametrar av samma skäl som `show_host_dialog` ovan.
+#[allow(clippy::too_many_arguments)]
 fn show_settings_dialog(
     app: &adw::Application,
     settings_store: &Rc<RefCell<settings::AppSettingsStore>>,
@@ -1306,6 +1381,7 @@ fn show_settings_dialog(
     area: &Rc<SessionArea>,
     snippet_store: &Rc<RefCell<snippet::SnippetStore>>,
     sync_config: &Rc<RefCell<sync::SyncConfig>>,
+    search_query: &Rc<RefCell<String>>,
 ) {
     let current = settings_store.borrow().current();
 
@@ -1435,13 +1511,15 @@ fn show_settings_dialog(
         area,
         #[strong]
         snippet_store,
+        #[strong]
+        search_query,
         move |row| {
             let mut toggles = settings_store.borrow().current();
             toggles.show_docker = row.is_active();
             if let Err(e) = settings_store.borrow_mut().update(toggles) {
                 eprintln!("kunde inte spara inställningarna: {e}");
             }
-            refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store);
+            refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store, &search_query);
         }
     ));
 
@@ -1458,13 +1536,15 @@ fn show_settings_dialog(
         area,
         #[strong]
         snippet_store,
+        #[strong]
+        search_query,
         move |row| {
             let mut toggles = settings_store.borrow().current();
             toggles.show_command_library = row.is_active();
             if let Err(e) = settings_store.borrow_mut().update(toggles) {
                 eprintln!("kunde inte spara inställningarna: {e}");
             }
-            refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store);
+            refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store, &search_query);
         }
     ));
 
@@ -1481,13 +1561,15 @@ fn show_settings_dialog(
         area,
         #[strong]
         snippet_store,
+        #[strong]
+        search_query,
         move |row| {
             let mut toggles = settings_store.borrow().current();
             toggles.show_sftp_browser = row.is_active();
             if let Err(e) = settings_store.borrow_mut().update(toggles) {
                 eprintln!("kunde inte spara inställningarna: {e}");
             }
-            refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store);
+            refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store, &search_query);
         }
     ));
 
@@ -1574,6 +1656,8 @@ fn show_settings_dialog(
         settings_store,
         #[strong]
         snippet_store,
+        #[strong]
+        search_query,
         move |_| {
             let Some(folder) = sync_config.borrow().folder_path.clone() else {
                 sync_status_label.set_text("Välj en mapp först");
@@ -1628,6 +1712,8 @@ fn show_settings_dialog(
                 settings_store,
                 #[strong]
                 snippet_store,
+                #[strong]
+                search_query,
                 async move {
                     let result = rx
                         .recv()
@@ -1650,6 +1736,7 @@ fn show_settings_dialog(
                                         &area,
                                         &settings_store,
                                         &snippet_store,
+                                        &search_query,
                                     );
                                 }
                                 Err(e) => sync_status_label
@@ -2394,6 +2481,7 @@ fn show_tailscale_discovery_dialog(
     area: &Rc<SessionArea>,
     settings_store: &Rc<RefCell<settings::AppSettingsStore>>,
     snippet_store: &Rc<RefCell<snippet::SnippetStore>>,
+    search_query: &Rc<RefCell<String>>,
 ) {
     let hosts = store.borrow().all().into_iter().cloned().collect::<Vec<_>>();
     let mut source_labels: Vec<String> = vec!["Denna enhet".to_string()];
@@ -2472,6 +2560,8 @@ fn show_tailscale_discovery_dialog(
         #[strong]
         settings_store,
         #[strong]
+        search_query,
+        #[strong]
         snippet_store,
         #[strong]
         hosts,
@@ -2511,6 +2601,8 @@ fn show_tailscale_discovery_dialog(
                 #[strong]
                 snippet_store,
                 #[strong]
+                search_query,
+                #[strong]
                 results_list,
                 #[strong]
                 status_label,
@@ -2548,6 +2640,8 @@ fn show_tailscale_discovery_dialog(
                                     #[strong]
                                     snippet_store,
                                     #[strong]
+                                    search_query,
+                                    #[strong]
                                     host_name,
                                     #[strong]
                                     address,
@@ -2563,6 +2657,7 @@ fn show_tailscale_discovery_dialog(
                                             &area,
                                             &settings_store,
                                             &snippet_store,
+                                            &search_query,
                                             Some(prefilled),
                                         );
                                     }
