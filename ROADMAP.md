@@ -355,6 +355,31 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **BUGGFIX: misslyckad nyckeldistribution rapporterades som ett
+  verifieringsfel** (2026-08-05, `key_deploy.rs`): `deploy_and_verify`
+  ignorerade distributionskommandots exitkod helt. Misslyckades det
+  (skrivskyddad `~/.ssh`, full disk, saknad rättighet) upptäcktes det
+  visserligen ändå — verifieringsanslutningen föll — men felet blev
+  missvisande: *"nyckeln deployades men verifieringen misslyckades"*,
+  när sanningen var att den aldrig deployades. Den säkerhetskritiska
+  egenskapen höll hela tiden (lösenordet tas aldrig bort utan bevisat
+  fungerande nyckel), men felsökningen blev onödigt svår.
+  - Nu läses exitkoden, och serverns stderr tas med i meddelandet:
+    "distributionskommandot misslyckades (exitkod N): … — nyckeln
+    deployades INTE".
+  - **Intressant fynd om meddelandeordningen** (empiriskt verifierat mot
+    en riktig `sshd`, inte antaget): här anländer `Eof`/`Close` FÖRE
+    `exit-status`. Ett första försök som bröt loopen på `Eof`/`Close`
+    tappade därför exitkoden helt och tolkade allt som lyckat. Det är
+    spegelbilden av #269:s buggmönster, och lärdomen är att de två
+    slutvillkoren INTE är utbytbara: utdata kan per definition inte komma
+    efter EOF, men `exit-status` är en kanalFÖRFRÅGAN och får det. Här
+    läses därför tills kanalen är HELT stängd (`wait()` → `None`), med
+    `COMMAND_TIMEOUT` som skydd mot en server som aldrig stänger.
+  - Nytt test som framkallar ett genuint misslyckat distributions-
+    kommando mot en riktig `TestSshd` och kräver att felet pekar ut
+    distributionen, inte verifieringen.
+
 - **BUGGFIX: kommandoutdata kunde tappas HELT (tom systemöversikt/
   Docker-lista)** (2026-08-05, `ssh.rs`): såg först ut som ett flakigt
   test, visade sig vara en riktig produktionsbugg.
