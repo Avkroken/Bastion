@@ -436,6 +436,24 @@ async fn run_command_on_session(
 
     let mut output = Vec::new();
     let mut truncated = false;
+    // VIKTIGT: bryt INTE på `ExitStatus`. SSH garanterar inte att all
+    // `Data` hunnit levereras innan `exit-status` — servern skickar
+    // typiskt `exit-status` direkt när processen dör, medan utdata
+    // fortfarande kan ligga kvar i kanalens kö. En tidigare version
+    // gjorde `ExitStatus => break` och tappade då utdatan helt när
+    // meddelandena råkade komma i den ordningen: kommandot "lyckades"
+    // men returnerade tom sträng.
+    //
+    // Det syntes som ett flakigt `connect_via_jump_reaches_the_real_
+    // separate_target_sshd` i CI (två gånger), men var i själva verket
+    // en RIKTIG bugg som drabbar allt som läser kommandoutdata —
+    // systemöversikten, Docker-listan, Tailscale-hämtning över SSH —
+    // med tom vy som resultat. Lastberoende, därav "flakigt".
+    //
+    // `Eof`/`Close` (eller att `wait()` ger `None`) är de enda korrekta
+    // slutvillkoren: efter `Eof` kommer per definition ingen mer data.
+    // `COMMAND_TIMEOUT` i `run_command_once` skyddar mot en server som
+    // aldrig stänger kanalen.
     while let Some(msg) = channel.wait().await {
         match msg {
             ChannelMsg::Data { data } | ChannelMsg::ExtendedData { data, .. } => {
@@ -449,7 +467,7 @@ async fn run_command_on_session(
                     truncated = true;
                 }
             }
-            ChannelMsg::ExitStatus { .. } => break,
+            ChannelMsg::Eof | ChannelMsg::Close => break,
             _ => {}
         }
     }
