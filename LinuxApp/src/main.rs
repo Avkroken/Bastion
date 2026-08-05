@@ -878,6 +878,114 @@ fn refresh_list(
 /// — till skillnad från de andra posterna (styrda av globala
 /// `FeatureToggles`) är "Väck"-posten en PER-VÄRD-egenskap, samma UX-regel
 /// som App/HostListView.swift (`if host.macAddress != nil`).
+/// Hur ett dialogfönster tar plats — en AVSIKT, inte en mätning.
+///
+/// Appen har ett tjugotal dialoger. Tidigare byggde var och en sitt eget
+/// `adw::Window` med ett handplockat `default_width`/`default_height`-par,
+/// vilket betyder att varje justering av hur dialoger ser ut är tjugo
+/// ändringar — och att sex av dem hann glida ifrån och sakna titel helt
+/// (de skyltade "bastion-linuxapp" i sin header). Här ligger pixlarna på
+/// ETT ställe, och `dialog_window` är enda vägen in.
+///
+/// Formulärvarianterna sätter avsiktligt INGEN höjd: `adw::PreferencesPage`
+/// rapporterar sin naturliga höjd, så fönstret växer med innehållet. Det
+/// gör att en ny rad i ett formulär syns direkt utan att någon behöver
+/// leta rätt på en siffra att höja — vilket var precis vad som hänt med
+/// "Lägg till värd", där fem av tretton rader låg utanför fönstret.
+#[derive(Clone, Copy)]
+enum DialogSize {
+    /// Kort formulär: lösenordsprompt, "Ny mapp", enkla anslutningsformulär.
+    Compact,
+    /// Vanligt formulär med flera rader.
+    Form,
+    /// Lista eller annat skrollbart innehåll. Behöver en starthöjd — en
+    /// `gtk::ScrolledWindow` har ingen naturlig höjd att växa efter.
+    List,
+    /// Stor innehållsvy: loggar, filredigerare.
+    Viewer,
+}
+
+impl DialogSize {
+    fn width(self) -> i32 {
+        match self {
+            DialogSize::Compact => 400,
+            DialogSize::Form => 480,
+            DialogSize::List => 480,
+            DialogSize::Viewer => 760,
+        }
+    }
+
+    /// `None` = låt innehållet bestämma (se `content_height`).
+    fn height(self) -> Option<i32> {
+        match self {
+            DialogSize::Compact | DialogSize::Form => None,
+            DialogSize::List => Some(520),
+            DialogSize::Viewer => Some(560),
+        }
+    }
+}
+
+/// Innehållets egen naturliga höjd, men aldrig högre än vad skärmen
+/// rymmer.
+///
+/// Det här är poängen med formulärvarianterna: höjden mäts på widgeten i
+/// stället för att skrivas som en siffra i koden, så ett formulär som får
+/// en rad till växer av sig självt. Taket behövs för att "naturlig höjd"
+/// annars är obegränsad — `Inställningar` blev längre än skärmen när
+/// mätningen infördes utan det. Taket räknas ur den faktiska skärmens
+/// arbetsyta i stället för att vara ett fast tal, så samma kod ger en
+/// rimlig dialog på en liten laptop och på en 4K-skärm. `adw::Window`
+/// lägger sitt eget innehåll i en skrollbar vy, så det som inte får plats
+/// blir skrollbart — inte oåtkomligt.
+fn content_height(content: &impl IsA<gtk::Widget>, width: i32) -> i32 {
+    let (_, natural, _, _) = content.measure(gtk::Orientation::Vertical, width);
+
+    let available = gtk::gdk::Display::default()
+        .and_then(|display: gtk::gdk::Display| display.monitors().item(0))
+        .and_downcast::<gtk::gdk::Monitor>()
+        .map(|monitor| monitor.geometry().height())
+        .unwrap_or(0);
+    // Utan känd skärm (t.ex. udda headless-uppsättningar) faller vi
+    // tillbaka på ett tak som får plats även på en liten laptopskärm.
+    let cap = if available > 0 { available * 4 / 5 } else { 640 };
+
+    natural.min(cap).max(1)
+}
+
+/// Bygger ett modalt dialogfönster. Titeln är ett obligatoriskt argument,
+/// inte en valfri byggarmetod — det är det som gör "dialog utan titel"
+/// omöjligt att råka ut för.
+fn dialog_window(
+    parent: &impl IsA<gtk::Window>,
+    title: &str,
+    size: DialogSize,
+    content: &impl IsA<gtk::Widget>,
+) -> adw::Window {
+    let builder = adw::Window::builder()
+        .transient_for(parent)
+        .modal(true)
+        .title(title)
+        .default_width(size.width())
+        .content(content);
+    let height = size
+        .height()
+        .unwrap_or_else(|| content_height(content, size.width()));
+    builder.default_height(height).build()
+}
+
+/// Föräldrafönstret för en dialog som öppnas från sidopanelen.
+fn app_window(app: &adw::Application) -> gtk::Window {
+    app.active_window().expect("inget aktivt fönster")
+}
+
+/// Föräldrafönstret för en dialog som öppnas inifrån en session.
+fn session_window(area: &Rc<SessionArea>) -> gtk::Window {
+    area.overlay
+        .root()
+        .and_downcast::<gtk::Window>()
+        .expect("inget fönster")
+}
+
 /// Sidopanelens primärmeny. Sektionerna grupperar posterna efter vad de
 /// gör — andra anslutningstyper, nätverk/lagring, och appens egna
 /// inställningar — och ritas som avdelade block med skiljelinje.
@@ -987,13 +1095,12 @@ fn show_ssh_config_import_dialog(
     content.append(&text_scrolled);
     content.append(&status_label);
 
-    let win = adw::Window::builder()
-        .transient_for(&app.active_window().expect("inget aktivt fönster"))
-        .modal(true)
-        .default_width(520)
-        .default_height(440)
-        .content(&content)
-        .build();
+    let win = dialog_window(
+        &app_window(app),
+        "Importera ssh-config",
+        DialogSize::List,
+        &content,
+    );
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -1322,13 +1429,12 @@ fn show_host_dialog(
     content.append(&mac_error_label);
     content.append(&auth_error_label);
 
-    let win = adw::Window::builder()
-        .transient_for(&app.active_window().expect("inget aktivt fönster"))
-        .modal(true)
-        .default_width(420)
-        .default_height(360)
-        .content(&content)
-        .build();
+    let win = dialog_window(
+        &app_window(app),
+        if is_edit { "Redigera värd" } else { "Lägg till värd" },
+        DialogSize::Form,
+        &content,
+    );
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -1712,14 +1818,7 @@ fn show_settings_dialog(
     content.append(&header);
     content.append(&page);
 
-    let win = adw::Window::builder()
-        .transient_for(&app.active_window().expect("inget aktivt fönster"))
-        .modal(true)
-        .default_width(420)
-        .default_height(260)
-        .title("Inställningar")
-        .content(&content)
-        .build();
+    let win = dialog_window(&app_window(app), "Inställningar", DialogSize::Form, &content);
 
     docker_row.connect_active_notify(clone!(
         #[strong]
@@ -2233,19 +2332,7 @@ fn prompt_password_then(
     content.append(&header);
     content.append(&page);
 
-    let win = adw::Window::builder()
-        .transient_for(
-            &area
-                .overlay
-                .root()
-                .and_downcast::<gtk::Window>()
-                .expect("inget fönster"),
-        )
-        .modal(true)
-        .default_width(360)
-        .default_height(180)
-        .content(&content)
-        .build();
+    let win = dialog_window(&session_window(area), "Lösenord", DialogSize::Compact, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -2461,14 +2548,7 @@ fn show_telnet_connect_dialog(app: &adw::Application, area: &Rc<SessionArea>) {
     content.append(&page);
     content.append(&warning_label);
 
-    let win = adw::Window::builder()
-        .transient_for(&app.active_window().expect("inget aktivt fönster"))
-        .modal(true)
-        .default_width(380)
-        .default_height(220)
-        .title("Telnet")
-        .content(&content)
-        .build();
+    let win = dialog_window(&app_window(app), "Telnet", DialogSize::Compact, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -2597,14 +2677,7 @@ fn show_serial_connect_dialog(app: &adw::Application, area: &Rc<SessionArea>) {
     content.append(&header);
     content.append(&page);
 
-    let win = adw::Window::builder()
-        .transient_for(&app.active_window().expect("inget aktivt fönster"))
-        .modal(true)
-        .default_width(380)
-        .default_height(260)
-        .title("Seriell/USB-anslutning")
-        .content(&content)
-        .build();
+    let win = dialog_window(&app_window(app), "Seriell/USB-anslutning", DialogSize::Compact, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -2689,14 +2762,7 @@ fn show_quick_connect_dialog(app: &adw::Application, area: &Rc<SessionArea>) {
     content.append(&page);
     content.append(&info_label);
 
-    let win = adw::Window::builder()
-        .transient_for(&app.active_window().expect("inget aktivt fönster"))
-        .modal(true)
-        .default_width(380)
-        .default_height(320)
-        .title("Snabbanslutning")
-        .content(&content)
-        .build();
+    let win = dialog_window(&app_window(app), "Snabbanslutning", DialogSize::Compact, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -2806,14 +2872,7 @@ fn show_tailscale_discovery_dialog(
     content.append(&status_label);
     content.append(&results_scrolled);
 
-    let win = adw::Window::builder()
-        .transient_for(&app.active_window().expect("inget aktivt fönster"))
-        .modal(true)
-        .default_width(460)
-        .default_height(480)
-        .title("Tailscale")
-        .content(&content)
-        .build();
+    let win = dialog_window(&app_window(app), "Tailscale", DialogSize::List, &content);
 
     close_button.connect_clicked(clone!(
         #[weak]
@@ -3000,19 +3059,12 @@ fn show_wireguard_profile_list(
     add_button.set_tooltip_text(Some("Ny profil"));
     let header = adw::HeaderBar::new();
     header.pack_end(&add_button);
-    header.set_title_widget(Some(&adw::WindowTitle::new("WireGuard-profiler", "")));
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.append(&header);
     content.append(&scrolled);
 
-    let win = adw::Window::builder()
-        .transient_for(&app.active_window().expect("inget aktivt fönster"))
-        .modal(true)
-        .default_width(420)
-        .default_height(480)
-        .content(&content)
-        .build();
+    let win = dialog_window(&app_window(app), "WireGuard-profiler", DialogSize::List, &content);
 
     refresh_wireguard_profile_list(app, wireguard_store, &list, &win);
 
@@ -3144,14 +3196,7 @@ fn show_wireguard_profile_edit(
     content.append(&page);
     content.append(&text_scrolled);
 
-    let win = adw::Window::builder()
-        .transient_for(parent_win)
-        .modal(true)
-        .default_width(460)
-        .default_height(500)
-        .title("WireGuard-profil")
-        .content(&content)
-        .build();
+    let win = dialog_window(parent_win, "WireGuard-profil", DialogSize::Form, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -3215,19 +3260,12 @@ fn show_s3_connection_list(
     add_button.set_tooltip_text(Some("Ny anslutning"));
     let header = adw::HeaderBar::new();
     header.pack_end(&add_button);
-    header.set_title_widget(Some(&adw::WindowTitle::new("S3-anslutningar", "")));
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.append(&header);
     content.append(&scrolled);
 
-    let win = adw::Window::builder()
-        .transient_for(&app.active_window().expect("inget aktivt fönster"))
-        .modal(true)
-        .default_width(420)
-        .default_height(480)
-        .content(&content)
-        .build();
+    let win = dialog_window(&app_window(app), "S3-anslutningar", DialogSize::List, &content);
 
     refresh_s3_connection_list(app, area, s3_store, &list, &win);
 
@@ -3395,14 +3433,7 @@ fn show_s3_connection_edit(
     content.append(&test_button);
     content.append(&test_status_label);
 
-    let win = adw::Window::builder()
-        .transient_for(parent_win)
-        .modal(true)
-        .default_width(420)
-        .default_height(360)
-        .title("S3-anslutning")
-        .content(&content)
-        .build();
+    let win = dialog_window(parent_win, "S3-anslutning", DialogSize::Form, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -3935,20 +3966,7 @@ fn prompt_new_bucket_name(
     content.append(&header);
     content.append(&page);
 
-    let win = adw::Window::builder()
-        .transient_for(
-            &area
-                .overlay
-                .root()
-                .and_downcast::<gtk::Window>()
-                .expect("inget fönster"),
-        )
-        .modal(true)
-        .default_width(360)
-        .default_height(160)
-        .title("Ny bucket")
-        .content(&content)
-        .build();
+    let win = dialog_window(&session_window(area), "Ny bucket", DialogSize::Compact, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -5086,20 +5104,12 @@ fn show_docker_logs(
         .child(&text_view)
         .vexpand(true)
         .build();
-    let win = adw::Window::builder()
-        .transient_for(
-            &area
-                .overlay
-                .root()
-                .and_downcast::<gtk::Window>()
-                .expect("inget fönster"),
-        )
-        .modal(true)
-        .default_width(700)
-        .default_height(500)
-        .title(format!("Loggar: {}", container.name))
-        .content(&scrolled)
-        .build();
+    let win = dialog_window(
+        &session_window(area),
+        &format!("Loggar: {}", container.name),
+        DialogSize::Viewer,
+        &scrolled,
+    );
     win.present();
 
     let rx = ssh::run_command(host.clone(), password.clone(), cmd, jump.clone());
@@ -5446,20 +5456,7 @@ fn prompt_snippet_variables(
     content.append(&header);
     content.append(&page);
 
-    let win = adw::Window::builder()
-        .transient_for(
-            &area
-                .overlay
-                .root()
-                .and_downcast::<gtk::Window>()
-                .expect("inget fönster"),
-        )
-        .modal(true)
-        .default_width(420)
-        .default_height(320)
-        .title("Fyll i kommandot")
-        .content(&content)
-        .build();
+    let win = dialog_window(&session_window(area), "Fyll i kommandot", DialogSize::Form, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -5538,20 +5535,7 @@ fn show_snippet_edit_dialog(
     content.append(&header);
     content.append(&page);
 
-    let win = adw::Window::builder()
-        .transient_for(
-            &area
-                .overlay
-                .root()
-                .and_downcast::<gtk::Window>()
-                .expect("inget fönster"),
-        )
-        .modal(true)
-        .default_width(420)
-        .default_height(240)
-        .title("Snippet")
-        .content(&content)
-        .build();
+    let win = dialog_window(&session_window(area), "Snippet", DialogSize::Form, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -6134,20 +6118,7 @@ fn prompt_new_folder_name(
     content.append(&header);
     content.append(&page);
 
-    let win = adw::Window::builder()
-        .transient_for(
-            &area
-                .overlay
-                .root()
-                .and_downcast::<gtk::Window>()
-                .expect("inget fönster"),
-        )
-        .modal(true)
-        .default_width(360)
-        .default_height(160)
-        .title("Ny mapp")
-        .content(&content)
-        .build();
+    let win = dialog_window(&session_window(area), "Ny mapp", DialogSize::Compact, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -6232,20 +6203,7 @@ fn prompt_rename(
     content.append(&header);
     content.append(&page);
 
-    let win = adw::Window::builder()
-        .transient_for(
-            &area
-                .overlay
-                .root()
-                .and_downcast::<gtk::Window>()
-                .expect("inget fönster"),
-        )
-        .modal(true)
-        .default_width(360)
-        .default_height(160)
-        .title("Döp om")
-        .content(&content)
-        .build();
+    let win = dialog_window(&session_window(area), "Döp om", DialogSize::Compact, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -6341,20 +6299,12 @@ fn prompt_permissions(
     content.append(&header);
     content.append(&page);
 
-    let win = adw::Window::builder()
-        .transient_for(
-            &area
-                .overlay
-                .root()
-                .and_downcast::<gtk::Window>()
-                .expect("inget fönster"),
-        )
-        .modal(true)
-        .default_width(420)
-        .default_height(280)
-        .title("Rättigheter/ägare")
-        .content(&content)
-        .build();
+    let win = dialog_window(
+        &session_window(area),
+        "Rättigheter/ägare",
+        DialogSize::Form,
+        &content,
+    );
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -6454,19 +6404,12 @@ fn open_sftp_file_editor(area: &Rc<SessionArea>, handle: sftp::SftpHandle, path:
     content.append(&save_status_label);
     content.append(&scrolled);
 
-    let win = adw::Window::builder()
-        .transient_for(
-            &area
-                .overlay
-                .root()
-                .and_downcast::<gtk::Window>()
-                .expect("inget fönster"),
-        )
-        .modal(true)
-        .default_width(700)
-        .default_height(500)
-        .content(&content)
-        .build();
+    let win = dialog_window(
+        &session_window(area),
+        &format!("Redigerar {path}"),
+        DialogSize::Viewer,
+        &content,
+    );
     win.present();
 
     close_button.connect_clicked(clone!(

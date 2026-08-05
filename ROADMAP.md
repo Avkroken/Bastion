@@ -355,6 +355,47 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **Dialogfönstren byggs genom en gemensam hjälpare i stället för
+  tjugo handplockade pixelpar** (2026-08-05, `LinuxApp/src/main.rs`):
+  - **Problemet var inte ett fel utan en form.** Var och en av appens
+    tjugo dialoger byggde sitt eget `adw::Window` med ett eget
+    `default_width`/`default_height`-par. Varje justering av hur
+    dialoger ser ut var alltså tjugo ändringar — och när något får
+    kosta tjugo ändringar blir det inte gjort. Sex dialoger hade hunnit
+    glida ifrån och saknade titel helt, däribland lösenordsprompten,
+    "Lägg till värd" och SFTP-filredigeraren: de skyltade
+    "bastion-linuxapp" i sin header, alltså appens namn där en rubrik
+    skulle stått.
+  - **`dialog_window(förälder, titel, storlek, innehåll)` är nu enda
+    vägen in.** Titeln är ett obligatoriskt ARGUMENT, inte en valfri
+    byggarmetod — det är det som gör "dialog utan titel" omöjligt att
+    råka ut för igen, i stället för att bara rätta de sex som råkade
+    sakna den. `DialogSize` uttrycker en avsikt (`Compact`/`Form`/
+    `List`/`Viewer`); pixlarna står på ett ställe.
+  - **Formulärhöjden mäts på innehållet i stället för att skrivas som en
+    siffra.** `content_height` frågar widgeten om dess naturliga höjd, så
+    ett formulär som får en rad till växer av sig självt. Det var inte
+    hypotetiskt: "Lägg till värd" hade en gång fem rader och ett
+    `default_height(360)`, men har nu tretton — fem av dem låg utanför
+    fönstret och nåddes bara genom att skrolla i en dialog som inte såg
+    skrollbar ut. Färgväljarens rad var dessutom så trång att etiketten
+    bröts mitt i ordet ("Färgmärk-ning").
+  - **Höjden har ett tak, och taket är skärmen.** Naturlig höjd är annars
+    obegränsad — `Inställningar` blev längre än skärmen så fort mätningen
+    infördes. Taket räknas ur bildskärmens faktiska arbetsyta (4/5 av
+    den) i stället för att vara ett fast tal, så samma kod ger en rimlig
+    dialog både på en liten laptop och på en stor skärm. Listor och
+    innehållsvyer (loggar, filredigerare) behåller en uttalad starthöjd:
+    en `gtk::ScrolledWindow` har ingen egen naturlig höjd att växa efter.
+  - **De två sätten att sätta titel blev ett.** WireGuard- och
+    S3-listorna satte en `adw::WindowTitle`-widget i headern med tom
+    undertitel — exakt vad fönstertiteln redan ritar. Widgetarna är
+    borttagna. Importdialogen behåller sin, eftersom den bär en verklig
+    undertitel ("Klistra in innehållet från din ~/.ssh/config").
+  - **Verifierat genom att köra appen**, dialog för dialog under Xvfb:
+    titlarna stämmer, formulären får plats, `Inställningar` ryms på
+    skärmen med resten skrollbart. Nettoresultat −210/+128 rader.
+
 - **Sidopanelens header: nio ikonknappar → två knappar + primärmeny**
   (2026-08-05, `LinuxApp/src/main.rs`) — den "Kvar" som lämnades i
   posten om ikonbuggen nedan:
