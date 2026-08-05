@@ -7,11 +7,13 @@
 //! princip och filformat som Sources/SSHCore/KnownHosts.swift +
 //! HostKeyValidator.swift.
 //!
-//! KÄND BEGRÄNSNING: bara `HostAuth::KeyFile` (utan lösenfras),
+//! KÄND BEGRÄNSNING: `HostAuth::KeyFile` (utan lösenfras),
 //! `HostAuth::AgentDefault` (ssh-agent), `HostAuth::AskPassword`
-//! (lösenord) och `HostAuth::CertificateFile` (OpenSSH-certifikat, se
-//! nedan) stöds. `KeychainKey`/`BitwardenItem` är Apple/Keychain-
-//! respektive Bitwarden-specifika och saknar en Linux-motsvarighet ännu.
+//! (lösenord), `HostAuth::CertificateFile` (OpenSSH-certifikat, se nedan)
+//! och `HostAuth::BitwardenItem` (se `bitwarden.rs` — LINUX är faktiskt
+//! den ENDA plattformen där den fungerar, inte en Rust-specifik lucka)
+//! stöds. Bara `HostAuth::KeychainKey` saknar en Linux-motsvarighet
+//! (genuint Apple Keychain-specifik).
 //!
 //! Certifikatautentisering (`HostAuth::CertificateFile`): russh har,
 //! till skillnad från swift-nio-ssh (se `ROADMAP.md`s notering om att
@@ -577,6 +579,21 @@ async fn authenticate(
                 .authenticate_openssh_cert(&host.user, Arc::new(key), cert)
                 .await
                 .map_err(|e| format!("certifikat-autentisering misslyckades: {e}"))?
+        }
+        HostAuth::BitwardenItem(item_id) => {
+            // Till skillnad från Apple-sidan (där `resolveAuth` ALLTID
+            // returnerar `nil` för `.bitwardenItem` — iOS saknar
+            // `Foundation.Process` helt, macOS App Sandbox dödar `bw`-
+            // processen med ett okatchbart SIGTRAP) är Linux den ENDA
+            // plattformen där det här faktiskt kan fungera, se
+            // `bitwarden.rs`s modulkommentar.
+            let session_key = std::env::var("BW_SESSION").ok();
+            let pass = crate::bitwarden::fetch_password("bw", item_id, session_key.as_deref())
+                .map_err(|e| format!("kunde inte hämta lösenord från Bitwarden: {e}"))?;
+            session
+                .authenticate_password(&host.user, pass)
+                .await
+                .map_err(|e| format!("lösenordsautentisering misslyckades: {e}"))?
         }
         other => {
             return Err(format!(

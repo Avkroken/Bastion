@@ -6,6 +6,7 @@ use std::rc::Rc;
 use vte::prelude::*;
 
 mod archive;
+mod bitwarden;
 mod command_library;
 mod dashboard;
 mod docker;
@@ -1027,20 +1028,21 @@ fn show_host_dialog(
         ));
     }
 
-    // Auth-metod: bara de FYRA Linux-representerbara `HostAuth`-varianterna
-    // (`KeychainKey`/`BitwardenItem` är Apple/Keychain- respektive
-    // Bitwarden-specifika, se `ssh.rs`s modulkommentar) — motsvarar
-    // App/HostEditView.swifts auth-väljare. Tidigare fanns INGEN väg att
-    // uttryckligen sätta en nyckelfil eller ett certifikat i den här
-    // dialogen alls (bara nyckeldistributionsflödet kunde sätta `KeyFile`,
-    // implicit) — ett eget, mindre gap som upptäcktes samtidigt som
-    // certifikatauth-portningen.
+    // Auth-metod: fem av `HostAuth`s sex varianter går att välja här.
+    // `KeychainKey` är genuint Apple Keychain-specifik och saknas — men
+    // `BitwardenItem` hör HEMMA här: Linux är faktiskt den ENDA plattformen
+    // där `bw`-integrationen fungerar (Apple-sidans `resolveAuth`
+    // returnerar alltid `nil` för den, se `bitwarden.rs`s modulkommentar),
+    // så den hör inte ihop med `KeychainKey` trots att de historiskt
+    // grupperats ihop som "saknar Linux-stöd". Motsvarar
+    // App/HostEditView.swifts auth-väljare.
     let auth_row = adw::ComboRow::builder().title("Autentisering").build();
     let auth_model = gtk::StringList::new(&[
         "SSH-agent (standard)",
         "Lösenord vid anslutning",
         "Nyckelfil",
         "OpenSSH-certifikat",
+        "Bitwarden",
     ]);
     auth_row.set_model(Some(&auth_model));
     let key_file_row = adw::EntryRow::builder().title("Sökväg till privat nyckel").build();
@@ -1055,8 +1057,9 @@ fn show_host_dialog(
     cert_file_browse.add_css_class("flat");
     cert_file_browse.set_valign(gtk::Align::Center);
     cert_file_row.add_suffix(&cert_file_browse);
+    let bitwarden_row = adw::EntryRow::builder().title("Bitwarden item-id eller namn").build();
     let auth_error_label = gtk::Label::builder()
-        .label("Ange sökväg(ar) för den valda auth-metoden")
+        .label("Ange sökväg(ar)/item-id för den valda auth-metoden")
         .margin_start(12)
         .margin_end(12)
         .halign(gtk::Align::Start)
@@ -1069,9 +1072,12 @@ fn show_host_dialog(
         key_file_row,
         #[weak]
         cert_file_row,
+        #[weak]
+        bitwarden_row,
         move |selected: u32| {
             key_file_row.set_visible(selected == 2 || selected == 3);
             cert_file_row.set_visible(selected == 3);
+            bitwarden_row.set_visible(selected == 4);
         }
     );
     update_auth_rows_visibility(0);
@@ -1081,14 +1087,12 @@ fn show_host_dialog(
         move |row| update_auth_rows_visibility(row.selected())
     ));
 
-    // Bevaras uttryckligen om värden synkats in med Keychain-/Bitwarden-auth
-    // från en Apple-enhet — Linux har ingen motsvarighet, så dialogen ska
-    // varken kunna VÄLJA dem eller av misstag SKRIVA ÖVER dem bara för att
+    // Bevaras uttryckligen om värden synkats in med Keychain-auth från en
+    // Apple-enhet — Linux har ingen motsvarighet, så dialogen ska varken
+    // kunna VÄLJA den eller av misstag SKRIVA ÖVER den bara för att
     // användaren redigerade alias/värdnamn (samma opt-in-princip som
     // nyckeldistributionens lösenordsborttagning, se `key_deploy.rs`).
-    let preserve_apple_only_auth = existing
-        .as_ref()
-        .is_some_and(|h| matches!(h.auth, host::HostAuth::KeychainKey(_) | host::HostAuth::BitwardenItem(_)));
+    let preserve_apple_only_auth = existing.as_ref().is_some_and(|h| matches!(h.auth, host::HostAuth::KeychainKey(_)));
 
     if let Some(h) = &existing {
         alias_row.set_text(&h.alias);
@@ -1125,9 +1129,13 @@ fn show_host_dialog(
                 key_file_row.set_text(key_path);
                 cert_file_row.set_text(cert_path);
             }
+            host::HostAuth::BitwardenItem(item_id) => {
+                auth_row.set_selected(4);
+                bitwarden_row.set_text(item_id);
+            }
             // Apple-bara — visas som agent-standard men rörs inte vid
             // spara, se `preserve_apple_only_auth` ovan.
-            host::HostAuth::KeychainKey(_) | host::HostAuth::BitwardenItem(_) => {
+            host::HostAuth::KeychainKey(_) => {
                 auth_row.set_selected(0);
             }
         }
@@ -1190,6 +1198,7 @@ fn show_host_dialog(
     group.add(&auth_row);
     group.add(&key_file_row);
     group.add(&cert_file_row);
+    group.add(&bitwarden_row);
 
     let page = adw::PreferencesPage::new();
     page.add(&group);
@@ -1253,6 +1262,8 @@ fn show_host_dialog(
         #[strong]
         cert_file_row,
         #[strong]
+        bitwarden_row,
+        #[strong]
         auth_error_label,
         #[strong]
         color_selection,
@@ -1294,6 +1305,7 @@ fn show_host_dialog(
             // resonemang som `ssh_config.rs`s `IdentityFile`-hantering).
             let key_file = key_file_row.text().trim().to_string();
             let cert_file = cert_file_row.text().trim().to_string();
+            let bitwarden_item = bitwarden_row.text().trim().to_string();
             let new_auth = match auth_row.selected() {
                 1 => Ok(host::HostAuth::AskPassword),
                 2 if !key_file.is_empty() => Ok(host::HostAuth::KeyFile(key_file)),
@@ -1303,7 +1315,8 @@ fn show_host_dialog(
                         cert_path: cert_file,
                     })
                 }
-                2 | 3 => Err(()),
+                4 if !bitwarden_item.is_empty() => Ok(host::HostAuth::BitwardenItem(bitwarden_item)),
+                2..=4 => Err(()),
                 _ => Ok(host::HostAuth::AgentDefault),
             };
             let new_auth = match new_auth {
