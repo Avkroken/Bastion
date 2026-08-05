@@ -355,6 +355,50 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **OAuth2/PKCE-kontosynk, KÄRNAN, i den NYA Rust/GTK4-`LinuxApp`**
+  (2026-08-05, `LinuxApp/src/oauth.rs`): port av
+  `Sources/SSHCore/OAuthPKCE.swift` + `OAuthToken.swift` +
+  `App/OAuthProviders.swift`, samt (delvis) den RIKTIGA HTTP-logiken i
+  `App/OAuthAccountManager.swift`/`OAuthTokenStore.swift` — MEDVETET
+  avgränsad till kärnan, inte hela funktionen i en enda PR (se "Kvar").
+  - PKCE (RFC 7636): `pkce_verifier`/`pkce_challenge`, verifierad mot
+    RFC:ns egen S256-testvektor rad för rad (inte bara "verifiern och
+    utmaningen skiljer sig åt").
+  - `OAuthTokenResponse`/`StoredOAuthToken` med samma 60 s förnyelse-
+    marginal och samma "bevara gammal `refresh_token` om leverantören
+    inte skickar en ny"-logik som Swift-sidan — 6 tester porterade rakt
+    av från `Tests/SSHCoreTests/OAuthTokenTests.swift`.
+  - Samma tre leverantörer/exakt samma registrerade värden (Dropbox
+    `client_id` ifyllt, Google Drive/OneDrive tomma — "inte
+    konfigurerade ännu", inte ett Rust-specifikt hål) som
+    `App/OAuthProviders.swift`.
+  - **RIKTIGT token-utbyte och token-förnyelse över HTTP** (`reqwest`,
+    formulärkodning, JSON-svar) — testat mot en genuin lokal HTTP-server
+    (samma teknik som `s3.rs`s `spawn_fake_s3_server`), inte mockat:
+    verifierar de faktiska fälten i den skickade formulärkroppen
+    (`grant_type`/`code`/`code_verifier` respektive
+    `grant_type=refresh_token`), att ett icke-2xx-svar blir ett tydligt
+    fel (inte en tyst godkänd tom token), och att `valid_access_token`
+    både förnyar tyst vid utgången token OCH återanvänder en fortfarande
+    giltig token UTAN att göra något HTTP-anrop alls (bevisat genom att
+    inte ens starta en testserver i det fallet — ett anrop hade
+    kraschat/timeoutat mot en icke-lyssnande port).
+  - Lokal lagring (`~/.bastion/oauth_tokens.json`) — samma skyddsnivå
+    som S3-kopplingarnas `secret_access_key`/WireGuard-privatnycklar
+    redan har i den här klienten, INTE macOS Keychain (Linux har ingen
+    universell motsvarighet över skrivbordsmiljöer).
+  - **Kvar (medvetet, nästa steg)**: den INTERAKTIVA inloggningen —
+    öppna en webbläsare mot `authorization_endpoint`, fånga
+    redirect-URI:n med koden — är INTE med. Apple-sidan löser det med
+    `ASWebAuthenticationSession`; Linux saknar en GTK-inbyggd
+    motsvarighet, och valet mellan en lokal loopback-HTTP-lyssnare
+    (RFC 8252) och att registrera `se.denied.bastion://`-schemat via
+    `xdg-mime`/en `.desktop`-fil är ett öppet designval som inte avgörs
+    här. Ingen UI-koppling i `main.rs` än av samma skäl — inget att
+    klicka på förrän inloggningsflödet finns. 18 nya tester, 174/174
+    `cargo test` gröna totalt, `cargo build`/`clippy` helt tysta (modulen
+    är `#![allow(dead_code)]` tills nästa PR kopplar in den).
+
 - **Numrerade fliktitlar för flera samtidiga sessioner mot SAMMA värd i
   den NYA Rust/GTK4-`LinuxApp`** (2026-08-05, `main.rs`,
   `unique_session_tab_title`): `AdwTabView` gav redan LinuxApp hela
