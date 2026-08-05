@@ -211,9 +211,18 @@ fn build_ui(app: &adw::Application) {
         move |_| show_quick_connect_dialog(&app, &area)
     ));
 
-    let import_button = gtk::Button::from_icon_name("document-open-symbolic");
-    import_button.set_tooltip_text(Some("Importera ssh-config"));
-    import_button.connect_clicked(clone!(
+    // Nio ikonknappar fick inte plats i sidopanelens header: rubriken
+    // "Värdar" klipptes till "Vär…" (hittat genom att faktiskt köra appen,
+    // se ROADMAP-posten om ikonbuggen). Bara de två vanligaste åtgärderna
+    // — lägg till värd och snabbanslutning — står kvar som egna knappar;
+    // resten flyttas in i en primärmeny, vilket dessutom är GNOME:s eget
+    // mönster så fort en header behöver mer än ett par åtgärder.
+    // Menyposterna körs som `SimpleAction`-poster i gruppen "sidebar",
+    // samma mönster som värdradernas "host"-grupp längre ner.
+    let sidebar_actions = gtk::gio::SimpleActionGroup::new();
+
+    let import_action = gtk::gio::SimpleAction::new("import_ssh_config", None);
+    import_action.connect_activate(clone!(
         #[weak]
         app,
         #[strong]
@@ -228,32 +237,32 @@ fn build_ui(app: &adw::Application) {
         snippet_store,
         #[strong]
         search_query,
-        move |_| show_ssh_config_import_dialog(&app, &store, &list, &area, &settings_store, &snippet_store, &search_query)
+        move |_, _| show_ssh_config_import_dialog(&app, &store, &list, &area, &settings_store, &snippet_store, &search_query)
     ));
+    sidebar_actions.add_action(&import_action);
 
-    let telnet_button = gtk::Button::from_icon_name("utilities-terminal-symbolic");
-    telnet_button.set_tooltip_text(Some("Telnet"));
-    telnet_button.connect_clicked(clone!(
+    let telnet_action = gtk::gio::SimpleAction::new("telnet", None);
+    telnet_action.connect_activate(clone!(
         #[weak]
         app,
         #[strong]
         area,
-        move |_| show_telnet_connect_dialog(&app, &area)
+        move |_, _| show_telnet_connect_dialog(&app, &area)
     ));
+    sidebar_actions.add_action(&telnet_action);
 
-    let serial_button = gtk::Button::from_icon_name("modem-symbolic");
-    serial_button.set_tooltip_text(Some("Seriell/USB"));
-    serial_button.connect_clicked(clone!(
+    let serial_action = gtk::gio::SimpleAction::new("serial", None);
+    serial_action.connect_activate(clone!(
         #[weak]
         app,
         #[strong]
         area,
-        move |_| show_serial_connect_dialog(&app, &area)
+        move |_, _| show_serial_connect_dialog(&app, &area)
     ));
+    sidebar_actions.add_action(&serial_action);
 
-    let tailscale_button = gtk::Button::from_icon_name("network-workgroup-symbolic");
-    tailscale_button.set_tooltip_text(Some("Tailscale"));
-    tailscale_button.connect_clicked(clone!(
+    let tailscale_action = gtk::gio::SimpleAction::new("tailscale", None);
+    tailscale_action.connect_activate(clone!(
         #[weak]
         app,
         #[strong]
@@ -268,7 +277,7 @@ fn build_ui(app: &adw::Application) {
         snippet_store,
         #[strong]
         search_query,
-        move |_| show_tailscale_discovery_dialog(
+        move |_, _| show_tailscale_discovery_dialog(
             &app,
             &store,
             &list,
@@ -278,32 +287,32 @@ fn build_ui(app: &adw::Application) {
             &search_query
         )
     ));
+    sidebar_actions.add_action(&tailscale_action);
 
-    let wireguard_button = gtk::Button::from_icon_name("network-vpn-symbolic");
-    wireguard_button.set_tooltip_text(Some("WireGuard-profiler"));
-    wireguard_button.connect_clicked(clone!(
+    let wireguard_action = gtk::gio::SimpleAction::new("wireguard", None);
+    wireguard_action.connect_activate(clone!(
         #[weak]
         app,
         #[strong]
         wireguard_store,
-        move |_| show_wireguard_profile_list(&app, &wireguard_store)
+        move |_, _| show_wireguard_profile_list(&app, &wireguard_store)
     ));
+    sidebar_actions.add_action(&wireguard_action);
 
-    let s3_button = gtk::Button::from_icon_name("folder-remote-symbolic");
-    s3_button.set_tooltip_text(Some("S3-anslutningar"));
-    s3_button.connect_clicked(clone!(
+    let s3_action = gtk::gio::SimpleAction::new("s3", None);
+    s3_action.connect_activate(clone!(
         #[weak]
         app,
         #[strong]
         area,
         #[strong]
         s3_store,
-        move |_| show_s3_connection_list(&app, &area, &s3_store)
+        move |_, _| show_s3_connection_list(&app, &area, &s3_store)
     ));
+    sidebar_actions.add_action(&s3_action);
 
-    let settings_button = gtk::Button::from_icon_name("preferences-system-symbolic");
-    settings_button.set_tooltip_text(Some("Funktioner"));
-    settings_button.connect_clicked(clone!(
+    let settings_action = gtk::gio::SimpleAction::new("settings", None);
+    settings_action.connect_activate(clone!(
         #[weak]
         app,
         #[strong]
@@ -320,7 +329,7 @@ fn build_ui(app: &adw::Application) {
         sync_config,
         #[strong]
         search_query,
-        move |_| show_settings_dialog(
+        move |_, _| show_settings_dialog(
             &app,
             &settings_store,
             &store,
@@ -331,19 +340,24 @@ fn build_ui(app: &adw::Application) {
             &search_query
         )
     ));
+    sidebar_actions.add_action(&settings_action);
+
+    let sidebar_menu_button = gtk::MenuButton::builder()
+        .icon_name("open-menu-symbolic")
+        .tooltip_text("Huvudmeny")
+        .menu_model(&sidebar_menu())
+        .build();
 
     let sidebar_header = adw::HeaderBar::new();
+    sidebar_header.pack_end(&sidebar_menu_button);
     sidebar_header.pack_end(&add_button);
     sidebar_header.pack_end(&quick_connect_button);
-    sidebar_header.pack_end(&import_button);
-    sidebar_header.pack_end(&telnet_button);
-    sidebar_header.pack_end(&serial_button);
-    sidebar_header.pack_end(&tailscale_button);
-    sidebar_header.pack_end(&wireguard_button);
-    sidebar_header.pack_end(&s3_button);
-    sidebar_header.pack_end(&settings_button);
 
     let sidebar_content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    // Gruppen sätts på behållaren, inte på menyknappen: GTK slår upp
+    // "sidebar.*" genom att gå UPPÅT i widgetträdet från den widget som
+    // aktiverar posten, så popovern hittar den härifrån.
+    sidebar_content.insert_action_group("sidebar", Some(&sidebar_actions));
     sidebar_content.append(&sidebar_header);
     sidebar_content.append(&search_entry);
     sidebar_content.append(&scrolled);
@@ -864,6 +878,34 @@ fn refresh_list(
 /// — till skillnad från de andra posterna (styrda av globala
 /// `FeatureToggles`) är "Väck"-posten en PER-VÄRD-egenskap, samma UX-regel
 /// som App/HostListView.swift (`if host.macAddress != nil`).
+/// Sidopanelens primärmeny. Sektionerna grupperar posterna efter vad de
+/// gör — andra anslutningstyper, nätverk/lagring, och appens egna
+/// inställningar — och ritas som avdelade block med skiljelinje.
+fn sidebar_menu() -> gtk::gio::Menu {
+    let menu = gtk::gio::Menu::new();
+
+    let connections = gtk::gio::Menu::new();
+    connections.append(Some("Telnet"), Some("sidebar.telnet"));
+    connections.append(Some("Seriell/USB"), Some("sidebar.serial"));
+    menu.append_section(None, &connections);
+
+    let network = gtk::gio::Menu::new();
+    network.append(Some("Tailscale"), Some("sidebar.tailscale"));
+    network.append(Some("WireGuard-profiler"), Some("sidebar.wireguard"));
+    network.append(Some("S3-anslutningar"), Some("sidebar.s3"));
+    menu.append_section(None, &network);
+
+    let app_menu = gtk::gio::Menu::new();
+    app_menu.append(
+        Some("Importera ssh-config"),
+        Some("sidebar.import_ssh_config"),
+    );
+    app_menu.append(Some("Funktioner"), Some("sidebar.settings"));
+    menu.append_section(None, &app_menu);
+
+    menu
+}
+
 fn gio_menu_for(toggles: &settings::FeatureToggles, mac_address: &Option<String>) -> gtk::gio::Menu {
     let menu = gtk::gio::Menu::new();
     menu.append(Some("Redigera"), Some("host.edit"));
