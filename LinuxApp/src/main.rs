@@ -172,9 +172,14 @@ fn build_ui(app: &adw::Application) {
         .vexpand(true)
         .build();
 
-    let add_button = gtk::Button::from_icon_name("list-add-symbolic");
-    add_button.set_tooltip_text(Some("Lägg till värd"));
-    add_button.connect_clicked(clone!(
+    // Åtgärderna ligger på APPEN, inte i en grupp på en widget. Skälet är
+    // tangentbordet: `set_accels_for_action` når bara `app.`- och
+    // `win.`-prefixade åtgärder, inte en egen grupp inlagd på en behållare.
+    // Med appen som hem delar meny, knapp och kortkommando exakt samma
+    // definition — och GTK ritar dessutom ut kortkommandot bredvid
+    // menyposten automatiskt, utan att texten skrivs in för hand.
+    let new_host_action = gtk::gio::SimpleAction::new("new-host", None);
+    new_host_action.connect_activate(clone!(
         #[weak]
         app,
         #[strong]
@@ -189,7 +194,7 @@ fn build_ui(app: &adw::Application) {
         snippet_store,
         #[strong]
         search_query,
-        move |_| show_host_dialog(
+        move |_, _| show_host_dialog(
             &app,
             &store,
             &list,
@@ -200,16 +205,25 @@ fn build_ui(app: &adw::Application) {
             None
         )
     ));
+    app.add_action(&new_host_action);
 
-    let quick_connect_button = gtk::Button::from_icon_name("system-run-symbolic");
-    quick_connect_button.set_tooltip_text(Some("Snabbanslutning"));
-    quick_connect_button.connect_clicked(clone!(
+    let add_button = gtk::Button::from_icon_name("list-add-symbolic");
+    add_button.set_tooltip_text(Some("Lägg till värd"));
+    add_button.set_action_name(Some("app.new-host"));
+
+    let quick_connect_action = gtk::gio::SimpleAction::new("new-connection", None);
+    quick_connect_action.connect_activate(clone!(
         #[weak]
         app,
         #[strong]
         area,
-        move |_| show_quick_connect_dialog(&app, &area)
+        move |_, _| show_quick_connect_dialog(&app, &area)
     ));
+    app.add_action(&quick_connect_action);
+
+    let quick_connect_button = gtk::Button::from_icon_name("system-run-symbolic");
+    quick_connect_button.set_tooltip_text(Some("Snabbanslutning"));
+    quick_connect_button.set_action_name(Some("app.new-connection"));
 
     // Nio ikonknappar fick inte plats i sidopanelens header: rubriken
     // "Värdar" klipptes till "Vär…" (hittat genom att faktiskt köra appen,
@@ -217,10 +231,8 @@ fn build_ui(app: &adw::Application) {
     // — lägg till värd och snabbanslutning — står kvar som egna knappar;
     // resten flyttas in i en primärmeny, vilket dessutom är GNOME:s eget
     // mönster så fort en header behöver mer än ett par åtgärder.
-    // Menyposterna körs som `SimpleAction`-poster i gruppen "sidebar",
-    // samma mönster som värdradernas "host"-grupp längre ner.
-    let sidebar_actions = gtk::gio::SimpleActionGroup::new();
-
+    // Menyposterna körs som `SimpleAction`-poster på appen (se längre upp),
+    // så samma definition driver meny, knapp och kortkommando.
     let import_action = gtk::gio::SimpleAction::new("import_ssh_config", None);
     import_action.connect_activate(clone!(
         #[weak]
@@ -239,7 +251,7 @@ fn build_ui(app: &adw::Application) {
         search_query,
         move |_, _| show_ssh_config_import_dialog(&app, &store, &list, &area, &settings_store, &snippet_store, &search_query)
     ));
-    sidebar_actions.add_action(&import_action);
+    app.add_action(&import_action);
 
     let telnet_action = gtk::gio::SimpleAction::new("telnet", None);
     telnet_action.connect_activate(clone!(
@@ -249,7 +261,7 @@ fn build_ui(app: &adw::Application) {
         area,
         move |_, _| show_telnet_connect_dialog(&app, &area)
     ));
-    sidebar_actions.add_action(&telnet_action);
+    app.add_action(&telnet_action);
 
     let serial_action = gtk::gio::SimpleAction::new("serial", None);
     serial_action.connect_activate(clone!(
@@ -259,7 +271,7 @@ fn build_ui(app: &adw::Application) {
         area,
         move |_, _| show_serial_connect_dialog(&app, &area)
     ));
-    sidebar_actions.add_action(&serial_action);
+    app.add_action(&serial_action);
 
     let tailscale_action = gtk::gio::SimpleAction::new("tailscale", None);
     tailscale_action.connect_activate(clone!(
@@ -287,7 +299,7 @@ fn build_ui(app: &adw::Application) {
             &search_query
         )
     ));
-    sidebar_actions.add_action(&tailscale_action);
+    app.add_action(&tailscale_action);
 
     let wireguard_action = gtk::gio::SimpleAction::new("wireguard", None);
     wireguard_action.connect_activate(clone!(
@@ -297,7 +309,7 @@ fn build_ui(app: &adw::Application) {
         wireguard_store,
         move |_, _| show_wireguard_profile_list(&app, &wireguard_store)
     ));
-    sidebar_actions.add_action(&wireguard_action);
+    app.add_action(&wireguard_action);
 
     let s3_action = gtk::gio::SimpleAction::new("s3", None);
     s3_action.connect_activate(clone!(
@@ -309,7 +321,7 @@ fn build_ui(app: &adw::Application) {
         s3_store,
         move |_, _| show_s3_connection_list(&app, &area, &s3_store)
     ));
-    sidebar_actions.add_action(&s3_action);
+    app.add_action(&s3_action);
 
     let settings_action = gtk::gio::SimpleAction::new("settings", None);
     settings_action.connect_activate(clone!(
@@ -340,7 +352,89 @@ fn build_ui(app: &adw::Application) {
             &search_query
         )
     ));
-    sidebar_actions.add_action(&settings_action);
+    app.add_action(&settings_action);
+
+    let close_tab_action = gtk::gio::SimpleAction::new("close-tab", None);
+    close_tab_action.connect_activate(clone!(
+        #[strong]
+        area,
+        move |_, _| {
+            // `n_pages` kollas FÖRST: `selected_page` kan hinna svara med
+            // en sida som redan är på väg ut om kommandot trycks två
+            // gånger snabbt, och `close_page` på en sida som inte längre
+            // hör till vyn ger en Adwaita-CRITICAL.
+            if area.tab_view.n_pages() == 0 {
+                return;
+            }
+            if let Some(page) = area.tab_view.selected_page() {
+                area.tab_view.close_page(&page);
+            }
+        }
+    ));
+    app.add_action(&close_tab_action);
+
+    let focus_search_action = gtk::gio::SimpleAction::new("focus-search", None);
+    focus_search_action.connect_activate(clone!(
+        #[weak]
+        search_entry,
+        move |_, _| {
+            search_entry.grab_focus();
+        }
+    ));
+    app.add_action(&focus_search_action);
+
+    // En enda parametriserad åtgärd i stället för nio nästan identiska:
+    // `app.select-tab(3)` är samma sak för menyn, tangentbordet och en
+    // framtida kommandopalett.
+    let select_tab_action =
+        gtk::gio::SimpleAction::new("select-tab", Some(glib::VariantTy::INT32));
+    select_tab_action.connect_activate(clone!(
+        #[strong]
+        area,
+        move |_, parameter| {
+            let Some(number) = parameter.and_then(|p| p.get::<i32>()) else {
+                return;
+            };
+            // `AdwTabView` har ingen `nth_page` — sidorna nås via
+            // `pages()`, som är en `gio::ListModel`.
+            //
+            // Indexet måste kontrolleras SJÄLV. `ListModel::item` brukar
+            // svara `None` utanför intervallet, men den här modellen går
+            // via `adw_tab_view_get_nth_page`, som i stället loggar en
+            // Adwaita-CRITICAL. Upptäckt genom att trycka Alt+2 med bara
+            // en flik öppen och läsa appens logg — inget syntes i UI:t.
+            let index = (number - 1).max(0) as u32;
+            let pages = area.tab_view.pages();
+            if index >= pages.n_items() {
+                return; // färre flikar öppna än siffran som trycktes
+            }
+            let Some(page) = pages.item(index).and_downcast::<adw::TabPage>() else {
+                return;
+            };
+            area.tab_view.set_selected_page(&page);
+        }
+    ));
+    app.add_action(&select_tab_action);
+
+    // Kortkommandon.
+    //
+    // MEDVETET `Ctrl+Shift` och `Alt+siffra`, inte `Ctrl`+bokstav. Appen
+    // är en terminal: `Ctrl+T`, `Ctrl+W` och `Ctrl+K` är readlines egna
+    // (transponera tecken, radera ord bakåt, klipp rad) och tar appen dem
+    // försvinner de ur skalet på andra sidan. Det är samma val som
+    // GNOME Terminal och Ptyxis gör. Termius använder `Ctrl+T`/`Ctrl+J`
+    // — här är det avsiktligt INTE härmat.
+    app.set_accels_for_action("app.new-host", &["<Ctrl><Shift>n"]);
+    app.set_accels_for_action("app.new-connection", &["<Ctrl><Shift>t"]);
+    app.set_accels_for_action("app.close-tab", &["<Ctrl><Shift>w"]);
+    app.set_accels_for_action("app.focus-search", &["<Ctrl><Shift>f"]);
+    app.set_accels_for_action("app.settings", &["<Ctrl>comma"]);
+    for number in 1..=9 {
+        app.set_accels_for_action(
+            &format!("app.select-tab({number})"),
+            &[&format!("<Alt>{number}")],
+        );
+    }
 
     let sidebar_menu_button = gtk::MenuButton::builder()
         .icon_name("open-menu-symbolic")
@@ -354,10 +448,6 @@ fn build_ui(app: &adw::Application) {
     sidebar_header.pack_end(&quick_connect_button);
 
     let sidebar_content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    // Gruppen sätts på behållaren, inte på menyknappen: GTK slår upp
-    // "sidebar.*" genom att gå UPPÅT i widgetträdet från den widget som
-    // aktiverar posten, så popovern hittar den härifrån.
-    sidebar_content.insert_action_group("sidebar", Some(&sidebar_actions));
     sidebar_content.append(&sidebar_header);
     sidebar_content.append(&search_entry);
     sidebar_content.append(&scrolled);
@@ -970,7 +1060,23 @@ fn dialog_window(
     let height = size
         .height()
         .unwrap_or_else(|| content_height(content, size.width()));
-    builder.default_height(height).build()
+    let window = builder.default_height(height).build();
+
+    // Escape stänger dialogen. GTK4 gör INTE det av sig självt — det var
+    // `GtkDialog` som hade beteendet, och den är avvecklad. Utan det här
+    // gick ingen av appens tjugo dialoger att avbryta från tangentbordet;
+    // man var tvungen att sikta på "Avbryt" med musen. Att det räcker med
+    // ett ställe är hela poängen med att `dialog_window` blev enda vägen
+    // in. `window.close` är GTK:s egen inbyggda åtgärd, så knappen och
+    // tangenten gör bokstavligen samma sak.
+    let escape = gtk::ShortcutController::new();
+    escape.add_shortcut(gtk::Shortcut::new(
+        gtk::ShortcutTrigger::parse_string("Escape"),
+        Some(gtk::NamedAction::new("window.close")),
+    ));
+    window.add_controller(escape);
+
+    window
 }
 
 /// Föräldrafönstret för en dialog som öppnas från sidopanelen.
@@ -993,22 +1099,22 @@ fn sidebar_menu() -> gtk::gio::Menu {
     let menu = gtk::gio::Menu::new();
 
     let connections = gtk::gio::Menu::new();
-    connections.append(Some("Telnet"), Some("sidebar.telnet"));
-    connections.append(Some("Seriell/USB"), Some("sidebar.serial"));
+    connections.append(Some("Telnet"), Some("app.telnet"));
+    connections.append(Some("Seriell/USB"), Some("app.serial"));
     menu.append_section(None, &connections);
 
     let network = gtk::gio::Menu::new();
-    network.append(Some("Tailscale"), Some("sidebar.tailscale"));
-    network.append(Some("WireGuard-profiler"), Some("sidebar.wireguard"));
-    network.append(Some("S3-anslutningar"), Some("sidebar.s3"));
+    network.append(Some("Tailscale"), Some("app.tailscale"));
+    network.append(Some("WireGuard-profiler"), Some("app.wireguard"));
+    network.append(Some("S3-anslutningar"), Some("app.s3"));
     menu.append_section(None, &network);
 
     let app_menu = gtk::gio::Menu::new();
     app_menu.append(
         Some("Importera ssh-config"),
-        Some("sidebar.import_ssh_config"),
+        Some("app.import_ssh_config"),
     );
-    app_menu.append(Some("Funktioner"), Some("sidebar.settings"));
+    app_menu.append(Some("Funktioner"), Some("app.settings"));
     menu.append_section(None, &app_menu);
 
     menu
