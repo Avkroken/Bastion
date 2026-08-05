@@ -1379,12 +1379,12 @@ fn show_host_dialog(
     win.present();
 }
 
-/// Funktioner-inställningar: just nu bara Docker-togglen (det uttryckligen
-/// namngivna kravet) — Snippets/Kommandobibliotek/SFTP/portvidarebefordran/
-/// SSH-nyckeldistribution har ingen vy att gömma i LinuxApp än (se
-/// ROADMAP.md), så deras fält finns i `settings::FeatureToggles` (för att
-/// inte tappa en delad settings.json-fils övriga värden) men saknar UI här.
-/// Åtta parametrar av samma skäl som `show_host_dialog` ovan.
+/// Funktioner-inställningar: alla sex av `settings::FeatureToggles`s fält
+/// utom Snippets (`show_snippets` — sidopanelens Snippets-vy finns inte i
+/// LinuxApp än, se ROADMAP.md; fältet läses/skrivs ändå för att inte tappa
+/// en delad `settings.json`-fils övriga värden) har ett eget reglage här.
+/// Motsvarar `App/FeatureSettingsView.swift`. Åtta parametrar av samma
+/// skäl som `show_host_dialog` ovan.
 #[allow(clippy::too_many_arguments)]
 fn show_settings_dialog(
     app: &adw::Application,
@@ -1413,11 +1413,27 @@ fn show_settings_dialog(
         .subtitle("Visa Filer-knappen på värdar")
         .active(current.show_sftp_browser)
         .build();
+    // De två sista av `FeatureToggles`s sex fält saknade reglage här — lästes
+    // redan (`gio_menu_for` döljer "Tunnel"/"Nyckel"-menyposterna korrekt)
+    // men gick bara att stänga av genom att redigera `settings.json` för
+    // hand. Motsvarar `App/FeatureSettingsView.swift`s "Värdmenyn"-sektion.
+    let forward_row = adw::SwitchRow::builder()
+        .title("Portvidarebefordran")
+        .subtitle("Visa Tunnel-knappen på värdar")
+        .active(current.show_port_forward)
+        .build();
+    let key_deploy_row = adw::SwitchRow::builder()
+        .title("SSH-nyckel")
+        .subtitle("Visa Nyckel-knappen på värdar")
+        .active(current.show_key_deploy)
+        .build();
 
     let group = adw::PreferencesGroup::builder().title("Funktioner").build();
     group.add(&docker_row);
     group.add(&commands_row);
     group.add(&sftp_row);
+    group.add(&forward_row);
+    group.add(&key_deploy_row);
 
     // Ren lokal preferens (INTE synkad, se `terminal_theme.rs`s
     // modulkommentar) — motsvarar App/TerminalThemeSettingsView.swift.
@@ -1579,6 +1595,56 @@ fn show_settings_dialog(
         move |row| {
             let mut toggles = settings_store.borrow().current();
             toggles.show_sftp_browser = row.is_active();
+            if let Err(e) = settings_store.borrow_mut().update(toggles) {
+                eprintln!("kunde inte spara inställningarna: {e}");
+            }
+            refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store, &search_query);
+        }
+    ));
+
+    forward_row.connect_active_notify(clone!(
+        #[strong]
+        settings_store,
+        #[strong]
+        store,
+        #[weak]
+        list,
+        #[strong]
+        app,
+        #[strong]
+        area,
+        #[strong]
+        snippet_store,
+        #[strong]
+        search_query,
+        move |row| {
+            let mut toggles = settings_store.borrow().current();
+            toggles.show_port_forward = row.is_active();
+            if let Err(e) = settings_store.borrow_mut().update(toggles) {
+                eprintln!("kunde inte spara inställningarna: {e}");
+            }
+            refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store, &search_query);
+        }
+    ));
+
+    key_deploy_row.connect_active_notify(clone!(
+        #[strong]
+        settings_store,
+        #[strong]
+        store,
+        #[weak]
+        list,
+        #[strong]
+        app,
+        #[strong]
+        area,
+        #[strong]
+        snippet_store,
+        #[strong]
+        search_query,
+        move |row| {
+            let mut toggles = settings_store.borrow().current();
+            toggles.show_key_deploy = row.is_active();
             if let Err(e) = settings_store.borrow_mut().update(toggles) {
                 eprintln!("kunde inte spara inställningarna: {e}");
             }

@@ -355,6 +355,22 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **Reglage för Portvidarebefordran/SSH-nyckel-knapparna i
+  Funktioner-inställningarna i den NYA Rust/GTK4-`LinuxApp`**
+  (2026-08-05, `main.rs`): `settings::FeatureToggles::show_port_forward`/
+  `show_key_deploy` lästes redan korrekt (`gio_menu_for` dolde "Tunnel"/
+  "Nyckel"-menyposterna som förväntat) men gick bara att stänga av genom
+  att redigera `settings.json` för hand — inget reglage i
+  inställningsdialogen, till skillnad från de tre andra fälten (Docker/
+  Kommandobibliotek/SFTP) som redan hade det. Motsvarar de två sista
+  togglarna i `App/FeatureSettingsView.swift`s "Värdmenyn"-sektion.
+  `show_snippets` förblir avsiktligt utan reglage — LinuxApp har ingen
+  egen Snippets-vy att gömma (fältet finns bara kvar för att inte tappa
+  en delad `settings.json`-fils övriga värden, samma motivering som
+  redan gällde de andra fem fälten).
+  - Ren GTK-limkod, ingen ny modul/inga nya tester. 188/188 `cargo test`
+    fortsatt gröna, `cargo build`/`clippy` helt tysta.
+
 - **Bitwarden-autentisering (`HostAuth::BitwardenItem`) i den NYA
   Rust/GTK4-`LinuxApp`** (2026-08-05, `LinuxApp/src/bitwarden.rs` +
   auth-väljare i `main.rs`): port av `Sources/SSHCore/BitwardenClient.swift`
