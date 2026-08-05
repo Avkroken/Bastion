@@ -396,6 +396,31 @@ delvis andra, av konkreta skäl:
   - 201/201 `cargo test` gröna (stabilt över 4 körningar), `clippy`
     oförändrat på baseline.
 
+- **BUGGFIX: S3-nedladdning läste hela objektet i minnet** (2026-08-05,
+  `s3.rs` + `main.rs`): `get_object` hämtade hela kroppen via
+  `Response::bytes()` innan något skrevs till disk. För en S3-bucket —
+  där flergigabyte-objekt (backuper, diskavbildningar, video) är helt
+  vardagliga — hade en nedladdning därmed krävt lika mycket RAM som
+  filen är stor och i praktiken dödat appen. Inkonsekvent med kodbasens
+  egen princip: `ssh.rs` har sedan tidigare ett 4 MiB-tak
+  (`MAX_COMMAND_OUTPUT_BYTES`) just för att inte svälla minnet.
+  - Ny `get_object_to_file` strömmar bit för bit direkt till disk, utan
+    att någon gång hålla hela filen i minnet. Skriver till en temporär
+    `.part`-fil i SAMMA katalog och byter namn först när hela
+    hämtningen lyckats — en avbruten nedladdning lämnar aldrig en halv
+    fil på målsökvägen (samma resonemang som
+    `external_binary_fetcher::fetch`). Övriga anrop
+    (`list_buckets`/`list_objects`/felsvar) är små XML-dokument och
+    läses fortfarande i ett svep.
+  - **Ingen ny beroendeyta**: `reqwest::Response::chunk()` fungerar utan
+    `stream`-featuren. Enda tillägget är `fs` på tokio — en extra
+    feature-flagga på ett redan befintligt beroende, inget nytt krat.
+  - Två nya tester: en ~3 MiB-kropp med ett mönstrat innehåll strömmas
+    ner och jämförs byte för byte (bevisar att bitarna sätts ihop rätt,
+    inte bara att den första stämmer) och att ingen `.part`-fil lämnas
+    kvar; samt att ett 404-svar ger ett tydligt fel UTAN att skapa någon
+    fil alls på målsökvägen.
+
 - **BUGGFIX: misslyckad nyckeldistribution rapporterades som ett
   verifieringsfel** (2026-08-05, `key_deploy.rs`): `deploy_and_verify`
   ignorerade distributionskommandots exitkod helt. Misslyckades det

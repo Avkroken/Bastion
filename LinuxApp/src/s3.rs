@@ -303,6 +303,41 @@ impl S3Client {
         Ok((bytes.to_vec(), status))
     }
 
+    /// Som `request`, men lämnar tillbaka svaret OLÄST — anroparen får
+    /// själv strömma kroppen. Delar all signerings-/URL-logik med
+    /// `request` via `signed_request` nedan; enda skillnaden är att den
+    /// här INTE anropar `.bytes()`.
+    async fn send_streaming(
+        &self,
+        method: reqwest::Method,
+        path_segments: &[String],
+    ) -> Result<reqwest::Response, S3Error> {
+        let path = encode_path(path_segments);
+        let host = self.host();
+        let amz_date = iso_date_now();
+        let signed = sign(
+            method.as_str(),
+            &host,
+            &path,
+            "",
+            &[],
+            &self.region,
+            &self.credentials,
+            &amz_date,
+        );
+        // Samma "bygg URL:en som färdig sträng"-resonemang som i
+        // `request` — se kommentaren där.
+        let url_string = format!("{}://{host}{path}", self.endpoint_scheme);
+        self.http
+            .request(method, &url_string)
+            .header("x-amz-date", &signed.amz_date)
+            .header("x-amz-content-sha256", &signed.content_sha256)
+            .header("Authorization", &signed.authorization_header)
+            .send()
+            .await
+            .map_err(|e| S3Error::Transport(e.to_string()))
+    }
+
     fn require_success(data: &[u8], status: u16) -> Result<(), S3Error> {
         if (200..300).contains(&status) {
             return Ok(());
@@ -368,6 +403,10 @@ impl S3Client {
         Self::require_success(&response_data, status)
     }
 
+    /// Hämtar hela objektet till MINNET. Bara för små, kända objekt —
+    /// använd `get_object_to_file` för allt användaren laddar ner, se
+    /// dess dokumentation.
+    #[allow(dead_code)]
     pub async fn get_object(&self, bucket: &str, key: &str) -> Result<Vec<u8>, S3Error> {
         let (data, status) = self
             .request(
@@ -380,6 +419,64 @@ impl S3Client {
             .await?;
         Self::require_success(&data, status)?;
         Ok(data)
+    }
+
+    /// Strömmar objektet direkt till `destination`, bit för bit, utan att
+    /// någon gång hålla hela filen i minnet.
+    ///
+    /// `get_object` (ovan) läser hela kroppen via `Response::bytes()` —
+    /// för en S3-bucket, där flergigabyte-objekt (diskavbildningar,
+    /// backuper, videofiler) är helt vardagliga, hade en nedladdning
+    /// därmed krävt lika mycket RAM som filen är stor och i praktiken
+    /// dödat appen. Övriga anrop (`list_buckets`/`list_objects`/fel-
+    /// svar) är små XML-dokument och läses fortfarande i ett svep.
+    ///
+    /// Skriver till en temporär fil i SAMMA katalog och byter namn först
+    /// när hela hämtningen lyckats — en avbruten nedladdning lämnar
+    /// aldrig en halv fil på målsökvägen (samma resonemang som
+    /// `external_binary_fetcher::fetch`).
+    pub async fn get_object_to_file(&self, bucket: &str, key: &str, destination: &std::path::Path) -> Result<(), S3Error> {
+        use tokio::io::AsyncWriteExt;
+
+        let response = self
+            .send_streaming(reqwest::Method::GET, &[bucket.to_string(), key.to_string()])
+            .await?;
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            // Felsvar är små XML-dokument — läs dem i ett svep för att
+            // kunna ge samma tydliga fel som övriga anrop.
+            let data = response.bytes().await.map_err(|e| S3Error::Transport(e.to_string()))?;
+            return Err(Self::require_success(&data, status).unwrap_err());
+        }
+
+        let parent = destination.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let tmp = parent.join(format!(
+            ".{}.{}.part",
+            destination.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "download".to_string()),
+            uuid::Uuid::new_v4()
+        ));
+
+        let result = async {
+            let mut file = tokio::fs::File::create(&tmp).await.map_err(|e| S3Error::Transport(e.to_string()))?;
+            let mut response = response;
+            while let Some(chunk) = response.chunk().await.map_err(|e| S3Error::Transport(e.to_string()))? {
+                file.write_all(&chunk).await.map_err(|e| S3Error::Transport(e.to_string()))?;
+            }
+            file.flush().await.map_err(|e| S3Error::Transport(e.to_string()))?;
+            Ok(())
+        }
+        .await;
+
+        match result {
+            Ok(()) => {
+                tokio::fs::rename(&tmp, destination).await.map_err(|e| S3Error::Transport(e.to_string()))?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&tmp).await;
+                Err(e)
+            }
+        }
     }
 
     pub async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), S3Error> {
@@ -649,12 +746,17 @@ pub fn spawn_put_object(
     })
 }
 
-pub fn spawn_get_object(
+/// Laddar ner objektet DIREKT TILL FIL, strömmande — se
+/// `S3Client::get_object_to_file` för varför det inte går via minnet.
+pub fn spawn_download_object(
     connection: S3Connection,
     bucket: String,
     key: String,
-) -> async_channel::Receiver<Result<Vec<u8>, String>> {
-    spawn(connection, move |client| async move { client.get_object(&bucket, &key).await })
+    destination: std::path::PathBuf,
+) -> async_channel::Receiver<Result<(), String>> {
+    spawn(connection, move |client| async move {
+        client.get_object_to_file(&bucket, &key, &destination).await
+    })
 }
 
 pub fn spawn_delete_object(
@@ -930,6 +1032,130 @@ mod tests {
         assert!(request_head.starts_with("PUT /mybucket/hello.txt HTTP/1.1"), "fel begäranrad: {request_head}");
         assert!(request_head.contains("content-type: text/plain"), "saknar Content-Type-header: {request_head}");
         assert!(request_head.ends_with("hej"), "kroppen skickades inte med: {request_head}");
+    }
+
+    /// Strömmar ner ett objekt som är STÖRRE än någon rimlig buffert och
+    /// verifierar att varenda byte kom fram korrekt — bevisar att
+    /// bit-för-bit-skrivningen sätter ihop filen rätt, inte bara att den
+    /// första biten råkar stämma.
+    #[tokio::test]
+    async fn get_object_to_file_streams_a_large_body_to_disk_correctly() {
+        // ~3 MiB av ett upprepat mönster: stort nog att garanterat delas
+        // upp i flera TCP-segment/chunks, med ett innehåll där en
+        // felaktigt hopsatt fil (tappad eller omkastad bit) syns direkt.
+        let payload: Vec<u8> = (0..3 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let expected = payload.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let _ = socket.read(&mut buf).await;
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            );
+            let _ = socket.write_all(head.as_bytes()).await;
+            let _ = socket.write_all(&payload).await;
+            let _ = socket.shutdown().await;
+        });
+
+        let client = S3Client::new(
+            &format!("http://127.0.0.1:{port}"),
+            "us-east-1".to_string(),
+            S3Credentials { access_key_id: "AKID".to_string(), secret_access_key: "secret".to_string() },
+        )
+        .unwrap();
+
+        let dir = std::env::temp_dir().join(format!("bastion-s3-stream-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let destination = dir.join("stor-fil.bin");
+
+        client
+            .get_object_to_file("mybucket", "stor-fil.bin", &destination)
+            .await
+            .expect("strömmande nedladdning misslyckades");
+
+        let written = std::fs::read(&destination).unwrap();
+        assert_eq!(written.len(), expected.len(), "fel filstorlek");
+        assert_eq!(written, expected, "innehållet sattes inte ihop korrekt");
+
+        // Ingen kvarlämnad `.part`-fil efter en lyckad nedladdning.
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".part"))
+            .collect();
+        assert!(leftovers.is_empty(), "temporära filer lämnades kvar: {leftovers:?}");
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Ett felsvar (t.ex. 404) ska ge ett tydligt fel OCH inte lämna
+    /// någon fil alls på målsökvägen — varken en tom eller en halv.
+    #[tokio::test]
+    async fn get_object_to_file_writes_nothing_when_the_server_returns_an_error() {
+        let (port, _rx) = spawn_fake_s3_server_with_status(
+            "HTTP/1.1 404 Not Found",
+            "<Error><Code>NoSuchKey</Code><Message>finns inte</Message></Error>",
+        )
+        .await;
+        let client = S3Client::new(
+            &format!("http://127.0.0.1:{port}"),
+            "us-east-1".to_string(),
+            S3Credentials { access_key_id: "AKID".to_string(), secret_access_key: "secret".to_string() },
+        )
+        .unwrap();
+
+        let dir = std::env::temp_dir().join(format!("bastion-s3-stream-err-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let destination = dir.join("finns-inte.bin");
+
+        let err = client
+            .get_object_to_file("mybucket", "finns-inte.bin", &destination)
+            .await
+            .expect_err("ett 404-svar ska ge Err");
+        match err {
+            S3Error::HttpError { status, ref code, .. } => {
+                assert_eq!(status, 404);
+                assert_eq!(code, "NoSuchKey");
+            }
+            other => panic!("fel feltyp: {other:?}"),
+        }
+
+        assert!(!destination.exists(), "ingen fil ska ha skapats vid ett felsvar");
+        let leftovers: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).collect();
+        assert!(leftovers.is_empty(), "katalogen ska vara tom, fick {} poster", leftovers.len());
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Som `spawn_fake_s3_server`, fast med valfri statusrad.
+    async fn spawn_fake_s3_server_with_status(
+        status_line: &'static str,
+        response_body: &'static str,
+    ) -> (u16, tokio::sync::oneshot::Receiver<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let n = socket.read(&mut buf).await.unwrap_or(0);
+            let request_head = String::from_utf8_lossy(&buf[..n]).into_owned();
+            let body = format!(
+                "{status_line}\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            let _ = socket.write_all(body.as_bytes()).await;
+            let _ = socket.shutdown().await;
+            let _ = tx.send(request_head);
+        });
+        (port, rx)
     }
 
     fn make_connection() -> S3Connection {

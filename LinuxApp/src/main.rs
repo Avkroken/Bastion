@@ -3808,13 +3808,12 @@ fn build_s3_object_row(
                         return;
                     };
                     let Some(local_path) = file.path() else { return };
-                    let rx = s3::spawn_get_object(connection, bucket_name, key);
+                    // Strömmar direkt till fil — ett flergigabyte-objekt
+                    // (backup, diskavbildning) ska inte behöva rymmas i
+                    // RAM först, se `s3::S3Client::get_object_to_file`.
+                    let rx = s3::spawn_download_object(connection, bucket_name, key, local_path.clone());
                     match rx.recv().await {
-                        Ok(Ok(data)) => {
-                            if let Err(e) = std::fs::write(&local_path, data) {
-                                list.append(&error_row(&format!("kunde inte skriva {}: {e}", local_path.display())));
-                            }
-                        }
+                        Ok(Ok(())) => {}
                         Ok(Err(e)) => list.append(&error_row(&e)),
                         Err(_) => list.append(&error_row("kanalen stängdes oväntat")),
                     }
