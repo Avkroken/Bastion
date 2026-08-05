@@ -355,6 +355,33 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **Färgmärkning av värdar (`Host::color_tag`) i den NYA Rust/GTK4-
+  `LinuxApp`** (2026-08-05, `main.rs`): fältet har funnits i datamodellen
+  sedan starten (wire-kompatibelt med Swift-sidans `colorTag`, se
+  `Host.swift`) men saknade helt UI-koppling i `LinuxApp` — varken en
+  väljare i värdredigeringsdialogen eller en visuell markering i
+  värdlistan. Samma "fältet finns, ingen använder det"-gapmönster som
+  certifikatautentiseringen (#252) och auth-väljaren i värdredigerings-
+  dialogen.
+  - Sju namngivna färger (röd/orange/gul/grön/blå/lila/grå), samma
+    paletturval som `App/HostColor.swift`s `HostColorPalette` — Adwaitas
+    egna namngivna accentfärger som hex-värden, inte gissade.
+  - GTK4 har (till skillnad från GTK3) ingen per-widget
+    `style_context()`/`add_provider()` längre — en delad `CssProvider`
+    med sju fasta `.host-color-<namn>`-klasser, laddad EN gång globalt
+    vid appstart, är rätt väg för ett litet fast antal namngivna färger.
+  - Värdlistan: en liten färgad cirkel som radens prefix, motsvarar
+    `HostRow`s cirkel i `App/HostListView.swift` — osynlig helt om ingen
+    färg är satt, inte en tom/grå platshållare.
+  - Värdredigeringsdialogen: sju klickbara färgade cirklar, EXKLUSIVT val
+    med manuell (inte `ToggleButton::set_group`) logik — trycker man på
+    den REDAN valda färgen igen tas valet bort helt, samma beteende som
+    Swift-sidans `HostColorPicker` (inte vanlig radioknapp-semantik, som
+    inte tillåter att avmarkera).
+  - Ren GTK-limkod, ingen ny modul/inga nya tester (samma typ av
+    UI-verifiering via lyckad `cargo build` som tab-numreringsfixen).
+    174/174 `cargo test` fortsatt gröna, `clippy` tyst.
+
 - **OAuth2/PKCE-kontosynk, KÄRNAN, i den NYA Rust/GTK4-`LinuxApp`**
   (2026-08-05, `LinuxApp/src/oauth.rs`): port av
   `Sources/SSHCore/OAuthPKCE.swift` + `OAuthToken.swift` +
