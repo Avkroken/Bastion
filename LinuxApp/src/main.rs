@@ -13,6 +13,7 @@ mod fsutil;
 mod host;
 mod key_deploy;
 mod known_hosts;
+mod oauth;
 mod port_forward;
 mod s3;
 mod serial;
