@@ -411,6 +411,39 @@ ordning nyttan per arbetsinsats är störst):
 
 ## Klart
 
+- **Kommandopalett (`Ctrl+Shift+P`)** (2026-08-05, `LinuxApp/src/main.rs`
+  + nya `LinuxApp/src/fuzzy.rs`) — andra halvan av steg 1 i
+  Termius-prioriteringen, kortkommandona var första:
+  - **En sökruta över allt man rimligen vill nå snabbt**: de öppna
+    sessionerna och de sparade värdarna i samma lista. Öppna sessioner
+    läggs in först, och eftersom rankningen är stabil vinner "byt till
+    fliken du redan har" över "öppna en till mot samma värd" när poängen
+    är lika. Ett test vaktar just den ordningen — den är lätt att råka
+    förstöra vid en framtida sorteringsändring.
+  - **Sökningen är luddig men förutsägbar.** `pw1` hittar `prod-web-1`.
+    Tre regler, inte fler: tecknen måste finnas i ordning, träffar som
+    sitter ihop väger tyngre än utspridda, och träffar i början av ett
+    ord väger tyngre än mitt inne i ett. En palett som rankar
+    oförklarligt är värre än ingen palett alls. Det söks i alias,
+    `användare@värd` OCH taggar — man ska kunna leta upp en maskin på
+    sin IP eller sin tagg, inte bara på namnet man gav den.
+  - **`fuzzy.rs` är GTK-fri och har elva tester**, inklusive de
+    jämförelser som ordningen faktiskt bygger på (sammanhängande slår
+    utspridd, ordbörjan slår mitt i ordet, kort exakt namn slår långt).
+    Samma skäl som för `tab_title.rs`: `main.rs` har ingen
+    `#[cfg(test)]`-täckning av hävd. 203 → 214 tester.
+  - **Tangentbordet räcker hela vägen**: `Ctrl+Shift+P` öppnar, man
+    skriver, upp/ner flyttar markeringen UTAN att fokus lämnar sökrutan
+    (annars går det inte att fortsätta skriva efter att ha pilat), Enter
+    aktiverar och Escape stänger. Verifierat i den körande appen —
+    `dbb` + Enter anslöt till `db-backup`, och när paletten öppnades
+    igen låg den sessionen överst som "Öppen session · flik 1".
+  - **Ingen `adw::HeaderBar`**, till skillnad från appens övriga
+    dialoger: en palett ska vara sökrutan, inget annat.
+  - **Kvar**: åtgärder (inte bara värdar och sessioner) i paletten —
+    "öppna inställningar", "importera ssh-config" och liknande borde
+    också gå att nå därifrån.
+
 - **Kortkommandon — appen hade inga alls** (2026-08-05,
   `LinuxApp/src/main.rs`), första steget i Termius-prioriteringen ovan:
   - **`Ctrl+Shift`, inte `Ctrl`.** Appen ÄR en terminal: `Ctrl+T`,
