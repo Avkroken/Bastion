@@ -355,6 +355,34 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **SÄKERHETSFIX: en oläsbar `known_hosts` tappade tyst hela
+  MITM-skyddet** (2026-08-05, `known_hosts.rs` + `ssh.rs`): hittad vid
+  egen genomläsning av de säkerhetskänsligaste modulerna (CodeRabbit
+  borttaget ur repot).
+  - `KnownHosts::load` returnerade en TOM karta vid VARJE läsfel, inte
+    bara när filen saknades. Blev `~/.bastion/known_hosts` oläsbar
+    (rättighetsfel, I/O-fel, sökvägen pekar fel) betydde det att varje
+    värd blev `Learned` — inlärd på nytt — i stället för kontrollerad
+    mot sin lagrade nyckel. Alltså: **TOFU-skyddet mot MITM försvann
+    tyst, utan minsta indikation**, precis det enda filen finns för.
+  - Fix: `load` skiljer nu `NotFound` (första körningen → tom lagring,
+    korrekt) från alla andra fel (→ `Err`). `KnownHosts::open` är
+    fallibel och `ssh.rs` **faller stängt**: anslutningen avbryts med
+    "vägrar ansluta utan värdnyckelskontroll" i stället för att fortsätta
+    oskyddat. Gäller både target- och jump-hosten.
+  - **Medveten AVVIKELSE från Swift-referensen**, som använder `try?`
+    och sväljer alla fel på samma ställe (`KnownHosts.loadEntries`) —
+    men i linje med kodbasens egen princip på andra håll
+    (`HostStore::load`/`AppSettingsStore::load` skiljer redan "finns
+    inte" från "går inte att tolka"). Swift-sidan har samma svaghet och
+    bör åtgärdas där också.
+  - Två nya tester: saknad fil är INTE ett fel (första körningen ska
+    fungera), och ett läsfel som inte är `NotFound` ger `Err` i stället
+    för tom lagring. Det senare är **verifierat att faktiskt fånga
+    buggen** — med fixen bortplockad misslyckas det. Felet framkallas
+    via en katalog i stället för rättigheter, så det är deterministiskt
+    även om testet skulle köras som root.
+
 - **BUGGFIX: seriell läs-tråd + filbeskrivare läckte vid varje stängd
   flik** (2026-08-05, `serial.rs`): hittad vid egen genomläsning av
   sessionens egna moduler (CodeRabbit borttaget ur repot).
