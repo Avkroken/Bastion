@@ -33,7 +33,7 @@ delvis andra, av konkreta skäl:
 | known_hosts / TOFU (SHA256-fingeravtryck, MITM-skydd) | ✅ testad, `~/.bastion/known_hosts` |
 | ssh-config-parsing (`Host`-alias, jokertecken, `IdentityFile`) | ✅ testad, CLI slår upp alias |
 | Host-databas (JSON, taggar, CRUD) | ✅ testad, `~/.bastion/hosts.json` |
-| Dashboard-data (last/minne/disk/uptime/OS/Docker via SSH) | ✅ parser testad, ett kommando |
+| Dashboard-data (last/minne/disk/uptime/OS/Docker via SSH) | ✅ parser testad, ett kommando — App/-UI (Xcode-only) — ✅ (2026-08-05) LinuxApp Rust (`dashboard.rs`), egen flik, ingen auto-poll än (se "Klart") |
 | Docker-åtgärder (lista/start/stopp/omstart/logg) | ✅ testad, injektionssäker referens |
 | Sync mellan enheter (LWW-merge + gravstenar, mapp-transport) | ✅ testad, konvergens bevisad |
 | E2E-krypterad sync (AES-256-GCM + PBKDF2, testvektorer) | ✅ testad, chiffertext läcker inget |
@@ -50,9 +50,9 @@ delvis andra, av konkreta skäl:
 | Linux-terminal (VT100/ANSI-tolk, bestående PTY-shell) | ✅ 42 fristående parser-tester gröna (`LinuxApp/Tests/`), körd (Xvfb) — riktig tangentbordsinmatning (2026-08-02, `KeyEventBridge.swift`, se "Klart"), ingen interaktiv GUI-verifiering än; inget musstöd (ingen rå gest-position-API i SwiftCrossUI) |
 | Linux-Docker-hantering (`DockerView`) | ✅ lista/start/stopp/omstart/logg/shell — motsvarar `App/DockerView.swift` |
 | Portvidarebefordran (`PortForwardView`) | ✅ lokal/fjärr/dynamisk — LinuxApp (byggd+körd, Xvfb; interaktiv klick-genom-menyn ej gjord) OCH App/ (2026-07-08, Xcode-only) |
-| ProxyJump (`ssh -J`) | ✅ `SSHSession.connect(via:)`, `bastion-cli` läser `ProxyJump` ur ssh-config automatiskt |
+| ProxyJump (`ssh -J`) | ✅ `SSHSession.connect(via:)`, `bastion-cli` läser `ProxyJump` ur ssh-config automatiskt — ✅ (2026-08-04) LinuxApp Rust (`ssh::connect_via_jump`), testat mot två oberoende riktiga `sshd`-instanser, ingen egen UI-väljare i LinuxApps host-dialog än (se "Klart") |
 | WireGuard-profiler | ✅ parsning/serialisering + lagring — LinuxApp OCH App/-UI (2026-07-08, Xcode-only) |
-| OpenSSH-certifikat | ✅ parsning + CA-signaturverifiering + `SSHUserAuth`/`HostAuth`-wiring (`.certificateFile`) — testad mot RIKTIGA `ssh-keygen -s`-certifikat, LinuxApp+App-UI klar |
+| OpenSSH-certifikat | ✅ parsning + CA-signaturverifiering + `SSHUserAuth`/`HostAuth`-wiring (`.certificateFile`) — testad mot RIKTIGA `ssh-keygen -s`-certifikat, App/-UI (Xcode-only) — ✅ (2026-08-05) LinuxApp Rust (`ssh::authenticate`, `russh::keys::load_openssh_certificate`), permanent CI-test mot en RIKTIG `sshd` med `TrustedUserCAKeys` (går längre än Swift-sidans engångsverifiering, se "Klart") |
 | ssh-agent-protokollklient | ✅ `SSHAgentClient.swift`, testad mot en RIKTIG `ssh-agent` — 🚫 kanal-forwarding till fjärrserver BLOCKERAD (se ROADMAP) |
 | Tailscale-värdförslag | ✅ `TailscaleStatus.swift` (fetch/fetchLocal) — LinuxApp OCH App/-UI (2026-07-08, Xcode-only; `fetchLocal` villkorsstyrd bort på iOS, `Foundation.Process` saknas där) |
 | S3-kompatibel objektlagring | ✅ `S3Client.swift` + `S3ConnectionStore` — LinuxApp OCH App/-UI (2026-07-08, Xcode-only) |
@@ -354,6 +354,965 @@ delvis andra, av konkreta skäl:
    — se "Uppskjutet med avsikt"-beslutet nedan.)
 
 ## Klart
+
+- **BUGGFIX: kommandoutdata kunde tappas HELT (tom systemöversikt/
+  Docker-lista)** (2026-08-05, `ssh.rs`): såg först ut som ett flakigt
+  test, visade sig vara en riktig produktionsbugg.
+  - `run_command_on_session` gjorde `ChannelMsg::ExitStatus => break`.
+    Men SSH garanterar INTE att all `Data` hunnit levereras innan
+    `exit-status` — servern skickar typiskt `exit-status` så fort
+    processen dör, medan utdatan fortfarande kan ligga kvar i kanalens
+    kö. Kom meddelandena i den ordningen returnerade kommandot **tom
+    sträng trots att det lyckats**.
+  - Drabbar allt som läser kommandoutdata: systemöversikten
+    (`dashboard.rs`), Docker-listan/-loggarna, Tailscale-hämtning över
+    SSH, nyckeldistributionens verifiering. Symptom: en tom vy, utan
+    felmeddelande. Lastberoende — därför sporadiskt.
+  - Upptäckt genom att `connect_via_jump_reaches_the_real_separate_
+    target_sshd` föll i CI TVÅ gånger (PR #263 och #268) med
+    `left: ""` medan den passerade lokalt. Första gången avfärdad som
+    CI-resurskonkurrens; andra gången granskades loopen ordentligt och
+    orsaken hittades. **Lärdom: ett "flakigt" test som alltid failar på
+    SAMMA sätt är en bugghypotes, inte brus.**
+  - Fix: `Eof`/`Close` (eller att `wait()` ger `None`) är de enda
+    korrekta slutvillkoren — efter `Eof` kommer per definition ingen mer
+    data. `COMMAND_TIMEOUT` skyddar redan mot en server som aldrig
+    stänger kanalen.
+
+- **SÄKERHETSFIX: en oläsbar `known_hosts` tappade tyst hela
+  MITM-skyddet** (2026-08-05, `known_hosts.rs` + `ssh.rs`): hittad vid
+  egen genomläsning av de säkerhetskänsligaste modulerna (CodeRabbit
+  borttaget ur repot).
+  - `KnownHosts::load` returnerade en TOM karta vid VARJE läsfel, inte
+    bara när filen saknades. Blev `~/.bastion/known_hosts` oläsbar
+    (rättighetsfel, I/O-fel, sökvägen pekar fel) betydde det att varje
+    värd blev `Learned` — inlärd på nytt — i stället för kontrollerad
+    mot sin lagrade nyckel. Alltså: **TOFU-skyddet mot MITM försvann
+    tyst, utan minsta indikation**, precis det enda filen finns för.
+  - Fix: `load` skiljer nu `NotFound` (första körningen → tom lagring,
+    korrekt) från alla andra fel (→ `Err`). `KnownHosts::open` är
+    fallibel och `ssh.rs` **faller stängt**: anslutningen avbryts med
+    "vägrar ansluta utan värdnyckelskontroll" i stället för att fortsätta
+    oskyddat. Gäller både target- och jump-hosten.
+  - **Medveten AVVIKELSE från Swift-referensen**, som använder `try?`
+    och sväljer alla fel på samma ställe (`KnownHosts.loadEntries`) —
+    men i linje med kodbasens egen princip på andra håll
+    (`HostStore::load`/`AppSettingsStore::load` skiljer redan "finns
+    inte" från "går inte att tolka"). Swift-sidan har samma svaghet och
+    bör åtgärdas där också.
+  - Två nya tester: saknad fil är INTE ett fel (första körningen ska
+    fungera), och ett läsfel som inte är `NotFound` ger `Err` i stället
+    för tom lagring. Det senare är **verifierat att faktiskt fånga
+    buggen** — med fixen bortplockad misslyckas det. Felet framkallas
+    via en katalog i stället för rättigheter, så det är deterministiskt
+    även om testet skulle köras som root.
+
+- **BUGGFIX: seriell läs-tråd + filbeskrivare läckte vid varje stängd
+  flik** (2026-08-05, `serial.rs`): hittad vid egen genomläsning av
+  sessionens egna moduler (CodeRabbit borttaget ur repot).
+  - Rotorsak: `cfmakeraw` sätter `VMIN=1/VTIME=0` — "blockera i `read()`
+    tills minst en byte kommer, hur länge som helst" — och
+    `open_and_configure` rensar medvetet bort `O_NONBLOCK`. `stop`-
+    flaggan (som skriv-tråden sätter när fliken stängs) kontrolleras
+    bara i läsloopens TOPP. På en TYST port — en helt vanlig konsolport
+    som inte skriver något av sig själv — vaknade läs-tråden därför
+    aldrig: tråden OCH den öppna filbeskrivaren läckte permanent, en
+    gång per stängd seriell flik. Kodens egen kommentar kallade den
+    "pollningsloopen", men ingenting pollade.
+  - Fix: `VMIN=0/VTIME=1` (0,1 s) efter `cfmakeraw`, så `read()`
+    returnerar regelbundet även utan data och loopen hinner se flaggan.
+    Med `VMIN=0` betyder `read() == 0` "timeout, ingen data" — INTE EOF
+    — så läsloopen `continue`:ar i stället för att `break`:a på 0;
+    frånkoppling syns i stället som ett fel (EIO) i `Err`-grenen.
+  - Regressionstest mot en riktig PTY som ALDRIG skickar något, med
+    master medvetet öppen (så det bevisas att det är `stop`-flaggan som
+    fungerar, inte att porten råkade dö). **Testet är verifierat att
+    faktiskt fånga buggen**: med fixen bortplockad misslyckas det på
+    10 s. Det väntar via en `mpsc::recv_timeout`-brygga i stället för
+    `recv_blocking` just för att FAILA i stället för att HÄNGA (en
+    hängande CI-körning hade ätit hela jobbets tidsbudget) — även det
+    verifierat empiriskt: den direkta varianten hängde >180 s.
+  - Även fixat i samma svep: `libc::dup` kontrolleras nu mot -1 (t.ex.
+    EMFILE). Utan kontrollen gav `File::from_raw_fd(-1)` en session som
+    SÅG ansluten ut och kunde läsa, men där varje skrivning tyst
+    misslyckades.
+
+- **ROBUSTHETSFIX: OAuth-loopbacken band sig till FÖRSTA anslutningen**
+  (2026-08-05, `oauth.rs`): hittad vid egen genomläsning av den nyss
+  skeppade inloggningen (CodeRabbit borttaget ur repot — självgranskning
+  + CI är det som finns kvar).
+  - `await_redirect` gjorde ETT `accept()` och behandlade den
+    anslutningen som redirecten. Men webbläsare öppnar rutinmässigt
+    anslutningar som INTE är redirecten: spekulativ TCP-"preconnect"
+    (öppnas, skickar aldrig något) och `/favicon.ico` efter att
+    svarssidan renderats. En preconnect hade slukat platsen och lämnat
+    den riktiga redirecten obesvarad tills 5-minuterstimeouten löpte ut
+    — inloggningen "hänger" utan förklaring. En tidig favicon-begäran
+    hade i stället gett ett förvirrande "leverantören returnerade ett
+    fel: okänt fel".
+  - Fix: loopa över anslutningar tills en visar sig vara den riktiga
+    (har `code` eller `error`). Övriga får ett artigt 404 och loopen
+    väntar vidare. Per anslutning finns dessutom en 5 s lästimeout så
+    en tyst preconnect inte stoppar upp kön.
+  - Skärpte samtidigt state-hanteringen: en callback med `code` men
+    HELT UTAN `state` rapporterades tidigare som "okänt fel" (föll
+    igenom till leverantörsfel-grenen) i stället för det korrekta
+    state-felet — CSRF-skyddet kan inte verifieras utan `state`, så det
+    ÄR ett state-fel.
+  - Nytt test: en strö-begäran utan `code`/`state` besvaras med 404 och
+    den efterföljande riktiga redirecten accepteras ändå.
+
+- **BUGGFIX: klick i värdlistan öppnade session mot FEL VÄRD** (2026-08-05,
+  `main.rs` + regressionstest i `host_grouping.rs`): en riktig bugg som
+  infördes av den sektionerade listvyn tidigare samma dag och hittades
+  vid egen genomläsning av koden (CodeRabbit togs bort ur repot under
+  sessionen — självgranskning + CI/dependabot är det som finns kvar).
+  - Rotorsak: raderna kopplades via en `ListBox::connect_row_activated`
+    som slog upp värden på radens INDEX i `HostStore::all()`. Det var
+    korrekt så länge listan var platt och i exakt samma ordning som
+    `all()` — men den sektionerade vyn lägger till rubrikrader, sorterar
+    på alias inom varje sektion, plockar ut favoriter ur sina
+    taggsektioner och låter en multi-taggad värd förekomma i FLERA
+    sektioner. Dessutom filtrerar sökfältet bort rader. Index pekade
+    därför på fel post — ett klick anslöt till en annan värd än den man
+    klickade på.
+  - Fix: `adw::ActionRow::connect_activated` PER RAD, med värdens `id`
+    fångat direkt i closuren (samma mönster som radens övriga
+    host-åtgärder redan använde). Robust även mot att listan hinner
+    ändras mellan att raden byggs och att den klickas.
+  - Regressionstest (`flattened_group_order_does_not_match_raw_store_order`)
+    som visar exakt varför index-uppslag är ogiltigt: den utplattade
+    sektionsordningen har både annan ordning OCH fler element än
+    rålistan. Skyddar mot en framtida "förenkling" tillbaka till index.
+
+- **BUGGFIX: favoritstjärnan uppdaterade inte listans gruppering**
+  (2026-08-05, `main.rs`): att stjärnmärka en värd sparade till disk men
+  byggde inte om listan, så värden låg kvar i sin gamla sektion tills
+  något annat råkade trigga en uppdatering. Swift-sidans `toggleFavorite`
+  → `save` → `reload()` gör det direkt. Fixat, med två detaljer värda
+  att notera:
+  - Ombyggnaden är UPPSKJUTEN till nästa huvudloopsvarv
+    (`glib::idle_add_local_once`) i stället för att köras rakt av —
+    `refresh_list` river ut alla rader, inklusive den rad vars knapp just
+    står mitt i sin egen signalhantering. GTK håller en referens under
+    signalemissionen (ingen use-after-free), men att låta hanteraren
+    returnera först undviker hela frågan.
+  - Vakt mot att en toggling som bara speglar ett redan sparat värde
+    triggar en onödig ombyggnad (och därmed mot att ombyggnaden i
+    förlängningen skulle kunna trigga sig själv).
+
+- **Auto-poll av systemöversikten (dashboard) i den NYA Rust/GTK4-
+  `LinuxApp`** (2026-08-05, `main.rs`): "Kvar" från dashboard-PR:en
+  (#254) — motsvarar Swift-sidans `DashboardModel.startPolling()`,
+  15 s intervall, hämtar direkt sedan om och om igen tills fliken
+  stängs.
+  - **Genuin race hittad och fixad under självgranskningen** (inte
+    CodeRabbit den här gången — se nedan): `ssh::COMMAND_TIMEOUT` är
+    30 s, LÄNGRE än det tänkta 15 s-pollintervallet. Den ursprungliga
+    implementationen hade eldat av en NY fire-and-forget-uppdatering var
+    15:e sekund oavsett om föregående ännu väntade på svar — en ovanligt
+    långsam anslutning hade kunnat ge två samtidiga rensa/fylla-
+    körningar mot samma `ListBox` (flimmer eller en halvfärdig lista).
+    Löst genom att bryta ut kärnan (`refresh_dashboard_once`) och låta
+    pollningsloopen AWAITA den direkt i stället för att elda och glömma
+    — värsta fall blir hämtningstid+15 s mellan uppdateringar, aldrig
+    en överlappning.
+  - Stoppvillkor: `AdwTabView::page_position(&page) < 0` (fliken inte
+    längre i trädet), kollat både innan och efter varje uppdatering —
+    INTE en `clone!`-`#[weak]`-uppgradering (den sker bara en gång, vid
+    loopens start, inte per varv — en git-historik-anteckning värd att
+    komma ihåg nästa gång ett liknande mönster används).
+  - Ren GTK-limkod, ingen ny modul/inga nya tester. 195/195 `cargo test`
+    fortsatt gröna, `clippy` tyst.
+  - **CodeRabbit borttaget från repot under den här sessionen** — från
+    och med nu självgranskas varje PR mer noggrant innan den skickas,
+    med CI/dependabot som enda kvarvarande automatiska hjälp.
+
+- **Interaktiv OAuth2/PKCE-inloggning i den NYA Rust/GTK4-`LinuxApp`**
+  (2026-08-05, `LinuxApp/src/oauth.rs` + `main.rs`): den del av
+  OAuth-portningen (#256) som medvetet sköts upp — öppna en
+  webbläsare, fånga koden som skickas tillbaka. Löst med en lokal
+  loopback-HTTP-lyssnare enligt RFC 8252 ("OAuth 2.0 for Native Apps"),
+  det designval som lämnades öppet i #256 (kontra ett registrerat
+  anpassat URI-schema via `xdg-mime`/en `.desktop`-fil) — fungerar
+  oavsett skrivbordsmiljö/paketformat (deb/rpm/flatpak), ingen extra
+  registrering krävs.
+  - `oauth::start_login`/`finish_login`: binder en `TcpListener` på en
+    SLUMPAD ledig port (`127.0.0.1:0`), bygger auktoriseringsURL:en med
+    den dynamiska `redirect_uri`:n, väntar in EN inkommande begäran
+    (5 minuters timeout — en användare som stänger fliken ska inte
+    hänga appen för evigt), tolkar `code`/`state` ur query-strängen,
+    svarar webbläsaren med en enkel bekräftelsesida, och byter koden mot
+    ett riktigt token. Uppdelad från själva webbläsaröppningen
+    (`gtk::UriLauncher`, portal-baserad — fungerar även sandboxat, till
+    skillnad från att skala ut till `xdg-open`) så resten av flödet
+    förblir testbart utan GTK.
+  - **3 nya GENUINT end-to-end-testade fall**, inte mockade: en riktig
+    `TcpListener` på en riktig slumpad port, en riktig HTTP-klient som
+    spelar "webbläsaren" (gör exakt den GET-begäran webbläsaren skulle
+    gjort), och en riktig lokal token-server för själva bytet — lyckat
+    fall, fel `state` (CSRF-skydd, avvisas tydligt men webbläsaren får
+    ändå ett svar, inte en trasig anslutning), och ett leverantörsfel
+    (`?error=access_denied`).
+  - Ny "Kontosynk"-sektion i inställningsdialogen: en rad per
+    leverantör (Dropbox/Google Drive/OneDrive) med Logga in/ut-knapp,
+    motsvarar `App/SyncSettingsView.swift`s `accountRow`. **Bara
+    inloggningen** — att faktiskt ladda upp/ner den krypterade synkfilen
+    via kontot är ett eget, större steg, se "Kvar".
+  - **VIKTIGT för Dropbox specifikt**: det registrerade `client_id`:t
+    (`ira5qtb04w4qikk`) är bara godkänt för
+    `se.denied.bastion://oauth/dropbox` (Apple-sidans schema) i Dropboxs
+    app-konsol — en loopback-URL måste läggas till som ytterligare en
+    tillåten redirect-URI där innan inloggning mot Dropbox fungerar i
+    produktion. Ett kontoägar-beslut, görs inte av koden.
+  - **Kvar**: den faktiska kontosynk-transporten (ladda upp/ner
+    `bastion-sync.enc` via Dropbox-/Google Drive-/OneDrive-API:et,
+    motsvarande `DropboxSyncProvider.swift` m.fl.) är INTE byggd —
+    `OAuthTokenStore::load`/`valid_access_token`/`refresh_access_token`
+    väntar redan färdiga på den (bara testade, ej ansluten till
+    `main.rs` än, `#[allow(dead_code)]`-markerade med motivering).
+  - 195/195 `cargo test` gröna totalt, `cargo build`/`clippy` helt
+    tysta.
+
+- **`ExternalBinaryFetcher` — generisk hämta+verifiera+cacha-hjälpare för
+  externa binärer, i den NYA Rust/GTK4-`LinuxApp`** (2026-08-05,
+  `LinuxApp/src/external_binary_fetcher.rs`): port av
+  `Sources/SSHCore/ExternalBinaryFetcher.swift` — **medvetet
+  framåtblickande infrastruktur, inte en stängd lucka**: varken denna
+  Rust-modul eller Swift-referensen har någon anropare än. Byggstenen
+  för VISION.md "Native WireGuard/Tailscale — inget externt beroende"
+  (se Swift-sidans "första byggstenen"-notering, 2026-08-03).
+  - Genererar+jämför SHA256 av de NEDLADDADE bytesen INNAN något skrivs
+    till disk — en manipulerad/fel binär hamnar aldrig i cachen ens
+    tillfälligt. En redan cachad fil med fel checksumma (korrupt eller
+    ett gammalt felaktigt försök) städas bort och laddas ner på nytt.
+    Skriver till en temporär fil i SAMMA katalog, byter sedan namn — en
+    process som läser destinationen mitt under en nedladdning kan
+    aldrig se en halvskriven fil. `chmod 755` på Unix.
+  - 4 tester porterade rakt av från `Tests/SSHCoreTests/
+    ExternalBinaryFetcherTests.swift` — RIKTIGA nätverksanrop mot en
+    pinnad, oföränderlig GitHub-tagg (`raw.githubusercontent.com/
+    torvalds/linux/v6.6/COPYING`), samma URL/checksumma som Swift-
+    sidans tester, inte mockat. Verifierar att en cache-träff genuint
+    undviker nätverket helt (andra anropet pekas mot en overksam URL —
+    om cachningen INTE fungerade hade anropet failat, inte tyst
+    returnerat rätt svar av misstag).
+  - 192/192 `cargo test` gröna totalt (alla 4 nya gick igenom mot
+    riktigt nätverk, ingen skippning), `cargo build`/`clippy` helt
+    tysta (modulen är `#![allow(dead_code)]` tills en faktisk
+    WireGuard-/Tailscale-nedladdningsfunktion kopplar in den).
+
+- **Reglage för Portvidarebefordran/SSH-nyckel-knapparna i
+  Funktioner-inställningarna i den NYA Rust/GTK4-`LinuxApp`**
+  (2026-08-05, `main.rs`): `settings::FeatureToggles::show_port_forward`/
+  `show_key_deploy` lästes redan korrekt (`gio_menu_for` dolde "Tunnel"/
+  "Nyckel"-menyposterna som förväntat) men gick bara att stänga av genom
+  att redigera `settings.json` för hand — inget reglage i
+  inställningsdialogen, till skillnad från de tre andra fälten (Docker/
+  Kommandobibliotek/SFTP) som redan hade det. Motsvarar de två sista
+  togglarna i `App/FeatureSettingsView.swift`s "Värdmenyn"-sektion.
+  `show_snippets` förblir avsiktligt utan reglage — LinuxApp har ingen
+  egen Snippets-vy att gömma (fältet finns bara kvar för att inte tappa
+  en delad `settings.json`-fils övriga värden, samma motivering som
+  redan gällde de andra fem fälten).
+  - Ren GTK-limkod, ingen ny modul/inga nya tester. 188/188 `cargo test`
+    fortsatt gröna, `cargo build`/`clippy` helt tysta.
+
+- **Bitwarden-autentisering (`HostAuth::BitwardenItem`) i den NYA
+  Rust/GTK4-`LinuxApp`** (2026-08-05, `LinuxApp/src/bitwarden.rs` +
+  auth-väljare i `main.rs`): port av `Sources/SSHCore/BitwardenClient.swift`
+  — men INTE bara paritet med en redan fungerande Apple-funktion.
+  **Linux är faktiskt den ENDA plattformen där det här kan fungera i
+  praktiken**: `App/AuthResolver.swift`s `resolveAuth` returnerar
+  ALLTID `nil` för `.bitwardenItem` på båda Apple-plattformarna — iOS
+  saknar `Foundation.Process` helt, och macOS-målets App Sandbox dödar
+  `bw`-processen med ett okatchbart SIGTRAP, empiriskt verifierat på
+  riktig macOS-hårdvara (se `AuthResolver.swift`s kommentar, som
+  uttryckligen konstaterar att `bw` "faktiskt fungerar" på Linux-sidan).
+  Ett tidigare felaktigt antagande i `ssh.rs`s modulkommentar grupperade
+  `BitwardenItem` ihop med den genuint Apple-specifika `KeychainKey` som
+  "saknar Linux-motsvarighet" — det stämde aldrig för `BitwardenItem`.
+  - `std::process::Command::output()` (ingen manuell konkurrent
+    pipe-läsning behövs, till skillnad från Swift-sidans egna
+    `ProcessRunner` — Rusts `.output()` gör redan det säkert internt).
+    Session skickas via `BW_SESSION`-miljövariabeln (INTE argv
+    `--session`, som läcker via `/proc/*/cmdline`), `--nointeraction`
+    förhindrar att `bw` hänger på ett interaktivt huvudlösenords-prompt
+    Bastion inte har någon terminal att svara i. Bara den avslutande
+    radbrytningen `bw` lägger till trimmas — ett riktigt lösenord med
+    avsiktligt ledande/inre whitespace korrumperas INTE.
+  - 6 tester porterade rakt av från `Tests/SSHCoreTests/
+    BitwardenClientTests.swift` — riktiga körbara `/bin/sh`-fixturer,
+    samma teknik som `TestSshd`. Ett genuint (om obskyrt) test-bara
+    `ETXTBSY`-("Text file busy")-race hittades och fixades under
+    verifieringen: `cargo test`s parallella trådar inom SAMMA process
+    kan tillfälligt neka `execve()` på ett just skrivet skript om en
+    ANNAN tråd forkar (t.ex. `TestSshd`) medan filhandtaget hunnit
+    ärvas men inte stängts än — 100 % reproducerbart borta med
+    `--test-threads=1`, alltså bevisligen inte ett fel i
+    `fetch_password` själv. Löst med ett lokalt lås + en kort
+    omförsöksloop specifikt i testkoden (aldrig i produktionsvägen).
+  - Ny "Bitwarden"-post i auth-väljaren (från cert-auth-PR:en) med ett
+    item-id/namn-fält, motsvarar `HostEditView`s
+    `bitwardenItemIDText`-fält.
+  - 188/188 `cargo test` gröna totalt, `cargo build`/`clippy` helt
+    tysta.
+
+- **Sektionerad värdlista (favoriter + taggrupper) + sökfält i den NYA
+  Rust/GTK4-`LinuxApp`** (2026-08-05, `LinuxApp/src/host_grouping.rs` +
+  `main.rs`): "Kvar" från föregående PR — den riktiga omstruktureringen
+  av `refresh_list`s tidigare platta lista, port av
+  `HostListModel.groups` + `HostListView.filteredGroups` i
+  `App/HostListView.swift`.
+  - Grupperingsalgoritmen EXAKT som Swift-sidan, inte en förenkling:
+    favoriter (oavsett tagg) i en egen "★ Favoriter"-sektion FÖRST (bara
+    om icke-tom), resten grupperat per tagg (alfabetiskt,
+    skiftlägesokänsligt) — otaggade värdar hamnar i en "Övriga"-sektion,
+    en värd med FLERA taggar förekommer i VARJE sin taggs sektion
+    (medvetet, matchar Swift rakt av, inte en bugg). Varje sektions
+    värdar sorteras på alias, skiftlägesokänsligt.
+  - Nytt sökfält (`gtk::SearchEntry`) i sidopanelen: filtrerar på alias/
+    värdnamn/användare/taggar, skiftlägesokänsligt — tomma sektioner
+    (ingen träff i gruppen) faller bort helt, inte bara döms osynliga.
+  - Grupperings-/filtreringslogiken bruten ut till en egen, GTK-fri
+    modul (`host_grouping.rs`) just för att kunna TESTAS på riktigt —
+    till skillnad från resten av `main.rs`s GTK-limkod, som bara
+    verifieras via en lyckad `cargo build`. 8 nya tester (favorit-
+    sektionens ordning/dedupliceringen mot taggsektioner, "Övriga"-
+    fallback, multi-tagg-förekomst, skiftlägesokänslig sortering/
+    sökning, tomma-sektioner-faller-bort).
+  - Sökfiltrets tillstånd delas via en `Rc<RefCell<String>>` (samma
+    mönster som `settings_store`/`snippet_store`) i stället för att
+    trädas igenom `refresh_list`s ~10 anropsplatser som en vanlig
+    parameter skulle krävt ändå — `refresh_list`/`show_host_dialog`/
+    `show_settings_dialog`/`show_ssh_config_import_dialog`/
+    `show_tailscale_discovery_dialog` fick alla den nya parametern,
+    `#[allow(clippy::too_many_arguments)]` där antalet redan var åtta.
+  - 182/182 `cargo test` gröna totalt, `cargo build`/`clippy` helt tysta.
+
+- **Favoritmarkering + taggar (Host::is_favorite/tags), grunddata + redigering, i
+  den NYA Rust/GTK4-`LinuxApp`** (2026-08-05, `main.rs`): ännu ett
+  "fältet finns i datamodellen, ingen UI-koppling"-fynd — samma mönster
+  som `color_tag` (samma PR-serie). Medvetet avgränsad till DATA +
+  redigering + ograpperad visning i det här steget, INTE den fulla
+  sektionerade listvyn Swift-sidan har (se "Kvar").
+  - Stjärnknapp direkt i värdlistans rad — sparas OMEDELBART vid klick
+    (ingen "spara"-knapp krävs), samma "Favorit"/"Ta bort favorit"-
+    växling som `App/HostListView.swift`s context-meny. Ikonnamnen
+    (`starred-symbolic`/`non-starred-symbolic`) är GNOME/Adwaitas
+    standardnamn, samma som Nautilus/GNOME Webs bokmärkesknappar.
+  - Taggfält (kommaseparerat) i värdredigeringsdialogen — EXAKT samma
+    tolkning som Swift-sidans `save()`: dela på komma, trimma
+    blanktecken, kasta tomma segment (ett kvarglömt avslutande komma
+    ska inte ge en spöktagg).
+  - Taggarna visas i värdlistans undertext (`"user@host:port · tag1,
+    tag2"`) så de är synliga/redigerbara redan nu, men grupperar/
+    filtrerar INTE listan än.
+  - Ren GTK-limkod, ingen ny modul/inga nya tester. 174/174 `cargo test`
+    fortsatt gröna, `clippy` tyst.
+  - **Kvar**: den sektionerade listvyn `App/HostListView.swift` har
+    (favoriter i en egen sektion överst, resten grupperat per tagg,
+    otaggade i en "Övriga"-kategori) samt sökfältets tagg-matchning —
+    en riktig omstrukturering av `refresh_list`s platta `gtk::ListBox`,
+    inte en enkelradsändring, avsiktligt ett eget, senare steg.
+
+- **Färgmärkning av värdar (`Host::color_tag`) i den NYA Rust/GTK4-
+  `LinuxApp`** (2026-08-05, `main.rs`): fältet har funnits i datamodellen
+  sedan starten (wire-kompatibelt med Swift-sidans `colorTag`, se
+  `Host.swift`) men saknade helt UI-koppling i `LinuxApp` — varken en
+  väljare i värdredigeringsdialogen eller en visuell markering i
+  värdlistan. Samma "fältet finns, ingen använder det"-gapmönster som
+  certifikatautentiseringen (#252) och auth-väljaren i värdredigerings-
+  dialogen.
+  - Sju namngivna färger (röd/orange/gul/grön/blå/lila/grå), samma
+    paletturval som `App/HostColor.swift`s `HostColorPalette` — Adwaitas
+    egna namngivna accentfärger som hex-värden, inte gissade.
+  - GTK4 har (till skillnad från GTK3) ingen per-widget
+    `style_context()`/`add_provider()` längre — en delad `CssProvider`
+    med sju fasta `.host-color-<namn>`-klasser, laddad EN gång globalt
+    vid appstart, är rätt väg för ett litet fast antal namngivna färger.
+  - Värdlistan: en liten färgad cirkel som radens prefix, motsvarar
+    `HostRow`s cirkel i `App/HostListView.swift` — osynlig helt om ingen
+    färg är satt, inte en tom/grå platshållare.
+  - Värdredigeringsdialogen: sju klickbara färgade cirklar, EXKLUSIVT val
+    med manuell (inte `ToggleButton::set_group`) logik — trycker man på
+    den REDAN valda färgen igen tas valet bort helt, samma beteende som
+    Swift-sidans `HostColorPicker` (inte vanlig radioknapp-semantik, som
+    inte tillåter att avmarkera).
+  - Ren GTK-limkod, ingen ny modul/inga nya tester (samma typ av
+    UI-verifiering via lyckad `cargo build` som tab-numreringsfixen).
+    174/174 `cargo test` fortsatt gröna, `clippy` tyst.
+
+- **OAuth2/PKCE-kontosynk, KÄRNAN, i den NYA Rust/GTK4-`LinuxApp`**
+  (2026-08-05, `LinuxApp/src/oauth.rs`): port av
+  `Sources/SSHCore/OAuthPKCE.swift` + `OAuthToken.swift` +
+  `App/OAuthProviders.swift`, samt (delvis) den RIKTIGA HTTP-logiken i
+  `App/OAuthAccountManager.swift`/`OAuthTokenStore.swift` — MEDVETET
+  avgränsad till kärnan, inte hela funktionen i en enda PR (se "Kvar").
+  - PKCE (RFC 7636): `pkce_verifier`/`pkce_challenge`, verifierad mot
+    RFC:ns egen S256-testvektor rad för rad (inte bara "verifiern och
+    utmaningen skiljer sig åt").
+  - `OAuthTokenResponse`/`StoredOAuthToken` med samma 60 s förnyelse-
+    marginal och samma "bevara gammal `refresh_token` om leverantören
+    inte skickar en ny"-logik som Swift-sidan — 6 tester porterade rakt
+    av från `Tests/SSHCoreTests/OAuthTokenTests.swift`.
+  - Samma tre leverantörer/exakt samma registrerade värden (Dropbox
+    `client_id` ifyllt, Google Drive/OneDrive tomma — "inte
+    konfigurerade ännu", inte ett Rust-specifikt hål) som
+    `App/OAuthProviders.swift`.
+  - **RIKTIGT token-utbyte och token-förnyelse över HTTP** (`reqwest`,
+    formulärkodning, JSON-svar) — testat mot en genuin lokal HTTP-server
+    (samma teknik som `s3.rs`s `spawn_fake_s3_server`), inte mockat:
+    verifierar de faktiska fälten i den skickade formulärkroppen
+    (`grant_type`/`code`/`code_verifier` respektive
+    `grant_type=refresh_token`), att ett icke-2xx-svar blir ett tydligt
+    fel (inte en tyst godkänd tom token), och att `valid_access_token`
+    både förnyar tyst vid utgången token OCH återanvänder en fortfarande
+    giltig token UTAN att göra något HTTP-anrop alls (bevisat genom att
+    inte ens starta en testserver i det fallet — ett anrop hade
+    kraschat/timeoutat mot en icke-lyssnande port).
+  - Lokal lagring (`~/.bastion/oauth_tokens.json`) — samma skyddsnivå
+    som S3-kopplingarnas `secret_access_key`/WireGuard-privatnycklar
+    redan har i den här klienten, INTE macOS Keychain (Linux har ingen
+    universell motsvarighet över skrivbordsmiljöer).
+  - **Kvar (medvetet, nästa steg)**: den INTERAKTIVA inloggningen —
+    öppna en webbläsare mot `authorization_endpoint`, fånga
+    redirect-URI:n med koden — är INTE med. Apple-sidan löser det med
+    `ASWebAuthenticationSession`; Linux saknar en GTK-inbyggd
+    motsvarighet, och valet mellan en lokal loopback-HTTP-lyssnare
+    (RFC 8252) och att registrera `se.denied.bastion://`-schemat via
+    `xdg-mime`/en `.desktop`-fil är ett öppet designval som inte avgörs
+    här. Ingen UI-koppling i `main.rs` än av samma skäl — inget att
+    klicka på förrän inloggningsflödet finns. 18 nya tester, 174/174
+    `cargo test` gröna totalt, `cargo build`/`clippy` helt tysta (modulen
+    är `#![allow(dead_code)]` tills nästa PR kopplar in den).
+
+- **Numrerade fliktitlar för flera samtidiga sessioner mot SAMMA värd i
+  den NYA Rust/GTK4-`LinuxApp`** (2026-08-05, `main.rs`,
+  `unique_session_tab_title`): `AdwTabView` gav redan LinuxApp hela
+  grundfunktionen `App/MultiSessionView.swift` beskriver (flera samtidigt
+  anslutna sessioner, bakgrundsflikar rivs inte ner, flikbyte) — den enda
+  verkliga luckan var `displayLabel`s specifika UX-regel: en andra/tredje
+  session mot SAMMA värd (t.ex. via "Ny flik" i SFTP-/nyckeldistributions-
+  vyerna, eller att dubbelklicka samma rad igen) fick tidigare en flik med
+  EXAKT samma titel som den första, omöjlig att skilja åt i flikraden.
+  - Räknar befintliga flikar (`AdwTabView::pages()`) vars titel är
+    `alias` eller `alias (N)` innan en ny flik döps — första sessionen
+    mot en värd förblir odekorerad, andra blir "(2)", tredje "(3)" osv.,
+    samma numreringsprincip som Swift-sidans `displayLabel`.
+  - Ingen ny modul/inga nya tester — ren GTK-limkod, verifierad via
+    `cargo build` (156/156 `cargo test` fortsatt gröna, `clippy` tyst).
+
+- **Systemöversikt (dashboard) i den NYA Rust/GTK4-`LinuxApp`**
+  (2026-08-05, `LinuxApp/src/dashboard.rs`): fanns i Swift-sidan
+  (`Sources/SSHCore/SystemProbe.swift` + `App/DashboardView.swift`) men
+  aldrig porterad — genuint SAKNAD funktion (`grep`-sökning på
+  "dashboard" i `LinuxApp/src/*.rs` gav noll träffar innan denna PR),
+  till skillnad från cert-auth/terminalteman som var mer subtila luckor.
+  - Samma agentlösa teknik som Swift-sidan: ETT sammansatt kommando
+    (`echo @@SEKTION; kommando; …`) ger en hel ögonblicksbild (last,
+    minne, disk, drifttid, OS, kärna, värdnamn, kärnantal, Docker) i EN
+    round-trip — `@@`-markörer skiljer utdata åt, parsad med rena
+    funktioner (sträng → struct), inte regex.
+    `df -kP`/`/proc/loadavg`/`/proc/meminfo`/`/etc/os-release` läses
+    rakt av, exakt samma källor som `SystemProbe.swift`.
+    Docker-containrar sväljs tyst (`2>/dev/null`) om verktyget saknas —
+    ingen felrad för det som förväntas kunna saknas.
+    4 tester porterade rakt av från `Tests/SSHCoreTests/
+    SystemProbeTests.swift` (samma fixtur, verklig Ubuntu-utdata).
+  - Ny "Systemöversikt"-post i värdmenyn (host-åtgärder) — till skillnad
+    från Docker/Snippets/SFTP/Tunnel/Nyckel har Swift-sidans
+    `AppSettings.swift` INGEN `showDashboard`-togglingsbar inställning,
+    så posten är alltid synlig, inte styrd av `FeatureToggles`. Öppnas
+    som en egen flik (samma mönster som Docker-vyn) med en
+    uppdateringsknapp.
+  - **Kvar**: ingen auto-poll (Swift-sidans `DashboardModel.
+    startPolling()`, 15 s intervall) än — bara manuell uppdatering via
+    knappen. 156/156 `cargo test` gröna totalt, `cargo build`/`clippy`
+    helt tysta.
+
+- **Terminalfärgteman i den NYA Rust/GTK4-`LinuxApp`** (2026-08-05,
+  `LinuxApp/src/terminal_theme.rs`): fanns i Swift-sidan
+  (`App/TerminalTheme.swift`, 25 inbyggda teman) men Rust-terminalen
+  (VTE4) körde bara vad GTK-temat råkade ge — inget eget färgval, inget
+  motsvarande gap tidigare dokumenterat eftersom det inte är en "saknad
+  funktion" i samma bemärkelse som t.ex. Telnet/S3, bara en aldrig
+  ifylld detalj.
+  - Alla 25 temans hex-värden avskrivna rad för rad från
+    `TerminalTheme.swift` (Dracula, Nord, Solarized, Gruvbox, Monokai,
+    One Dark, Tokyo Night ×2, Catppuccin ×4, Ayu ×2, Everforest, Rosé
+    Pine, Kanagawa, Nightfox, Oxocarbon, m.fl.) — inte nya val.
+  - `vte_terminal_set_colors` (bakgrund/förgrund/16-färgers ANSI-palett i
+    ett anrop) + `set_color_cursor`/`set_color_highlight` separat, samma
+    tre extra fält `TerminalView.swift` sätter utöver SwiftTerms egen
+    motsvarighet till `set_colors`. Samma strikta "#RRGGBB"-parsning
+    (svart som fallback vid fel längd/tecken) som Swift-sidans `HexRGB`.
+  - **Till skillnad från** `settings::FeatureToggles`
+    (`~/.bastion/settings.json`, delas/synkas mellan enheter): valt tema
+    är en ren LOKAL preferens (`~/.bastion/linuxapp-terminal-theme.json`)
+    — Swift-sidan sparar det i `UserDefaults`, aldrig i den synkade
+    `AppSettings`-modellen, så en delad hemkatalog ska inte plötsligt
+    synka ett rent UI-val mellan Mac och Linux.
+  - Ny "Terminal"-preferensgrupp i inställningsdialogen (`adw::ComboRow`
+    med alla 25 namn) — redan öppna flikar uppdateras direkt vid byte
+    (`AdwTabView::pages()`, inget `nth_page` finns i libadwaita-API:t),
+    nya sessioner skapas alltid via en delad `new_themed_terminal()`-
+    hjälpfunktion som läser det sparade valet.
+  - 5 nya tester (unika id:n, alfabetisk sortering, giltig 16-färgers
+    palett per tema, hex-parsning inkl. svart-fallback, lagringens
+    round-trip). 152/152 `cargo test` gröna totalt, `cargo build`/
+    `clippy` helt tysta.
+
+- **OpenSSH-certifikatautentisering i den NYA Rust/GTK4-`LinuxApp`**
+  (2026-08-05, `LinuxApp/src/ssh.rs` + auth-väljare i `main.rs`):
+  `HostAuth::CertificateFile` fanns redan som fält i datamodellen (wire-
+  kompatibelt med Swift-sidans `certificateFile`) men föll i praktiken
+  igenom till "autentiseringstypen stöds inte på Linux ännu" i
+  `ssh.rs`s `authenticate`-matchning — precis samma gap-mönster som
+  Tailscale/WireGuard/S3/Telnet/ssh-config-import, fast tidigare
+  odokumenterat eftersom fältet redan fanns och SÅG portat ut.
+  - russh har, till skillnad från swift-nio-ssh (vars SERVER-roll
+    upptäcktes att INTE kunna ta emot cert-auth alls, se statusraden
+    ovans notering — irrelevant för Bastion som alltid är klient, men
+    det gjorde att Swift-sidans egna tester aldrig kunde bevisa en
+    fullständig nätverksrundtur), FÖRSTKLASSIGT klientstöd:
+    `Handle::authenticate_openssh_cert` + `russh::keys::
+    load_openssh_certificate` — inget eget protokoll- eller
+    ASN.1/binärformatarbete behövdes.
+  - **Genuint bevisat mot en RIKTIG `sshd`** (`TrustedUserCAKeys`), inte
+    bara en offline-verifiering av att erbjudandet byggs rätt — till
+    skillnad från Swift-sidans engångsverifiering (som krävde en manuellt
+    startad lokal `sshd` och aldrig byggdes in permanent, se statusraden
+    ovan) är detta ett PERMANENT test i CI: tre riktiga
+    `ssh-keygen -s`-signerade certifikat, tre utfall (giltigt cert mot
+    betrodd CA + rätt principal → lyckas, fel principal → avvisas trots
+    betrodd CA, obetrodd CA → avvisas trots giltig principal).
+  - Ny auth-väljare i värdredigeringsdialogen (`show_host_dialog`) —
+    fanns tidigare INGEN uttrycklig väg att sätta `KeyFile`/
+    `CertificateFile` där alls (bara nyckeldistributionsflödet satte
+    `KeyFile`, implicit); ett mindre, sidoupptäckt gap som stängdes
+    samtidigt. Fyra lägen (SSH-agent/lösenord/nyckelfil/certifikat) med
+    filväljare (`gtk::FileDialog`) för sökvägsfälten. `KeychainKey`/
+    `BitwardenItem` (Apple-bara, synkade från en Apple-enhet) bevaras
+    uttryckligen om värden redigeras utan att auth-läget ändras — samma
+    opt-in-princip som nyckeldistributionens lösenordsborttagning.
+  - 3 nya tester (`ssh::tests::certificate_auth_*`), 147/147 `cargo test`
+    gröna totalt, `cargo build`/`clippy` helt tysta.
+
+- **Importera `~/.ssh/config` i den NYA Rust/GTK4-`LinuxApp`** (2026-08-05,
+  `LinuxApp/src/ssh_config.rs`): fanns redan i Swift/CLI-sidan
+  (`Sources/SSHCore/SSHConfig.swift` + `HostStore.importSSHConfig`, se
+  status­raden ovan) men aldrig porterad till Rust-om­skrivningen — samma
+  gap-mönster som Tailscale/WireGuard/S3/Telnet.
+  - Egen, beroendefri tokenizer/parser (ingen regex-motor) som stöder
+    `Host`-block med jokertecken (`*`, `?`) och negation (`!`), `Key Value`/
+    `Key=Value`/`Key = Value`-syntax, citerade värden och `#`-kommentarer.
+    `Match`-block hoppas medvetet över (matchar aldrig) — exakt samma
+    avgränsning som Swift-sidan gör.
+  - Semantik enligt riktig OpenSSH, inte en förenkling: **första värdet
+    vinner** per nyckel (senare `Host`-block kan inte skriva över ett
+    tidigare matchat block), nycklar FÖRE första `Host`-raden gäller
+    globalt, och `!mönster` exkluderar en värd även om ett senare
+    positivt mönster (t.ex. en catch-all `*`) annars skulle matcha den.
+    Jokerteckenmatchningen (`glob()`) är samma iterativa två-pekar-
+    algoritm (med backtrack-markör för `*`) som Swift-sidan använder,
+    inte en naiv `str::contains`-genväg.
+  - `HostStore::import_ssh_config` importerar varje KONKRET alias (inga
+    jokertecken/negationer, de kan inte bli en enskild host-post) som
+    saknar `User` hoppas över (kan inte anslutas ändå utan användarnamn).
+    Dedup vid ominmport: matchar på alias, importerar inte samma värd två
+    gånger om man klistrar in samma config igen.
+  - Ny "Importera"-knapp i sidopanelens header: en klistra-in-text-dialog
+    (ingen filväljare — configen kan komma från vilken maskin som helst,
+    inte nödvändigtvis en lokal `~/.ssh/config`), motsvarar
+    `App/ImportConfigView.swift`. Visar antal importerade värdar efteråt.
+  - 12 enhetstester porterade rakt av från `Tests/SSHCoreTests/
+    SSHConfigTests.swift` + `ImportAndExecTests.swift` (exakt alias,
+    andra mönstret på samma `Host`-rad, jokerteckensuffix/-prefix,
+    `ProxyJump` via jokertecken, "första vinner", negation, okänt alias
+    träffar catch-all, `=`-syntax, jokertecken-glob-tester separat,
+    alias hoppar över jokertecken, import hoppar över anvädar­lösa/
+    jokertecken-poster, dedup vid ominmport mot en riktig `HostStore` på
+    disk). 144/144 `cargo test` gröna totalt, `cargo build`/`clippy`
+    helt tysta.
+  - **Kvar**: `Match`-block (t.ex. `Match host` / `Match exec`) stöds
+    inte — samma medvetna avgränsning som Swift-sidan.
+
+- **Seriell/USB-anslutning i den NYA Rust/GTK4-`LinuxApp`** (2026-08-05,
+  `LinuxApp/src/serial.rs`): helt saknades — Termius har detta, Bastion
+  saknade det helt (samma gap-lista Swift-sidans `Serial.swift`
+  dokumenterar). Port av `Sources/SSHCore/Serial.swift`: rått termios-läge
+  (`cfmakeraw`) mot t.ex. `/dev/ttyUSB*`/`/dev/ttyACM*` — mest relevant för
+  hemmalabb-/nätverksutrustnings-konsolportar (samma "nätverkstekniker"-
+  persona som Telnet).
+  - Till skillnad från `ssh.rs`/`telnet.rs` (en bakgrundstråd,
+    `tokio::select!`) används HÄR två separata trådar UTAN tokio alls:
+    en seriell filbeskrivare är en vanlig blockerande syscall-baserad
+    I/O-primitiv (`std::fs::File::read`/`write` fungerar direkt när
+    porten är konfigurerad) — en dedikerad blockerande läs-tråd är
+    enklare OCH effektivare än Swift-sidans `NIOPipeBootstrap`-väg (som
+    behöver icke-blockerande I/O för att passa NIOs event-loop-modell,
+    ett behov som inte finns här). Ren `libc`-FFI (`open`/`tcgetattr`/
+    `cfmakeraw`/`cfsetispeed`/`cfsetospeed`/`tcsetattr`/`dup`) — samma
+    raka syscall-nivå som Swift-sidan, inget mellanliggande
+    `serialport`-kratbibliotek.
+  - En delad `Arc<AtomicBool>`-flagga signalerar läs-tråden att avsluta
+    när skriv-tråden märker att `input`-kanalen stängts (fliken stängd)
+    — att stänga filbeskrivaren direkt från en ANNAN tråd medan en
+    blockerande `read()` pågår på samma fd-nummer är odefinierat
+    beteende i praktiken (fd-återanvändningsrisk), så cancellering görs
+    kooperativt istället.
+  - Ny "Seriell/USB"-knapp i sidopanelens header: ad-hoc
+    anslutningsdialog (sökväg + baudhastighet, ingen auth — en fysisk
+    port är inte en användarkontobar resurs, samma resonemang som
+    Telnet/Quick Connect), motsvarar `App/SerialConnectView.swift`.
+    `serial::available_paths()` föreslår kandidater
+    (`/dev/ttyUSB*`/`/dev/ttyACM*`/`/dev/ttyS*`) i en väljare, men ett
+    fritextfält tar alltid över om ifyllt.
+  - **Testat GENUINT mot en riktig pseudo-terminal (PTY)**, inte en mock
+    — `posix_openpt`/`grantpt`/`unlockpt`/`ptsname` (samma teknik som
+    Swift-sidans `SerialPTYTests`, där begränsad till Darwin av ett
+    lokalt toolchain-skäl, inte för att Linux saknar syscallen): en
+    PTY-slav beter sig som en äkta seriell tty ur `open()`/
+    `tcsetattr()`s perspektiv, så testet bevisar att hela vägen —
+    öppna, konfigurera rått läge, läsa OCH skriva — fungerar mot en
+    riktig enhet. **En genuin race hittades och fixades under
+    verifieringen** (inte antagen i förväg): skrev testet till PTY-
+    mastern INNAN bakgrundstrådens `configure_termios` hunnit köra,
+    landade data i kärnans DEFAULT cooked-läge (eko/radbuffring
+    påslagna) istället för det avsedda rå läget — synligt som en extra
+    `\r` inskjuten framför `\n`. Fixat genom att testet väntar in
+    `SerialEvent::Connected` innan något skrivs, körd 5 gånger i rad
+    utan flakighet efteråt. Plus 3 enhetstester (icke-existerande
+    sökväg, ogiltig/alla giltiga baudhastigheter). Port av
+    `SerialTests.swift`/`SerialPTYTests.swift` rakt av. 132/132
+    `cargo test` gröna totalt, `cargo build`/`clippy` helt tysta.
+  - **Kvar**: Windows har en helt annan seriell-API (`SetCommState`, inte
+    POSIX-termios) — medvetet inte täckt, samma avgränsning som Swift-
+    sidan.
+
+- **Snabbanslutning ("Quick Connect") i den NYA Rust/GTK4-`LinuxApp`**
+  (2026-08-04, `LinuxApp/src/main.rs`): helt saknades — ingen väg att
+  ansluta till en ad-hoc värd UTAN att först spara den i värdlistan.
+  Motsvarar `App/QuickConnectView.swift` (Termius kallar detta "Quick
+  Connect"). Ny knapp i sidopanelens header (bredvid "Lägg till värd"):
+  värd/användare/port/lösenord-fält, bygger en `host::Host` bara i
+  minnet (aldrig skickad till `HostStore::upsert`) och öppnar den direkt
+  via `start_session` — samma terminalsession som en sparad värd får,
+  bara utan att fylla värdlistan med en engångsanslutning.
+  - Går direkt till `start_session`, inte via `open_session`s omväg
+    genom `with_resolved_jump`/`prompt_password_then` — en ad-hoc-värd
+    har per definition ingen `jump_host_id`, och lösenordet (om något)
+    matas in i SAMMA formulär som resten av fälten, inte en separat
+    efterföljande dialog (skiljer sig medvetet från hur en SPARAD
+    `AskPassword`-värd hanteras, där lösenordet aldrig lagras och måste
+    frågas efter varje gång).
+  - Tomt lösenordsfält → `HostAuth::AgentDefault` (prova ssh-agent/
+    standardnyckel); ifyllt → `HostAuth::AskPassword` med lösenordet
+    skickat OBESKURET (trimning hade tyst korrumperat ett giltigt
+    lösenord med inlednings-/avslutande blanktecken — samma cubic-fynd,
+    PR #173, som Swift-sidan redan vaktar mot).
+  - Ingen ny testbar logik (ren GTK-kablage ovanpå redan testad
+    `host::Host`/`start_session`) — 128/128 `cargo test` oförändrat
+    gröna, `cargo build`/`clippy` helt tysta.
+
+- **S3 bucket-/objektbläddare i UI:t** (2026-08-04, `LinuxApp/src/main.rs`):
+  slutförde "Kvar"-punkten från S3-kompatibel objektlagring nedan (samma
+  dag) — resten av `S3Client`s redan portade+testade metoder
+  (`create_bucket`/`delete_bucket`/`list_objects`/`put_object`/
+  `get_object`/`delete_object`) kopplades in i en riktig bläddare, nådd
+  via en ny "Bläddra"-knapp per rad i S3-anslutningslistan.
+  - En flik per anslutning (samma "en flik per session/vy"-mönster som
+    Docker/SFTP/Tunnel). `Rc<RefCell<Option<String>>>` håller "aktuell
+    bucket" — `None` visar bucket-listan (rot), `Some(namn)` visar
+    objekten i den bucket:en. Bara EN nivå djup — S3:s `Key` är platt
+    (en nyckel som `mapp/fil.txt` är bara en vanlig nyckel, ingen riktig
+    katalog), inget `prefix`-baserat undermapps-UI i v1.
+  - Ny bucket/uppladdning/nedladdning använder `gtk::FileDialog`
+    (`open_future`/`save_future`, GTK4:s moderna async-filväljare) —
+    uppladdning läser den valda lokala filen och skickar den som ett
+    objekt med samma filnamn som nyckel; nedladdning föreslår objektets
+    nyckel som standardfilnamn.
+  - `s3.rs` fick en generisk `spawn`-hjälpare (`FnOnce(S3Client) ->
+    impl Future`) som ALLA `spawn_list_buckets`/`spawn_create_bucket`/
+    `spawn_delete_bucket`/`spawn_list_objects`/`spawn_put_object`/
+    `spawn_get_object`/`spawn_delete_object` bygger på — samma "egen
+    bakgrundstråd med egen tokio-runtime, `reqwest` har ingen egen
+    reaktor på GTK:s huvudloop"-mönster som resten av appen, men utan
+    att duplicera tråd-uppstartskoden sju gånger. `spawn_test_connection`
+    (redan klar) skrevs om att använda samma hjälpare.
+  - Byggd och testad — inga nya varningar (`cargo build`/`cargo clippy`
+    helt tysta för `s3.rs`, alla sju `S3Client`-metoder samt `S3Object`/
+    `S3ConnectionStore::get` nu genuint använda, inga `#[allow(dead_code)]`
+    kvar att motivera). 128/128 `cargo test` fortsatt gröna (ingen ny
+    testkod i det här passet — bläddar-UI:t är GTK-kablage ovanpå redan
+    testad backend, inte ny logik att testa isolerat).
+  - **Kvar**: interaktiv klick-genom-bläddaren mot en riktig S3-tjänst
+    (Xvfb-byggd+körd, inte klick-för-klick manuellt testad) — samma
+    begränsning som redan dokumenterad för portvidarebefordran/SOCKS-UI:t.
+
+- **S3-kompatibel objektlagring i den NYA Rust/GTK4-`LinuxApp`**
+  (2026-08-04, `LinuxApp/src/s3.rs`): helt saknades i den nya
+  Rust-omskrivningen. Byte-för-byte-port av `Sources/SSHCore/S3Client.swift`
+  + `S3ConnectionStore.swift` — AWS Signature Version 4-signering, fungerar
+  mot riktig AWS S3 OCH S3-kompatibla leverantörer (Ceph RGW m.fl.) eftersom
+  SigV4 är en delad spec, inte en AWS-hemlighet.
+  - **Signeringen verifierad mot EXAKT samma fixerade testvektor som
+    Swift-sidan** (`sigv4_matches_verified_reference_vector`, härledd ur en
+    oberoende Python-referensimplementation som fick ett genuint 200 OK mot
+    Hostups riktiga S3-kompatibla tjänst) — samma indata gav samma
+    `Authorization`-header byte för byte. Algoritmen är alltså bevisat
+    korrekt portad, inte bara "ser rimlig ut".
+  - HTTP via `reqwest` (`rustls-tls`, inget systemberoende OpenSSL), XML-
+    svarstolkning via `quick-xml` (pull-baserad, samma SAX-liknande
+    "spåra aktuell tagg + en `in_target`-flagga"-mönster som Swift-sidans
+    `XMLParser`-delegat). Path-style URL:er (`https://endpoint/bucket/key`),
+    inte virtual-hosted — samma val som Swift-sidan.
+  - En redan percent-encodad sökväg/frågesträng (SigV4:s exakta
+    encodningsregler) byggs ihop till URL:en som en FÄRDIG sträng och
+    parsas med `Url::parse`, ALDRIG via `Url::set_path`/`set_query` — de
+    mutatorerna hade percent-encodat en gång TILL (t.ex. `%20` →
+    `%2520`), vilket bryter signaturen. Motsvarar varför Swift-sidan sätter
+    `URLComponents.percentEncodedPath` direkt istället för `.path`.
+  - `S3Client`: `list_buckets`/`create_bucket`/`delete_bucket`/
+    `list_objects`/`put_object`/`get_object`/`delete_object` — alla
+    portade och genuint testade (se nedan), men bara `list_buckets` (via
+    en "Testa anslutning"-knapp) är kopplad till UI:t hittills.
+  - `S3ConnectionStore`: persistent JSON-databas för sparade anslutningar
+    (namn/endpoint/region/nycklar — nycklarna sparas i klartext, samma
+    medvetna v1-avgränsning som `WireGuardProfile`s privatnycklar, ingen
+    Keychain-motsvarighet på Linux än), samma CRUD-mönster som
+    `WireGuardProfileStore`. Ny "S3-anslutningar"-knapp i sidopanelens
+    header: lista + redigeringsdialog med en "Testa anslutning"-knapp som
+    kör ett riktigt `list_buckets`-anrop mot de fält som STÅR i formuläret
+    just nu (inte den senast sparade versionen — samma resonemang som
+    `key_deploy`s "verifiera innan lösenordet tas bort").
+  - Testat: den låsta SigV4-vektorn, XML-tolkning av tre riktiga
+    svarsformat (fångade från Hostups tjänst, samma fixturer som Swift-
+    sidan), Host-header-kantfall (port inkluderad/utelämnad beroende på
+    schema/standardport — samma CodeRabbit-fynd, PR #90, som Swift-sidan
+    redan fångat) + TVÅ genuina end-to-end-tester mot en riktig, minimal
+    HTTP/1.1-server (rå TCP, inget ramverk): bevisar att HELA vägen —
+    URL-byggande, signering, riktiga `reqwest`-anrop, XML-tolkning av
+    svaret — fungerar ihop, inte bara `sign`/`parse_*` isolerat (en
+    verifierar att `list_buckets` skickar en korrekt signerad begäran och
+    tolkar svaret rätt, en att `put_object` skickar kropp OCH
+    `Content-Type`-headern). Port av `S3ClientTests.swift`/
+    `S3ConnectionStoreTests.swift` rakt av (utom det Hostup-specifika
+    live-testet, som kräver riktiga kontouppgifter i miljön — samma skäl
+    Swift-sidans motsvarighet hoppas över i CI). 128/128 `cargo test`
+    gröna totalt.
+  - **Kvar (ursprunglig text, historik)**: "en riktig bucket-/
+    objektbläddare i UI:t — backend är redo och testad, bara ytlagret
+    saknas, samma 'backend klart, UI en avgränsad uppföljning'-mönster
+    som synkmotorn hade innan dess UI kom på plats." — ✅ KLART SAMMA DAG,
+    se "S3 bucket-/objektbläddare i UI:t" ovan.
+
+- **WireGuard-profiler i den NYA Rust/GTK4-`LinuxApp`** (2026-08-04,
+  `LinuxApp/src/wireguard.rs`): helt saknades i den nya Rust-omskrivningen.
+  Byte-för-byte-port av `Sources/SSHCore/WireGuardConfig.swift` +
+  `WireGuardProfileStore.swift` — samma v1-avgränsning som Swift-sidan:
+  parsning/lagring/redigering av `.conf`-profiler, INTE att faktiskt
+  upprätta tunneln (kräver `wg`-binären + root, eller ett helt eget
+  kryptoprotokoll utan den — separat, mycket större arbete, se
+  "Native WireGuard/Tailscale — inget externt beroende" nedan).
+  - Parsern hanterar precis det `wg(8)`/`wg-quick(8)`-formatet Swift-sidan
+    redan verifierat: `[Interface]`/`[Peer]`-sektioner (skiftlägesokänsliga
+    rubriker), `#`-kommentarer (även en rad som BÖRJAR med `#` — samma
+    CodeRabbit-fynd, PR #79, som Swift-sidan redan vaktar mot), upprepade
+    `Address`/`AllowedIPs`-rader som ackumuleras istället för att skriva
+    över, flera `[Peer]`-sektioner.
+  - `WireGuardProfileStore` — persistent JSON-databas,
+    `~/.bastion/wireguard.json`, samma CRUD-mönster som `SnippetStore`
+    (`camelCase`-fältnamn för framtida cross-platform-kompatibilitet,
+    trunkerad/skadad fil ger ett fel istället för att tyst tömmas).
+  - Ny "WireGuard"-knapp i sidopanelens header: en profillista (namn +
+    sammanfattning: första adressen + antal peers), "+"/radklick öppnar en
+    redigeringsdialog som visar/redigerar profilen som RÅ `.conf`-text
+    (enklare och mer direkt begripligt för en användare som redan har
+    filen, än ett fält-för-fält-formulär — samma designval som
+    `App/WireGuardProfileView.swift`; `WireGuardConfig::parse` är
+    förlåtande, så ogiltig text ger bara en tom/ofullständig profil, inte
+    en krasch).
+  - Testat: 12 parser-/serialiseringstester (samma fixturer/scenarier som
+    `WireGuardConfigTests.swift` — round-trip genom `rendered()`, tomma
+    valfria fält, kommentarhantering, ackumulerande adressrader) + 2
+    lagringstester (upsert/get/delete/sortering, persistens mellan
+    store-instanser, en FULL round-trip text→config→profil→JSON-på-disk→
+    ny store→tillbaka till `.conf`-text) + en korrupt-fil-regression. Port
+    av `WireGuardConfigTests.swift`/`WireGuardProfileStoreTests.swift` rakt
+    av. 115/115 `cargo test` gröna totalt.
+  - **Kvar**: fil-import (`.fileImporter` i Swift-sidan) — LinuxApp har
+    bara klistra-in-textfältet, ingen egen filväljarknapp än. Profilerna
+    är inte kopplade till någon specifik `Host` i UI:t (matchar Swift-
+    sidan — en profil beskriver en VPN-anslutning, inte en SSH-värd).
+
+- **Tailscale-värdförslag i den NYA Rust/GTK4-`LinuxApp`** (2026-08-04,
+  `LinuxApp/src/tailscale.rs`): helt saknades i den nya Rust-omskrivningen
+  (bara ett par statiska referensrader i Command Library — inte en riktig
+  integration). Byte-för-byte-port av `Sources/SSHCore/TailscaleStatus.swift`
+  (samma JSON-fältnamn, samma `suggestedHosts`-filtrering: bara online-
+  peers med minst en Tailscale-IP, `DNSName`/MagicDNS föredraget framför
+  `HostName` när det finns). Två källor, precis som Swift-sidan:
+  - `tailscale::fetch_local` — kör `tailscale status --json` LOKALT
+    (`std::process::Command`, ingen sandbox-begränsning på skrivbordet,
+    till skillnad från iOS där `Foundation.Process` saknas helt).
+    `tailscale::spawn_fetch_local` kör den på en egen bakgrundstråd — ett
+    rakt anrop hade blockerat GTK:s huvudloop under hela processkörningen,
+    samma resonemang som Swift-sidans `Task.detached`-kommentar i
+    `TailscaleDiscoveryModel.fetch`.
+  - `tailscale::fetch_remote` — kör samma kommando över en redan
+    konfigurerad fjärrvärd via `ssh::run_command`, alltså AUTOMATISKT
+    jump-host-medveten (samma anslutningsväg som allt annat
+    engångskommando i appen, ingen egen kod behövdes för det).
+  - Ny "Tailscale"-knapp i sidopanelens header, öppnar en dialog: välj
+    källa (denna enhet eller en sparad värd) → "Hämta" → lista med
+    föreslagna `värdnamn:adress`-rader, var och en med en "Lägg till"-
+    knapp som öppnar den vanliga host-dialogen förifylld (alias=värdnamn,
+    IP=adress) — Tailscale känner inte till SSH-användarnamnet, så det
+    sista steget är alltid det vanliga redigeringsläget, samma designval
+    som `App/TailscaleDiscoveryView.swift`.
+  - Testat: 5 enhetstester (parsning av en RIKTIG `tailscale status
+    --json`-fixtur — samma fångade utskrift som Swift-sidans
+    `TailscaleStatusTests`, filtrering av offline/IP-lösa peers) + 2
+    genuina process-tester (`fetch_local` mot ett riktigt, kortlivat
+    `/bin/sh`-skript — inte mockat — både lyckad utskrift och en
+    icke-noll-exitkod med stderr). Port av `TailscaleStatusTests.swift`
+    rakt av. 101/101 `cargo test` gröna totalt.
+  - **Kvar**: `fetch(over:)`-motsvarigheten (köra kommandot över en
+    ANNAN, redan öppen SSH-session — t.ex. dashboard-datan) fanns bara
+    som en optimering i Swift-sidan; LinuxApp öppnar en ny engångs-
+    anslutning varje gång istället (`fetch_remote`), samma avvägning som
+    resten av appens Docker-/kommandokörningar redan gör.
+
+- **Telnet (RFC 854) i den NYA Rust/GTK4-`LinuxApp`** (2026-08-04,
+  `LinuxApp/src/telnet.rs`): helt saknades i den nya Rust-omskrivningen —
+  Telnet delar ingen kod med SSH-lagret (rå TCP, ingen kryptering, egen
+  IAC-förhandling), så det fanns inget att av misstag hoppa över när
+  `ssh.rs` porterades, bara ett helt eget spår som aldrig byggdes.
+  Byte-för-byte-port av `Sources/SSHCore/Telnet.swift`s `TelnetIACFilter`-
+  statmaskin (samma refusera-allt-strategi: `WILL`→`DONT`, `DO`→`WONT`,
+  subförhandlingar kastas bort helt — enklast möjliga korrekta
+  klientbeteende, servern faller tillbaka till rått NVT-läge). `telnet::
+  spawn` körs på en egen bakgrundstråd med egen tokio-runtime, exakt
+  samma `async_channel`-mönster som `ssh::spawn_shell` — och
+  `start_telnet_session` (`main.rs`) återanvänder t.o.m. SAMMA
+  `terminal.set_data("bastion-ssh-input", …)`-nyckel som SSH-sessioner,
+  så den redan existerande generiska close-page-städningen
+  (`SessionArea::new`) fungerar identiskt utan telnet-specifik kod där.
+  - Ny "Telnet"-knapp i sidopanelens header (bredvid "Lägg till värd"),
+    öppnar en AD HOC-anslutningsdialog (bara värd+port, INGEN auth —
+    motsvarar `App/TelnetConnectView.swift`: Telnet-inloggning, om
+    servern ens kräver någon, sker inuti själva terminalsessionen via en
+    login-prompt, inte som ett separat handskakningssteg). Ingen sparning
+    i värdlistan, medvetet — samma designval som Swift-sidan.
+  - Testat: 8 enhetstester för IAC-statmaskinen (ren dataväg, escaped
+    `0xFF`, WILL/DO-refusering, WONT/DONT kräver inget svar,
+    subförhandling kastas bort, kommandon utan optionsbyte, fragmenterad
+    förhandling över flera läsningar) + 1 genuint end-to-end-test mot en
+    RIKTIG TCP-server som beter sig som en telnet-server (skickar en
+    förhandling klienten ska refusera, läser klientens svar direkt av
+    tråden — bevisar att hela vägen, inte bara filtrets logik i
+    isolering, fungerar). Port av `TelnetTests.swift` rakt av. 87/87
+    `cargo test` gröna totalt.
+
+- **Wake-on-LAN i den NYA Rust/GTK4-`LinuxApp`** (2026-08-04,
+  `LinuxApp/src/wake_on_lan.rs`): `Host.mac_address` fanns redan i
+  datamodellen (för wire-format-kompatibilitet med App/Windows-synk) men
+  lästes tidigare aldrig av något i den nya Rust-omskrivningen — samma
+  mönster som `jump_host_id` hade innan ProxyJump-fixen nedan (den gamla
+  SwiftCrossUI-`bastion-gui` hade redan Wake-on-LAN, se commit `06476d6`,
+  men den är riven sedan arkitekturpivoten 2026-08-03 och funktionen
+  porterades aldrig till den nya Rust-koden). Byte-för-byte-port av
+  `Sources/SSHCore/WakeOnLan.swift` (samma magic-packet-format, samma
+  felkontrakt — ogiltig MAC/port ger ett tydligt fel istället för att
+  tyst tolkas fel eller skickas till fel port). `wake_on_lan::send` körs
+  på en egen bakgrundstråd med egen tokio-runtime
+  (`wake_on_lan::spawn_send`), samma mönster som `ssh::spawn_shell`/
+  `run_command` — `glib::spawn_future_local` (GTK:s huvudloop) har ingen
+  egen tokio-reaktor, ett rakt `.await` på `tokio::net::UdpSocket` hade
+  panikat.
+  - MAC-adress-fält i värdredigeringsdialogen (`show_host_dialog`),
+    validerat VID SPARA (inte bara när "Väck" trycks) — en trasig adress
+    sparad tyst skulle göra Wake-knappen deterministiskt trasig senare,
+    samma resonemang som `App/HostEditView.swift`s `macValidationMessage`.
+  - Ny "Väck (Wake-on-LAN)"-post i per-värd-menyn, synlig ENDAST när
+    `host.mac_address` är satt (per-värd-egenskap, till skillnad från de
+    andra menyposterna som styrs av globala `FeatureToggles`) — samma UX-
+    regel som `App/HostListView.swift` (`if host.macAddress != nil`).
+    Resultatet (lyckat/fel) visas i en modal dialog
+    (`show_message_dialog`, en generalisering av den redan existerande
+    `show_connect_error` från ProxyJump-arbetet).
+  - Testat: 6 enhetstester (MAC-parsning i alla tre separatorformat, fel
+    längd/tecken, magic-packet-byte-layout, port-gränsvärden) + 1 genuint
+    end-to-end-test mot en RIKTIG UDP-lyssnare på loopback (bevisar att
+    paketet faktiskt går ut på tråden med rätt innehåll, inte bara att
+    byte-layouten stämmer i minnet) — port av `WakeOnLanTests.swift` rakt
+    av. 87/87 `cargo test` gröna totalt.
+
+- **ProxyJump (`ssh -J`) i den NYA Rust/GTK4-`LinuxApp`** (2026-08-04,
+  `LinuxApp/src/ssh.rs`/`host.rs`): `Host.jump_host_id` fanns redan (för
+  wire-format-kompatibilitet med Swift/Windows synk) men lästes tidigare
+  aldrig av något i den nya Rust-omskrivningen — en synkad värd med en
+  jump-host konfigurerad från App/(iOS/macOS) skulle tyst försöka ansluta
+  DIREKT mot target och misslyckas (eller, värre, om target råkade vara
+  nåbar direkt också: ansluta utan att gå genom den avsedda jump-hosten).
+  - `HostStore::resolve_jump` (`host.rs`): löser upp `jump_host_id` mot en
+    riktig `Host` — motsvarar `App/AuthResolver.resolveConnectionPlan`s
+    kontrakt exakt. Bara ETT hopp stöds; en jump-host som SJÄLV har en
+    `jump_host_id` avvisas explicit (`Err`, aldrig en tyst
+    direktanslutning som hoppar över resten av kedjan) — samma
+    säkerhetsprincip som Swift-sidans `jumpHost.jumpHostID == nil`-vakt.
+    En jump-host-referens som pekar på ett ID som inte finns i databasen
+    (borttagen, eller inte synkad än) avvisas likaså.
+  - `ssh::connect_via_jump` (`ssh.rs`): ansluter+autentiserar mot
+    jump-hosten (russh `connect_direct`, UTBRUTEN ur `connect_with_forwards`
+    specifikt för att undvika en rekursiv-async-fn-cykel — E0733 — mellan
+    `connect`/`connect_with_forwards`/`connect_via_jump`), öppnar en äkta
+    `direct-tcpip`-kanal genom den (`channel_open_direct_tcpip`) mot
+    target, och kör en HELT NY, oberoende SSH-handskakning
+    (`client::connect_stream` på kanalens `ChannelStream`, targets EGEN
+    TOFU-koll) ovanpå den byteströmmen — samma "SSH i SSH"-mönster som
+    `SSHSession.connect(via:)` i SSHCore. Jump-hostens `Handle` behöver
+    inte hållas vid liv explicit efter att kanalen öppnats — `Channel`
+    håller sin egen klon av sessionens sändare (russh-dokumenterat), så
+    russh:s bakgrundstråd för jump-anslutningen fortsätter servera
+    tunneln även efter att `Handle`n gått ur scope.
+    Jump-hosten autentiseras UTAN lösenordsprompt (samma begränsning som
+    Swift-sidans `resolveAuth(for: jumpHost, password: nil)`) — bara
+    nyckel-/agent-auth stöds för själva hoppet, target kan fortfarande
+    fråga efter lösenord som vanligt.
+  - `jump: Option<Host>` trädd genom HELA anropskedjan från `main.rs`s
+    UI-lager (terminal, Docker, SFTP, portvidarebefordran/SOCKS,
+    nyckeldistribution, kommandobibliotek/snippets — alla vägar som kan
+    öppna en SSH-anslutning) ner till `ssh::connect`/`run_command`/
+    `spawn_shell`, `port_forward::spawn_local_forward`/
+    `spawn_remote_forward`, `socks_proxy::spawn_dynamic_forward`,
+    `sftp::spawn`, `key_deploy::spawn_deploy_and_verify`. En trasig
+    jump-host-konfiguration upptäcks INNAN någon anslutning ens försöks
+    (`with_resolved_jump` i `main.rs`) och visas i en modal
+    `adw::AlertDialog` — ansluter aldrig direkt mot target som tyst
+    fallback.
+  - Testat GENUINT end-to-end (`ssh::tests`, INGEN kortsluten
+    loopback-gissning): TVÅ helt oberoende `TestSshd`-instanser (egna
+    portar, värdnycklar, klientnyckelpar) — en lyckad anslutning kör ett
+    riktigt kommando över den tunnlade sessionen och verifierar utdata;
+    ett separat test bevisar att ett fel i JUMP-hostens autentisering
+    pekar tydligt på jump-hosten; ett tredje bevisar att ett fel i
+    TARGET-hostens autentisering (jump redan bevisat fungera) INTE
+    felaktigt tillskrivs jump-hosten — samma distinktion som Swift-sidans
+    `ProxyJumpTests`. Plus 4 nya `HostStore::resolve_jump`-tester
+    (host.rs). 80/80 `cargo test` gröna totalt (73 innan, +4 resolve_jump
+    +3 connect_via_jump).
+  - **Kvar**: `WindowsApp`/`Android` har ingen egen SSH-implementation än
+    (se "Fas D") så frågan är inte aktuell där. LinuxApps egen
+    värdredigeringsdialog (`show_host_dialog` i `main.rs`) har INGEN
+    UI-väljare för `jump_host_id` alls — bara körningsvägen (`ssh.rs`/
+    `host.rs`) stöder det nu. En jump-host måste idag sättas från App/
+    (Xcode-only) och synkas in för att LinuxApp ska kunna använda den;
+    en egen "Anslut via"-väljare i LinuxApps host-dialog (samma som
+    App/HostEditView.swift redan har) är en mindre, avgränsad
+    uppföljning.
 
 - **ECDSA-nyckelautentisering (P256/P384/P521), okrypterad** (2026-08-03,
   `SSHKeyParser.swift`/`SSHUserAuth.swift`): OpenSSH-privatnyckelparsern läser

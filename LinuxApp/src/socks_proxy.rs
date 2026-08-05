@@ -37,6 +37,7 @@ pub fn spawn_dynamic_forward(
     password: Option<String>,
     bind_host: String,
     bind_port: u16,
+    jump: Option<Host>,
 ) -> async_channel::Receiver<Result<DynamicPortForward, String>> {
     let (result_tx, result_rx) = async_channel::bounded(1);
 
@@ -46,7 +47,7 @@ pub fn spawn_dynamic_forward(
             .build()
             .expect("kunde inte starta tokio-runtimen för SOCKS-tråden");
         rt.block_on(async move {
-            let session = match crate::ssh::connect(&host, password, None).await {
+            let session = match crate::ssh::connect(&host, password, None, jump).await {
                 Ok(s) => Arc::new(s),
                 Err(e) => {
                     let _ = result_tx.send(Err(e)).await;
@@ -340,7 +341,7 @@ mod tests {
         host.port = sshd.port as i64;
         host.auth = HostAuth::KeyFile(sshd.client_key_path());
 
-        let rx = spawn_dynamic_forward(host, None, "127.0.0.1".into(), 0);
+        let rx = spawn_dynamic_forward(host, None, "127.0.0.1".into(), 0, None);
         let forward = rx.recv().await.expect("kanalen stängdes utan svar").expect("forward misslyckades starta");
         assert_ne!(forward.actual_bind_port, 0);
 

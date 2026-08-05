@@ -47,6 +47,7 @@ pub fn spawn_local_forward(
     bind_port: u16,
     target_host: String,
     target_port: u16,
+    jump: Option<Host>,
 ) -> async_channel::Receiver<Result<LocalPortForward, String>> {
     let (result_tx, result_rx) = async_channel::bounded(1);
 
@@ -56,7 +57,7 @@ pub fn spawn_local_forward(
             .build()
             .expect("kunde inte starta tokio-runtimen för port-forward-tråden");
         rt.block_on(async move {
-            let session = match crate::ssh::connect(&host, password, None).await {
+            let session = match crate::ssh::connect(&host, password, None, jump).await {
                 Ok(s) => Arc::new(s),
                 Err(e) => {
                     let _ = result_tx.send(Err(e)).await;
@@ -161,6 +162,7 @@ pub fn spawn_remote_forward(
     bind_port: u16,
     target_host: String,
     target_port: u16,
+    jump: Option<Host>,
 ) -> async_channel::Receiver<Result<RemotePortForward, String>> {
     let (result_tx, result_rx) = async_channel::bounded(1);
 
@@ -171,7 +173,7 @@ pub fn spawn_remote_forward(
             .expect("kunde inte starta tokio-runtimen för fjärr-port-forward-tråden");
         rt.block_on(async move {
             let remote_forwards = RemoteForwards::default();
-            let mut session = match crate::ssh::connect_with_forwards(&host, password, None, remote_forwards.clone()).await {
+            let mut session = match crate::ssh::connect_with_forwards(&host, password, None, remote_forwards.clone(), jump).await {
                 Ok(s) => s,
                 Err(e) => {
                     let _ = result_tx.send(Err(e)).await;
@@ -388,6 +390,7 @@ mod tests {
             0,
             "127.0.0.1".into(),
             echo_port,
+            None,
         );
         let forward = rx.recv().await.expect("kanalen stängdes utan svar").expect("forward misslyckades starta");
         assert_ne!(forward.actual_bind_port, 0, "OS-tilldelad port ska vara känd efter start");
@@ -429,6 +432,7 @@ mod tests {
             0,
             "127.0.0.1".into(),
             echo_port,
+            None,
         );
         let forward = rx.recv().await.expect("kanalen stängdes utan svar").expect("forward misslyckades starta");
         assert_ne!(forward.actual_bind_port, 0, "OS-tilldelad serverport ska vara känd efter start");

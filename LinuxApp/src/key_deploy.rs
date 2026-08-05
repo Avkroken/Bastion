@@ -201,6 +201,7 @@ pub fn spawn_deploy_and_verify(
     password: Option<String>,
     public_key_line: String,
     new_key_path: String,
+    jump: Option<Host>,
 ) -> async_channel::Receiver<Result<(), String>> {
     let (result_tx, result_rx) = async_channel::bounded(1);
 
@@ -210,7 +211,8 @@ pub fn spawn_deploy_and_verify(
             .build()
             .expect("kunde inte starta tokio-runtimen för nyckeldistributionstråden");
         rt.block_on(async move {
-            let result = deploy_and_verify(host, password, public_key_line, new_key_path, None).await;
+            let result =
+                deploy_and_verify(host, password, public_key_line, new_key_path, None, jump).await;
             let _ = result_tx.send(result).await;
         });
     });
@@ -224,12 +226,13 @@ async fn deploy_and_verify(
     public_key_line: String,
     new_key_path: String,
     authorized_keys_path_override: Option<&str>,
+    jump: Option<Host>,
 ) -> Result<(), String> {
     let command = match authorized_keys_path_override {
         Some(path) => deploy_command_at(&public_key_line, path),
         None => deploy_command_for_host(&host, &public_key_line),
     };
-    let session = crate::ssh::connect(&host, password, None).await?;
+    let session = crate::ssh::connect(&host, password, None, jump.clone()).await?;
     let mut channel = session.channel_open_session().await.map_err(|e| format!("kunde inte öppna kanal: {e}"))?;
     channel
         .exec(true, command.as_bytes())
@@ -244,10 +247,12 @@ async fn deploy_and_verify(
     // Ny, HELT SEPARAT anslutning som bara litar på den nya nyckeln — bevisar
     // att den fungerar innan anroparen (GTK-vyn) erbjuder att byta värdens
     // lagrade auth-metod och ta bort lösenordet, precis som Swift-sidans
-    // "verifiera innan lösenordet tas bort"-resonemang.
+    // "verifiera innan lösenordet tas bort"-resonemang. Samma jump-host (om
+    // någon) som deploy-anslutningen ovan — target nås fortfarande GENOM
+    // samma hopp, bara auth-metoden på target har bytts.
     let mut verify_host = host;
     verify_host.auth = HostAuth::KeyFile(new_key_path);
-    crate::ssh::connect(&verify_host, None, None).await.map(|_| ()).map_err(|e| {
+    crate::ssh::connect(&verify_host, None, None, jump).await.map(|_| ()).map_err(|e| {
         format!("nyckeln deployades men verifieringen misslyckades — lösenordet är INTE borttaget: {e}")
     })
 }
@@ -470,6 +475,7 @@ mod tests {
             pair.public_key_line.clone(),
             key_path.clone(),
             Some(&authorized_keys_path),
+            None,
         )
         .await;
         assert!(result.is_ok(), "deploy+verify misslyckades: {result:?}");

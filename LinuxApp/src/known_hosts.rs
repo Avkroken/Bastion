@@ -30,18 +30,42 @@ impl KnownHosts {
             .join(".bastion/known_hosts")
     }
 
-    pub fn open(path: Option<PathBuf>) -> Self {
-        let entries = Self::load(path.as_deref());
-        KnownHosts { path, entries: Mutex::new(entries) }
+    /// Fallerar om filen FINNS men inte går att läsa. Se `load` — det är
+    /// medvetet, och skiljer sig från Swift-referensens `try?`.
+    pub fn open(path: Option<PathBuf>) -> std::io::Result<Self> {
+        let entries = Self::load(path.as_deref())?;
+        Ok(KnownHosts { path, entries: Mutex::new(entries) })
     }
 
-    fn load(path: Option<&Path>) -> HashMap<String, String> {
-        let Some(path) = path else { return HashMap::new() };
-        let Ok(text) = std::fs::read_to_string(path) else { return HashMap::new() };
-        text.lines()
+    /// "Filen finns inte än" (första körningen) ger en tom karta — det är
+    /// korrekt. Men ETT ANNAT läsfel (rättighetsfel, I/O-fel, sökvägen är
+    /// en katalog) propagerar som `Err`, det får ALDRIG tolkas som "inga
+    /// kända värdar".
+    ///
+    /// Varför detta är viktigare här än någon annanstans: en tyst tom
+    /// karta hade fått VARJE värd att bli `Learned` i stället för
+    /// kontrollerad mot sin lagrade nyckel — alltså tyst tappat hela
+    /// MITM-skyddet, precis den enda sak den här filen finns för. Vi
+    /// faller hellre stängt (anslutningen misslyckas med ett tydligt fel)
+    /// än öppet.
+    ///
+    /// Swift-sidans `KnownHosts.loadEntries` använder `try?` och sväljer
+    /// alltså alla fel — en medveten AVVIKELSE från referensen här, i
+    /// linje med kodbasens egen princip på andra ställen (`HostStore::
+    /// load`/`AppSettingsStore::load` skiljer redan "finns inte" från
+    /// "går inte att tolka"). Värt att rapportera uppåt till Swift-sidan.
+    fn load(path: Option<&Path>) -> std::io::Result<HashMap<String, String>> {
+        let Some(path) = path else { return Ok(HashMap::new()) };
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+            Err(e) => return Err(e),
+        };
+        Ok(text
+            .lines()
             .filter_map(|line| line.split_once(' '))
             .map(|(id, key)| (id.to_string(), key.to_string()))
-            .collect()
+            .collect())
     }
 
     /// Avgör hur en presenterad nyckel förhåller sig till vad vi sett
@@ -98,7 +122,7 @@ mod tests {
     #[test]
     fn learns_a_new_host_then_trusts_it() {
         let path = temp_path();
-        let kh = KnownHosts::open(Some(path.clone()));
+        let kh = KnownHosts::open(Some(path.clone())).unwrap();
         assert_eq!(kh.check("example.com", 22, "ssh-ed25519 AAAA1"), Verdict::Learned);
         assert_eq!(kh.check("example.com", 22, "ssh-ed25519 AAAA1"), Verdict::Trusted);
         std::fs::remove_file(path).ok();
@@ -107,7 +131,7 @@ mod tests {
     #[test]
     fn detects_a_changed_key() {
         let path = temp_path();
-        let kh = KnownHosts::open(Some(path.clone()));
+        let kh = KnownHosts::open(Some(path.clone())).unwrap();
         kh.check("example.com", 22, "ssh-ed25519 AAAA1");
         let verdict = kh.check("example.com", 22, "ssh-ed25519 AAAA2-ANNAN-NYCKEL");
         assert_eq!(verdict, Verdict::Changed("ssh-ed25519 AAAA1".into()));
@@ -118,10 +142,10 @@ mod tests {
     fn persists_across_reopen() {
         let path = temp_path();
         {
-            let kh = KnownHosts::open(Some(path.clone()));
+            let kh = KnownHosts::open(Some(path.clone())).unwrap();
             kh.check("mp100", 22, "ssh-ed25519 AAAAPERSIST");
         }
-        let reopened = KnownHosts::open(Some(path.clone()));
+        let reopened = KnownHosts::open(Some(path.clone())).unwrap();
         assert_eq!(reopened.check("mp100", 22, "ssh-ed25519 AAAAPERSIST"), Verdict::Trusted);
         std::fs::remove_file(path).ok();
     }
@@ -129,9 +153,49 @@ mod tests {
     #[test]
     fn different_ports_are_independent_hosts() {
         let path = temp_path();
-        let kh = KnownHosts::open(Some(path.clone()));
+        let kh = KnownHosts::open(Some(path.clone())).unwrap();
         assert_eq!(kh.check("h", 22, "keyA"), Verdict::Learned);
         assert_eq!(kh.check("h", 2222, "keyB"), Verdict::Learned);
         std::fs::remove_file(path).ok();
+    }
+
+    /// Att filen inte finns än (första körningen) är HELT normalt och ska
+    /// ge en tom, användbar lagring — inte ett fel.
+    #[test]
+    fn a_missing_file_is_not_an_error_it_is_just_the_first_run() {
+        let path = temp_path();
+        assert!(!path.exists());
+        let kh = KnownHosts::open(Some(path.clone())).expect("saknad fil ska inte vara ett fel");
+        assert_eq!(kh.check("ny-värd", 22, "keyA"), Verdict::Learned);
+        std::fs::remove_file(path).ok();
+    }
+
+    /// SÄKERHETSREGRESSION: ett läsfel som INTE är "filen saknas" får
+    /// aldrig tolkas som "inga kända värdar" — då hade varje värd blivit
+    /// `Learned` i stället för kontrollerad, dvs. MITM-skyddet tyst
+    /// försvunnit. Vi faller stängt.
+    ///
+    /// Felet framkallas genom att peka sökvägen på en KATALOG
+    /// (`read_to_string` ger `IsADirectory`, inte `NotFound`) i stället
+    /// för via rättigheter — det är deterministiskt även om testet
+    /// skulle köras som root, där ett 0o000-läge hade ignorerats.
+    #[test]
+    fn an_unreadable_file_is_an_error_not_a_silent_empty_state() {
+        let path = temp_path();
+        std::fs::create_dir_all(&path).expect("kunde inte skapa katalogen");
+
+        // `expect_err` kräver `Debug` på Ok-typen, som `KnownHosts` inte
+        // har (den bär ett `Mutex`) — plockar ut felet manuellt i stället.
+        let err = match KnownHosts::open(Some(path.clone())) {
+            Ok(_) => panic!("en oläsbar known_hosts ska ge Err, inte en tom lagring"),
+            Err(e) => e,
+        };
+        assert_ne!(
+            err.kind(),
+            std::io::ErrorKind::NotFound,
+            "felet ska inte vara NotFound — det fallet är det enda som får ge en tom lagring"
+        );
+
+        std::fs::remove_dir_all(path).ok();
     }
 }
