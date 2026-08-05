@@ -355,6 +355,36 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **BUGGFIX: seriell läs-tråd + filbeskrivare läckte vid varje stängd
+  flik** (2026-08-05, `serial.rs`): hittad vid egen genomläsning av
+  sessionens egna moduler (CodeRabbit borttaget ur repot).
+  - Rotorsak: `cfmakeraw` sätter `VMIN=1/VTIME=0` — "blockera i `read()`
+    tills minst en byte kommer, hur länge som helst" — och
+    `open_and_configure` rensar medvetet bort `O_NONBLOCK`. `stop`-
+    flaggan (som skriv-tråden sätter när fliken stängs) kontrolleras
+    bara i läsloopens TOPP. På en TYST port — en helt vanlig konsolport
+    som inte skriver något av sig själv — vaknade läs-tråden därför
+    aldrig: tråden OCH den öppna filbeskrivaren läckte permanent, en
+    gång per stängd seriell flik. Kodens egen kommentar kallade den
+    "pollningsloopen", men ingenting pollade.
+  - Fix: `VMIN=0/VTIME=1` (0,1 s) efter `cfmakeraw`, så `read()`
+    returnerar regelbundet även utan data och loopen hinner se flaggan.
+    Med `VMIN=0` betyder `read() == 0` "timeout, ingen data" — INTE EOF
+    — så läsloopen `continue`:ar i stället för att `break`:a på 0;
+    frånkoppling syns i stället som ett fel (EIO) i `Err`-grenen.
+  - Regressionstest mot en riktig PTY som ALDRIG skickar något, med
+    master medvetet öppen (så det bevisas att det är `stop`-flaggan som
+    fungerar, inte att porten råkade dö). **Testet är verifierat att
+    faktiskt fånga buggen**: med fixen bortplockad misslyckas det på
+    10 s. Det väntar via en `mpsc::recv_timeout`-brygga i stället för
+    `recv_blocking` just för att FAILA i stället för att HÄNGA (en
+    hängande CI-körning hade ätit hela jobbets tidsbudget) — även det
+    verifierat empiriskt: den direkta varianten hängde >180 s.
+  - Även fixat i samma svep: `libc::dup` kontrolleras nu mot -1 (t.ex.
+    EMFILE). Utan kontrollen gav `File::from_raw_fd(-1)` en session som
+    SÅG ansluten ut och kunde läsa, men där varje skrivning tyst
+    misslyckades.
+
 - **ROBUSTHETSFIX: OAuth-loopbacken band sig till FÖRSTA anslutningen**
   (2026-08-05, `oauth.rs`): hittad vid egen genomläsning av den nyss
   skeppade inloggningen (CodeRabbit borttaget ur repot — självgranskning

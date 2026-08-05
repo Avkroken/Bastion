@@ -94,6 +94,21 @@ fn configure_termios(fd: RawFd, baud_rate: u32) -> Result<(), SerialError> {
         libc::cfsetispeed(&mut raw, speed);
         libc::cfsetospeed(&mut raw, speed);
         raw.c_cflag |= libc::CLOCAL | libc::CREAD;
+        // `cfmakeraw` sätter VMIN=1/VTIME=0 = "blockera tills minst en byte
+        // kommer, hur länge som helst". Med `O_NONBLOCK` bortrensat (se
+        // `open_and_configure`) hade läs-tråden då kunnat sitta fast i
+        // `read()` FÖR ALLTID på en tyst port — och därmed aldrig hinna
+        // se `stop`-flaggan när fliken stängs (tråden + fd:t läcker för
+        // varje stängd seriell flik). VMIN=0/VTIME=1 ger i stället en
+        // läsning som returnerar efter 0,1 s även utan data, så loopen
+        // vaknar regelbundet och kan kontrollera flaggan.
+        //
+        // OBS: med VMIN=0 betyder `read() == 0` "timeout, ingen data" —
+        // INTE EOF. Frånkoppling ger i stället ett fel (EIO), som
+        // hanteras i `Err`-grenen. Läsloopen måste alltså `continue` på
+        // 0, inte `break`.
+        raw.c_cc[libc::VMIN] = 0;
+        raw.c_cc[libc::VTIME] = 1; // decisekunder
         if libc::tcsetattr(fd, libc::TCSANOW, &raw) != 0 {
             return Err(SerialError::ConfigurationFailed("tcsetattr misslyckades".to_string()));
         }
@@ -150,7 +165,18 @@ pub fn spawn(config: SerialConfig) -> SerialHandle {
         // kärnan, så skrivningar/läsningar går till samma port) — annars
         // skulle två `File`-värden dela ÄGARSKAP av samma fd-heltal, och
         // den ena som droppas (stänger fd:t) hade brutit den andra.
+        // `dup` kan misslyckas (t.ex. EMFILE — processens fd-tak nått).
+        // Utan kontroll hade `File::from_raw_fd(-1)` gett en session som
+        // SER ansluten ut och kan läsa, men där varje skrivning tyst
+        // misslyckas — ett förvirrande halvtrasigt läge. Bättre att
+        // faila tydligt direkt.
         let write_fd = unsafe { libc::dup(fd) };
+        if write_fd < 0 {
+            let _ = output_tx.send_blocking(SerialEvent::Error("kunde inte duplicera filbeskrivaren för skrivning".to_string()));
+            let _ = output_tx.send_blocking(SerialEvent::Closed);
+            unsafe { libc::close(fd) };
+            return;
+        }
 
         {
             let stop = Arc::clone(&stop);
@@ -176,7 +202,11 @@ pub fn spawn(config: SerialConfig) -> SerialHandle {
                 break;
             }
             match file.read(&mut buf) {
-                Ok(0) => break, // EOF — enheten kopplades bort
+                // Med VMIN=0/VTIME=1 (se `configure_termios`) betyder 0
+                // "inget kom inom 0,1 s", inte EOF — loopa om så
+                // `stop`-flaggan ovan hinner kontrolleras. Frånkoppling
+                // syns i stället som ett fel i `Err`-grenen nedan.
+                Ok(0) => continue,
                 Ok(n) => {
                     if output_tx.send_blocking(SerialEvent::Data(buf[..n].to_vec())).is_err() {
                         break;
@@ -306,5 +336,73 @@ mod tests {
             }
         }
         assert_eq!(&read_buf[..total], b"echo\n");
+    }
+
+    /// REGRESSIONSSKYDD för en riktig resursläcka (fixad 2026-08-05): när
+    /// fliken stängs droppas `handle.input`, vilket får skriv-tråden att
+    /// sätta `stop`-flaggan. Men läs-tråden kollar bara flaggan i loopens
+    /// TOPP — och `cfmakeraw` sätter VMIN=1/VTIME=0, alltså "blockera i
+    /// `read()` tills minst en byte kommer, hur länge som helst".
+    ///
+    /// På en TYST port (en helt vanlig konsolport som inte skriver något)
+    /// betydde det att läs-tråden aldrig vaknade: tråden OCH den öppna
+    /// filbeskrivaren läckte permanent, en gång per stängd seriell flik.
+    /// Fixen är VMIN=0/VTIME=1 (se `configure_termios`), som får `read()`
+    /// att returnera 0 efter 0,1 s även utan data.
+    ///
+    /// Testet stänger en session mot en PTY som ALDRIG skickar något, och
+    /// kräver att `Closed` kommer inom rimlig tid. Före fixen kom den
+    /// aldrig — testet hade hängt tills timeouten nedan slog till.
+    #[test]
+    fn read_thread_exits_promptly_when_the_tab_closes_on_a_silent_port() {
+        let (master_fd, slave_path) = open_pty_pair();
+        // Master hålls öppen hela testet (annars skulle slavsidan få EIO
+        // och avsluta av FEL anledning — vi vill bevisa att det är
+        // `stop`-flaggan som fungerar, inte att porten råkade dö).
+        let _master = unsafe { std::fs::File::from_raw_fd(master_fd) };
+
+        let handle = spawn(SerialConfig { path: slave_path, baud_rate: 9600 });
+        match handle.output.recv_blocking() {
+            Ok(SerialEvent::Connected) => {}
+            other => panic!("väntade Connected, fick {other:?}"),
+        }
+
+        // Simulerar att fliken stängs: sändaren droppas, inget skickas
+        // någonsin på porten.
+        drop(handle.input);
+
+        // Brygga till en std-kanal med `recv_timeout` i stället för att
+        // vänta direkt på `recv_blocking()`: utan fixen kommer `Closed`
+        // ALDRIG, och ett direkt `recv_blocking` hade då hängt testet
+        // (och i CI ätit hela jobbets tidsbudget) i stället för att
+        // misslyckas tydligt. Verifierat: med fixen borttagen hänger den
+        // direkta varianten för alltid — den här failar på 10 s med
+        // meddelandet nedan.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            while let Ok(event) = handle.output.recv_blocking() {
+                let closed = matches!(event, SerialEvent::Closed);
+                if tx.send(closed).is_err() || closed {
+                    break;
+                }
+            }
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "läs-tråden avslutades aldrig — `stop`-flaggan nås inte medan `read()` blockerar utan VTIME-timeout"
+            );
+            match rx.recv_timeout(remaining) {
+                Ok(true) => break,       // Closed
+                Ok(false) => continue,   // någon annan händelse
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break, // trådarna är borta
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    panic!("läs-tråden avslutades aldrig inom 10 s — `stop`-flaggan nås inte medan `read()` blockerar")
+                }
+            }
+        }
     }
 }
