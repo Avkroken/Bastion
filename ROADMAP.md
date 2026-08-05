@@ -355,6 +355,52 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **Interaktiv OAuth2/PKCE-inloggning i den NYA Rust/GTK4-`LinuxApp`**
+  (2026-08-05, `LinuxApp/src/oauth.rs` + `main.rs`): den del av
+  OAuth-portningen (#256) som medvetet sköts upp — öppna en
+  webbläsare, fånga koden som skickas tillbaka. Löst med en lokal
+  loopback-HTTP-lyssnare enligt RFC 8252 ("OAuth 2.0 for Native Apps"),
+  det designval som lämnades öppet i #256 (kontra ett registrerat
+  anpassat URI-schema via `xdg-mime`/en `.desktop`-fil) — fungerar
+  oavsett skrivbordsmiljö/paketformat (deb/rpm/flatpak), ingen extra
+  registrering krävs.
+  - `oauth::start_login`/`finish_login`: binder en `TcpListener` på en
+    SLUMPAD ledig port (`127.0.0.1:0`), bygger auktoriseringsURL:en med
+    den dynamiska `redirect_uri`:n, väntar in EN inkommande begäran
+    (5 minuters timeout — en användare som stänger fliken ska inte
+    hänga appen för evigt), tolkar `code`/`state` ur query-strängen,
+    svarar webbläsaren med en enkel bekräftelsesida, och byter koden mot
+    ett riktigt token. Uppdelad från själva webbläsaröppningen
+    (`gtk::UriLauncher`, portal-baserad — fungerar även sandboxat, till
+    skillnad från att skala ut till `xdg-open`) så resten av flödet
+    förblir testbart utan GTK.
+  - **3 nya GENUINT end-to-end-testade fall**, inte mockade: en riktig
+    `TcpListener` på en riktig slumpad port, en riktig HTTP-klient som
+    spelar "webbläsaren" (gör exakt den GET-begäran webbläsaren skulle
+    gjort), och en riktig lokal token-server för själva bytet — lyckat
+    fall, fel `state` (CSRF-skydd, avvisas tydligt men webbläsaren får
+    ändå ett svar, inte en trasig anslutning), och ett leverantörsfel
+    (`?error=access_denied`).
+  - Ny "Kontosynk"-sektion i inställningsdialogen: en rad per
+    leverantör (Dropbox/Google Drive/OneDrive) med Logga in/ut-knapp,
+    motsvarar `App/SyncSettingsView.swift`s `accountRow`. **Bara
+    inloggningen** — att faktiskt ladda upp/ner den krypterade synkfilen
+    via kontot är ett eget, större steg, se "Kvar".
+  - **VIKTIGT för Dropbox specifikt**: det registrerade `client_id`:t
+    (`ira5qtb04w4qikk`) är bara godkänt för
+    `se.denied.bastion://oauth/dropbox` (Apple-sidans schema) i Dropboxs
+    app-konsol — en loopback-URL måste läggas till som ytterligare en
+    tillåten redirect-URI där innan inloggning mot Dropbox fungerar i
+    produktion. Ett kontoägar-beslut, görs inte av koden.
+  - **Kvar**: den faktiska kontosynk-transporten (ladda upp/ner
+    `bastion-sync.enc` via Dropbox-/Google Drive-/OneDrive-API:et,
+    motsvarande `DropboxSyncProvider.swift` m.fl.) är INTE byggd —
+    `OAuthTokenStore::load`/`valid_access_token`/`refresh_access_token`
+    väntar redan färdiga på den (bara testade, ej ansluten till
+    `main.rs` än, `#[allow(dead_code)]`-markerade med motivering).
+  - 195/195 `cargo test` gröna totalt, `cargo build`/`clippy` helt
+    tysta.
+
 - **`ExternalBinaryFetcher` — generisk hämta+verifiera+cacha-hjälpare för
   externa binärer, i den NYA Rust/GTK4-`LinuxApp`** (2026-08-05,
   `LinuxApp/src/external_binary_fetcher.rs`): port av

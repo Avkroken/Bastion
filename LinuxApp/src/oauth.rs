@@ -20,14 +20,9 @@
 //! privatnycklar redan har i den här klienten (`s3.rs`/`wireguard.rs`),
 //! INTE macOS Keychain (som Swift-sidan använder — Linux har ingen
 //! universell motsvarighet över skrivbordsmiljöer; freedesktop Secret
-//! Service är en egen beroende-yta som inte är motiverad förrän
-//! inloggningsflödet ovan faktiskt finns).
-//!
-//! `#![allow(dead_code)]`: hela modulen är medvetet INTE kopplad in i
-//! `main.rs` än — den väntar på att den interaktiva inloggnings-UI:n
-//! (nästa PR, se ovan) faktiskt anropar den. Bara testad, inte använd,
-//! samma motivering som `WireGuardProfileStore::get` i `wireguard.rs`.
-#![allow(dead_code)]
+//! Service är en egen beroende-yta som inte är motiverad förrän en faktisk
+//! kontosynk-transport — INTE bara inloggningen, se `LoginSession`s
+//! dokumentation — är byggd).
 
 use base64::Engine;
 use rand::RngExt;
@@ -90,7 +85,12 @@ impl StoredOAuthToken {
     }
 
     /// `nil` utgångstid (leverantören svarade utan `expires_in`) tolkas som
-    /// "fortfarande giltig" — ett 401 vid faktisk användning får trigga förnyelse.
+    /// "fortfarande giltig" — ett 401 vid faktisk användning får trigga
+    /// förnyelse. Bara testad, inte använd av `main.rs` än — inloggnings-
+    /// UI:t behöver bara `save`/`is_logged_in`/`logout`; en riktig
+    /// användning av tokenet (som skulle trigga förnyelse-behovet) hör
+    /// hemma i den ännu obyggda kontosynk-transporten.
+    #[allow(dead_code)]
     pub fn is_expired(&self, now: f64) -> bool {
         match self.expires_at {
             Some(exp) => now >= exp,
@@ -119,6 +119,13 @@ pub struct OAuthProviderConfig {
     pub authorization_endpoint: &'static str,
     pub token_endpoint: &'static str,
     pub scope: &'static str,
+    /// Apple-sidans REGISTRERADE anpassade URI-schema
+    /// (`se.denied.bastion://…`) — Linux-inloggningen använder en
+    /// DYNAMISK loopback-URL i stället (se `LoginSession`), så fältet
+    /// läses inte längre av `main.rs`. Kvar för paritet med
+    /// `App/OAuthProviders.swift` och som referens/dokumentation för vad
+    /// som faktiskt är registrerat hos varje leverantör.
+    #[allow(dead_code)]
     pub redirect_uri: &'static str,
     pub client_id: &'static str,
 }
@@ -172,11 +179,18 @@ pub fn all_providers() -> Vec<OAuthProviderConfig> {
 /// Bygger auktoriseringsURL:en användaren ska öppnas mot — ren funktion,
 /// inget nätverk. Motsvarar `URLComponents`-uppbyggnaden i
 /// `OAuthAccountManager.login`.
-pub fn build_authorize_url(provider: &OAuthProviderConfig, challenge: &str, state: &str) -> Result<reqwest::Url, String> {
+///
+/// `redirect_uri` tas emot som parameter i stället för att läsas ur
+/// `provider.redirect_uri` — den senare är Apple-sidans REGISTRERADE
+/// anpassade URI-schema (`se.denied.bastion://…`), men Linux-inloggningen
+/// (se `start_login`/`LoginSession`) använder en DYNAMISK loopback-URL
+/// (`http://127.0.0.1:<slumpad port>/callback`, RFC 8252) i stället — de
+/// två får aldrig blandas ihop.
+pub fn build_authorize_url(provider: &OAuthProviderConfig, challenge: &str, state: &str, redirect_uri: &str) -> Result<reqwest::Url, String> {
     let mut url = reqwest::Url::parse(provider.authorization_endpoint).map_err(|e| e.to_string())?;
     url.query_pairs_mut()
         .append_pair("client_id", provider.client_id)
-        .append_pair("redirect_uri", provider.redirect_uri)
+        .append_pair("redirect_uri", redirect_uri)
         .append_pair("response_type", "code")
         .append_pair("scope", provider.scope)
         .append_pair("code_challenge", challenge)
@@ -187,17 +201,20 @@ pub fn build_authorize_url(provider: &OAuthProviderConfig, challenge: &str, stat
 
 /// Byter en auktoriseringskod mot ett åtkomsttoken-par. Motsvarar
 /// `OAuthAccountManager.exchangeCodeForToken` — RIKTIGT HTTP-anrop
-/// (`reqwest`), inget mockat lager.
+/// (`reqwest`), inget mockat lager. `redirect_uri`: se `build_authorize_url`
+/// — MÅSTE vara exakt samma sträng som skickades i auktoriseringsbegäran,
+/// leverantören avvisar annars bytet.
 pub async fn exchange_code_for_token(
     client: &reqwest::Client,
     provider: &OAuthProviderConfig,
     code: &str,
     verifier: &str,
+    redirect_uri: &str,
 ) -> Result<StoredOAuthToken, String> {
     let form = [
         ("grant_type", "authorization_code"),
         ("code", code),
-        ("redirect_uri", provider.redirect_uri),
+        ("redirect_uri", redirect_uri),
         ("client_id", provider.client_id),
         ("code_verifier", verifier),
     ];
@@ -206,7 +223,10 @@ pub async fn exchange_code_for_token(
 }
 
 /// Förnyar ett utgånget åtkomsttoken via en sparad `refresh_token`.
-/// Motsvarar `OAuthTokenStore.refresh`.
+/// Motsvarar `OAuthTokenStore.refresh`. Bara testad + använd av
+/// `OAuthTokenStore::valid_access_token` (också ej ansluten till `main.rs`
+/// än, se dess dokumentation) — inte inloggnings-UI:t.
+#[allow(dead_code)]
 pub async fn refresh_access_token(
     client: &reqwest::Client,
     provider: &OAuthProviderConfig,
@@ -230,6 +250,105 @@ async fn request_token(client: &reqwest::Client, token_endpoint: &str, form: &[(
         return Err(format!("token-endpoint svarade {status}: {}", String::from_utf8_lossy(&bytes)));
     }
     serde_json::from_slice(&bytes).map_err(|e| format!("kunde inte tolka svaret: {e} ({})", String::from_utf8_lossy(&bytes)))
+}
+
+/// **Den interaktiva inloggningen** (öppna en webbläsare, fånga koden
+/// redirecten skickar tillbaka) — det som PR:en som portade
+/// `OAuthPKCE`/token-utbytet uttryckligen sköt upp. Löst med en lokal
+/// loopback-HTTP-lyssnare enligt RFC 8252 ("OAuth 2.0 for Native Apps"),
+/// samma mönster de flesta moderna skrivbordsappar använder: ingen
+/// registrering av ett anpassat URI-schema (`xdg-mime`/en `.desktop`-fil)
+/// krävs, fungerar oavsett skrivbordsmiljö/paketformat (deb/rpm/flatpak).
+///
+/// VIKTIGT för Dropbox specifikt: `OAuthProviders::dropbox().client_id`
+/// (`ira5qtb04w4qikk`) är registrerat i Dropboxs app-konsol med
+/// `se.denied.bastion://oauth/dropbox` som ENDA tillåtna redirect-URI
+/// (Apple-sidans anpassade schema). En loopback-URL
+/// (`http://127.0.0.1:<port>/callback`) måste läggas till som ytterligare
+/// en tillåten redirect-URI i SAMMA app-konsol innan inloggning mot
+/// Dropbox faktiskt fungerar i produktion — det är ett kontoägar-beslut,
+/// inte något den här koden kan eller ska göra åt någon.
+///
+/// Uppdelad i `start_login`/`finish_login` (i stället för en enda
+/// funktion som även öppnar webbläsaren) så resten av inloggningslogiken
+/// — lyssna, tolka `code`/`state`, byta koden mot ett token — förblir
+/// testbar utan GTK: `gtk::UriLauncher` (portal-baserad, fungerar även
+/// paketerat/sandboxat, till skillnad från att skala ut till `xdg-open`)
+/// hör hemma i `main.rs`, inte här.
+pub struct LoginSession {
+    pub authorize_url: reqwest::Url,
+    verifier: String,
+    state: String,
+    redirect_uri: String,
+    listener: tokio::net::TcpListener,
+}
+
+/// Startar en lokal loopback-lyssnare på en SLUMPAD ledig port (OS:et
+/// väljer — `127.0.0.1:0`), bygger PKCE-paret + auktoriseringsURL:en.
+/// Anroparen öppnar `authorize_url` i en webbläsare, väntar sedan in
+/// resultatet via `finish_login`.
+pub async fn start_login(provider: &OAuthProviderConfig) -> Result<LoginSession, String> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| format!("kunde inte starta en lokal lyssnare: {e}"))?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    let redirect_uri = format!("http://127.0.0.1:{port}/callback");
+    let verifier = pkce_verifier();
+    let challenge = pkce_challenge(&verifier);
+    // `state` behöver inte vara PKCE-specifik — samma slumpgenerator
+    // (32 råa byte, base64url) återanvänds bara för att den redan finns,
+    // exakt som Swift-sidans `state = OAuthPKCE.makeVerifier()`.
+    let state = pkce_verifier();
+    let authorize_url = build_authorize_url(provider, &challenge, &state, &redirect_uri)?;
+    Ok(LoginSession { authorize_url, verifier, state, redirect_uri, listener })
+}
+
+/// Väntar in EN inkommande redirect-begäran (max 5 minuter — en användare
+/// som stänger fliken/aldrig loggar in ska inte hänga appen för evigt),
+/// tolkar `code`/`state` ur query-strängen, svarar webbläsaren med en
+/// enkel bekräftelsesida, och byter koden mot ett riktigt token.
+pub async fn finish_login(session: LoginSession, client: &reqwest::Client, provider: &OAuthProviderConfig) -> Result<StoredOAuthToken, String> {
+    let code = tokio::time::timeout(std::time::Duration::from_secs(300), await_redirect(session.listener, &session.state))
+        .await
+        .map_err(|_| "ingen inloggning slutförd inom 5 minuter — försök igen".to_string())??;
+    exchange_code_for_token(client, provider, &code, &session.verifier, &session.redirect_uri).await
+}
+
+async fn await_redirect(listener: tokio::net::TcpListener, expected_state: &str) -> Result<String, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (mut socket, _) = listener.accept().await.map_err(|e| format!("kunde inte ta emot redirect-anropet: {e}"))?;
+    let mut buf = vec![0u8; 8192];
+    let n = socket.read(&mut buf).await.map_err(|e| format!("kunde inte läsa redirect-begäran: {e}"))?;
+    let request = String::from_utf8_lossy(&buf[..n]).into_owned();
+    let path_and_query = request
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .ok_or_else(|| "ogiltig HTTP-begäran från webbläsaren".to_string())?
+        .to_string();
+    let url = reqwest::Url::parse(&format!("http://127.0.0.1{path_and_query}")).map_err(|e| format!("kunde inte tolka redirect-URL:en: {e}"))?;
+    let params: std::collections::HashMap<String, String> = url.query_pairs().into_owned().collect();
+
+    let result = match (params.get("code"), params.get("state")) {
+        (Some(code), Some(state)) if state == expected_state => Ok(code.clone()),
+        (Some(_), Some(_)) => Err("state matchade inte — möjlig CSRF eller en gammal inloggningsbegäran".to_string()),
+        _ => {
+            let error = params.get("error").cloned().unwrap_or_else(|| "okänt fel".to_string());
+            Err(format!("leverantören returnerade ett fel: {error}"))
+        }
+    };
+    let body = match &result {
+        Ok(_) => "<html><body>Inloggningen lyckades — du kan stänga den här fliken.</body></html>".to_string(),
+        Err(e) => format!("<html><body>Inloggningen misslyckades: {e}</body></html>"),
+    };
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    let _ = socket.write_all(response.as_bytes()).await;
+    let _ = socket.shutdown().await;
+    result
 }
 
 /// Läser/skriver token lokalt (se modulkommentaren om avgränsningen mot
@@ -271,6 +390,10 @@ impl OAuthTokenStore {
         self.save_all(&all)
     }
 
+    /// Bara testad + använd av `valid_access_token` (nedan, också inte
+    /// ansluten till `main.rs` än) — inloggnings-UI:t behöver bara
+    /// `is_logged_in`/`save`/`logout`.
+    #[allow(dead_code)]
     pub fn load(&self, provider: &OAuthProviderConfig) -> Option<StoredOAuthToken> {
         self.load_all().get(provider.id).cloned()
     }
@@ -282,7 +405,11 @@ impl OAuthTokenStore {
     }
 
     /// Hämtar ett giltigt åtkomsttoken, förnyar tyst via `refresh_token` om
-    /// det gått ut. Motsvarar `OAuthTokenStore.validAccessToken`.
+    /// det gått ut. Motsvarar `OAuthTokenStore.validAccessToken`. Väntar på
+    /// den faktiska kontosynk-transporten (som skulle vara den enda
+    /// anroparen — inloggnings-UI:t sparar bara ett token, det ANVÄNDER
+    /// inget än) innan den kopplas in i `main.rs`.
+    #[allow(dead_code)]
     pub async fn valid_access_token(&self, client: &reqwest::Client, provider: &OAuthProviderConfig) -> Result<String, String> {
         let mut token = self.load(provider).ok_or("inte inloggad")?;
         if token.is_expired(unix_now()) {
@@ -406,10 +533,10 @@ mod tests {
     #[test]
     fn authorize_url_contains_every_pkce_parameter() {
         let provider = dropbox();
-        let url = build_authorize_url(&provider, "the-challenge", "the-state").unwrap();
+        let url = build_authorize_url(&provider, "the-challenge", "the-state", "http://127.0.0.1:12345/callback").unwrap();
         let pairs: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
         assert_eq!(pairs.get("client_id").unwrap(), provider.client_id);
-        assert_eq!(pairs.get("redirect_uri").unwrap(), provider.redirect_uri);
+        assert_eq!(pairs.get("redirect_uri").unwrap(), "http://127.0.0.1:12345/callback");
         assert_eq!(pairs.get("response_type").unwrap(), "code");
         assert_eq!(pairs.get("scope").unwrap(), provider.scope);
         assert_eq!(pairs.get("code_challenge").unwrap(), "the-challenge");
@@ -457,6 +584,69 @@ mod tests {
         }
     }
 
+    // MARK: - Den interaktiva inloggningen (loopback-lyssnaren)
+
+    /// Genuint HELA vägen: en riktig `TcpListener` på en riktig slumpad
+    /// port, en riktig HTTP-klient som spelar "webbläsaren" (gör EXAKT den
+    /// GET-begäran webbläsaren skulle gjort efter att leverantören
+    /// redirectat tillbaka), och en riktig token-server för själva bytet.
+    /// Inget av detta mockat — bevisar att `start_login`/`finish_login`
+    /// faktiskt fungerar ihop, inte bara var för sig.
+    #[tokio::test]
+    async fn login_flow_captures_a_real_http_callback_and_exchanges_the_code() {
+        let (port, rx) = spawn_fake_token_server("HTTP/1.1 200 OK", r#"{"access_token":"AT","refresh_token":"RT","expires_in":3600}"#).await;
+        let endpoint: &'static str = Box::leak(format!("http://127.0.0.1:{port}/token").into_boxed_str());
+        let provider = test_provider(endpoint);
+
+        let session = start_login(&provider).await.expect("start_login misslyckades");
+        let redirect_uri = session.redirect_uri.clone();
+        let state = session.state.clone();
+
+        // Den "webbläsare" som gör den riktiga GET-begäran mot loopback-
+        // lyssnaren, körd samtidigt som `finish_login` väntar in den.
+        let callback_url = format!("{redirect_uri}?code=the-code&state={state}");
+        let browser = tokio::spawn(async move { reqwest::get(&callback_url).await });
+
+        let client = reqwest::Client::new();
+        let token = finish_login(session, &client, &provider).await.expect("finish_login misslyckades");
+        assert_eq!(token.access_token, "AT");
+        assert_eq!(token.refresh_token.as_deref(), Some("RT"));
+
+        let browser_response = browser.await.unwrap().expect("den simulerade webbläsarens GET misslyckades");
+        assert!(browser_response.status().is_success());
+        let body = browser_response.text().await.unwrap();
+        assert!(body.contains("lyckades"), "svarssidan borde bekräfta att inloggningen lyckades: {body}");
+
+        let request_head = rx.await.expect("token-servern fick aldrig någon begäran");
+        assert!(request_head.contains("code=the-code"), "{request_head}");
+        assert!(request_head.contains("grant_type=authorization_code"), "{request_head}");
+    }
+
+    #[tokio::test]
+    async fn await_redirect_rejects_a_mismatched_state() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let browser = tokio::spawn(async move {
+            reqwest::get(format!("http://127.0.0.1:{port}/callback?code=the-code&state=WRONG-state")).await
+        });
+
+        let err = await_redirect(listener, "the-real-state").await.expect_err("fel state ska ge Err, inte Ok");
+        assert!(err.contains("state"), "felet ska nämna state-mismatchen, fick: {err}");
+
+        let browser_response = browser.await.unwrap().expect("den simulerade webbläsarens GET misslyckades");
+        assert!(browser_response.status().is_success(), "webbläsaren ska ändå få ett svar, inte en trasig anslutning");
+    }
+
+    #[tokio::test]
+    async fn await_redirect_surfaces_a_provider_error() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { reqwest::get(format!("http://127.0.0.1:{port}/callback?error=access_denied")).await });
+
+        let err = await_redirect(listener, "any-state").await.expect_err("ett leverantörsfel ska ge Err, inte Ok");
+        assert!(err.contains("access_denied"), "felet ska innehålla leverantörens felkod, fick: {err}");
+    }
+
     #[tokio::test]
     async fn exchange_code_for_token_sends_the_right_form_fields_and_parses_the_response() {
         let (port, rx) = spawn_fake_token_server(
@@ -468,7 +658,7 @@ mod tests {
         let provider = test_provider(endpoint);
         let client = reqwest::Client::new();
 
-        let token = exchange_code_for_token(&client, &provider, "the-code", "the-verifier")
+        let token = exchange_code_for_token(&client, &provider, "the-code", "the-verifier", provider.redirect_uri)
             .await
             .expect("token-utbytet misslyckades");
         assert_eq!(token.access_token, "AT");
@@ -510,7 +700,7 @@ mod tests {
         let provider = test_provider(endpoint);
         let client = reqwest::Client::new();
 
-        let err = exchange_code_for_token(&client, &provider, "bad-code", "v")
+        let err = exchange_code_for_token(&client, &provider, "bad-code", "v", provider.redirect_uri)
             .await
             .expect_err("ett 400-svar ska ge Err, inte Ok");
         assert!(err.contains("invalid_grant"), "felet ska innehålla serversvaret, fick: {err}");

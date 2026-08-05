@@ -1380,6 +1380,22 @@ fn show_host_dialog(
     win.present();
 }
 
+/// Kör HELA den interaktiva OAuth-inloggningen: startar loopback-
+/// lyssnaren, öppnar systemets webbläsare mot auktoriseringsURL:en
+/// (`gtk::UriLauncher`, portal-baserad — fungerar även paketerat/
+/// sandboxat, till skillnad från att skala ut till `xdg-open`), väntar
+/// in redirecten och byter koden mot ett token. Se `oauth.rs`s
+/// `LoginSession`-dokumentation för varför resten av flödet ligger där
+/// i stället för här (testbart utan GTK).
+async fn run_oauth_login(app: &adw::Application, provider: &oauth::OAuthProviderConfig) -> Result<oauth::StoredOAuthToken, String> {
+    let session = oauth::start_login(provider).await?;
+    let parent_window = app.active_window();
+    let launcher = gtk::UriLauncher::new(session.authorize_url.as_str());
+    launcher.launch_future(parent_window.as_ref()).await.map_err(|e| format!("kunde inte öppna webbläsaren: {e}"))?;
+    let client = reqwest::Client::new();
+    oauth::finish_login(session, &client, provider).await
+}
+
 /// Funktioner-inställningar: alla sex av `settings::FeatureToggles`s fält
 /// utom Snippets (`show_snippets` — sidopanelens Snippets-vy finns inte i
 /// LinuxApp än, se ROADMAP.md; fältet läses/skrivs ändå för att inte tappa
@@ -1503,10 +1519,86 @@ fn show_settings_dialog(
     sync_group.add(&passphrase_row);
     sync_group.add(&sync_now_row);
 
+    // Kontosynk (OAuth2/PKCE): motsvarar App/SyncSettingsView.swifts
+    // `accountRow` per leverantör — bara inloggnings-/utloggningsläget här,
+    // INTE en fullständig egen sync-transport (att faktiskt ladda upp/ner
+    // den krypterade synkfilen via Dropbox/Drive/OneDrive-API:et är ett
+    // eget, större steg, se ROADMAP.md "Kvar"). Login-flödet är en lokal
+    // loopback-HTTP-lyssnare (RFC 8252, `oauth::start_login`/
+    // `finish_login`) — `gtk::UriLauncher` öppnar systemets webbläsare via
+    // portalen, fungerar även paketerat/sandboxat.
+    let account_group = adw::PreferencesGroup::builder()
+        .title("Kontosynk")
+        .description("Logga in för att koppla ett molnkonto — själva synken via kontot är inte byggd än, bara inloggningen.")
+        .build();
+    let oauth_token_store = Rc::new(oauth::OAuthTokenStore::open(oauth::OAuthTokenStore::default_path()));
+    for provider in oauth::all_providers() {
+        let row = adw::ActionRow::builder().title(provider.display_name).build();
+        if !provider.is_configured() {
+            row.set_subtitle("Inte konfigurerad än — se README \"Kontointegration\"");
+        } else {
+            let logged_in = oauth_token_store.is_logged_in(&provider);
+            row.set_subtitle(if logged_in { "Inloggad" } else { "Inte inloggad" });
+            let button = gtk::Button::with_label(if logged_in { "Logga ut" } else { "Logga in" });
+            button.set_valign(gtk::Align::Center);
+            button.connect_clicked(clone!(
+                #[weak]
+                app,
+                #[strong]
+                oauth_token_store,
+                #[weak]
+                row,
+                #[strong(rename_to = provider)]
+                provider,
+                move |btn| {
+                    if oauth_token_store.is_logged_in(&provider) {
+                        if let Err(e) = oauth_token_store.logout(&provider) {
+                            eprintln!("kunde inte logga ut: {e}");
+                            return;
+                        }
+                        row.set_subtitle("Inte inloggad");
+                        btn.set_label("Logga in");
+                        return;
+                    }
+                    btn.set_sensitive(false);
+                    glib::spawn_future_local(clone!(
+                        #[weak]
+                        app,
+                        #[strong]
+                        oauth_token_store,
+                        #[weak]
+                        row,
+                        #[weak]
+                        btn,
+                        #[strong(rename_to = provider)]
+                        provider,
+                        async move {
+                            match run_oauth_login(&app, &provider).await {
+                                Ok(token) => {
+                                    if let Err(e) = oauth_token_store.save(&provider, &token) {
+                                        row.set_subtitle(&format!("Kunde inte spara token: {e}"));
+                                    } else {
+                                        row.set_subtitle("Inloggad");
+                                        btn.set_label("Logga ut");
+                                    }
+                                }
+                                Err(e) => row.set_subtitle(&format!("Inloggning misslyckades: {e}")),
+                            }
+                            btn.set_sensitive(true);
+                        }
+                    ));
+                }
+            ));
+            row.add_suffix(&button);
+        }
+        account_group.add(&row);
+    }
+
     let page = adw::PreferencesPage::new();
     page.add(&group);
     page.add(&terminal_group);
     page.add(&sync_group);
+    page.add(&account_group);
 
     let close_button = gtk::Button::with_label("Klar");
     close_button.add_css_class("suggested-action");
