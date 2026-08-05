@@ -355,6 +355,47 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **SÄKERHET: russh 0.45 → 0.62.5, stänger 13 dependabot-varningar**
+  (2026-08-05, `Cargo.toml` + `ssh.rs`/`key_deploy.rs`/`port_forward.rs`):
+  samtliga öppna sårbarhetsvarningar i repot satt i `russh` — SSH-
+  biblioteket hela `LinuxApp` vilar på. Varningarna hade stått i varje
+  push-utskrift ("GitHub found 13 vulnerabilities") utan att åtgärdas.
+  - Flera är CLIENT-side, alltså nåbara från en illasinnad eller kapad
+    server vi ansluter till: panik vid X25519-nyckel med fel längd
+    (pre-auth DoS), panik vid all-zero Curve25519-värde, obegränsad
+    allokering efter dekomprimering, okontrollerat antal
+    keyboard-interactive-prompter, samt icke-kanoniska SSH-bannrar utan
+    längdgräns. Resten är server-side och berör inte oss (Bastion är
+    alltid klient — samma avgränsning som vid cert-auth).
+  - `russh-sftp` följde med 2.3.0 → 2.4.0.
+  - **API-migrering över 17 minorversioner**, de fem substantiella:
+    1. `Handler` använder nu native `async fn in trait` — vårt
+       `#[async_trait]` måste BORT, annars livstidskrock.
+    2. Nycklar bygger på `ssh_key`-typerna: `KeyPair` → `PrivateKey`,
+       `KeyPair::generate_ed25519()` → `PrivateKey::random(rng, alg)`,
+       `clone_public_key()` → `public_key()`, `key.name()` →
+       `algorithm().as_str()`.
+    3. Alla `authenticate_*` returnerar `AuthResult` i stället för
+       `bool` (`.success()`).
+    4. `authenticate_publickey` tar `PrivateKeyWithHashAlg` — RSA kräver
+       ett uttryckligt hash-val, hämtas via `best_supported_rsa_hash()`.
+       `authenticate_future` ersatt av `authenticate_publickey_with`,
+       som LÅNAR agenten i stället för att flytta den fram och tillbaka.
+       Agentidentiteter är nu `AgentIdentity` (nyckel + kommentar, eller
+       certifikat), inte rena `PublicKey`.
+    5. `server_channel_open_forwarded_tcpip` har fått ett
+       `ChannelOpenHandleInner`-argument som MÅSTE `accept()`:as eller
+       `reject()`:as — att bara låta det droppas skickar automatiskt
+       `AdministrativelyProhibited`.
+  - **Punkt 5 var en riktig regression som testsviten fångade**: första
+    migreringen lämnade handtaget oanvänt, vilket tyst stängde varje
+    vidarebefordrad anslutning ("Connection reset by peer"). Upptäckt av
+    `remote_forward_reaches_a_real_separate_echo_server_through_real_sshd`
+    — ett av de tester som kör mot en RIKTIG `sshd`, inte en mock. Utan
+    den sortens test hade `-R` gått sönder tyst.
+  - 201/201 `cargo test` gröna (stabilt över 4 körningar), `clippy`
+    oförändrat på baseline.
+
 - **BUGGFIX: S3-nedladdning läste hela objektet i minnet** (2026-08-05,
   `s3.rs` + `main.rs`): `get_object` hämtade hela kroppen via
   `Response::bytes()` innan något skrevs till disk. För en S3-bucket —

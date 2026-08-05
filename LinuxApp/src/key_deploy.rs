@@ -13,7 +13,7 @@
 
 use crate::host::{Host, HostAuth};
 use base64::Engine;
-use russh::keys::key::KeyPair;
+use russh::keys::PrivateKey;
 use russh::keys::PublicKeyBase64;
 use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -31,7 +31,10 @@ pub struct GeneratedKeyPair {
 /// Genererar ett helt nytt, slumpmässigt Ed25519-nyckelpar. `comment`
 /// bifogas den publika raden (samma konvention som `ssh-keygen -C`).
 pub fn generate_ed25519(comment: &str) -> Result<GeneratedKeyPair, String> {
-    let keypair = KeyPair::generate_ed25519().ok_or("kunde inte generera Ed25519-nyckel")?;
+    // russh 0.62 bygger på `ssh_key`-typerna: `KeyPair::generate_ed25519()`
+    // ersattes av `PrivateKey::random`, som tar en RNG explicit.
+    let keypair = PrivateKey::random(&mut rand::rng(), russh::keys::Algorithm::Ed25519)
+        .map_err(|e| format!("kunde inte generera Ed25519-nyckel: {e}"))?;
     key_pair_to_generated(keypair, comment)
 }
 
@@ -47,15 +50,16 @@ pub fn import_existing(pem: &str, comment: &str) -> Result<GeneratedKeyPair, Str
         russh::keys::Error::KeyIsEncrypted => "lösenfras-skyddade nycklar stöds inte än".to_string(),
         other => format!("kunde inte tolka nyckeln: {other}"),
     })?;
-    if !matches!(keypair, KeyPair::Ed25519(_)) {
+    if !matches!(keypair.algorithm(), russh::keys::Algorithm::Ed25519) {
         return Err("bara Ed25519-nycklar stöds".to_string());
     }
     key_pair_to_generated(keypair, comment)
 }
 
-fn key_pair_to_generated(keypair: KeyPair, comment: &str) -> Result<GeneratedKeyPair, String> {
-    let public_key = keypair.clone_public_key().map_err(|e| e.to_string())?;
-    let mut public_key_line = format!("{} {}", public_key.name(), public_key.public_key_base64());
+fn key_pair_to_generated(keypair: PrivateKey, comment: &str) -> Result<GeneratedKeyPair, String> {
+    let public_key = keypair.public_key();
+    let mut public_key_line =
+        format!("{} {}", public_key.algorithm().as_str(), public_key.public_key_base64());
     if !comment.is_empty() {
         public_key_line.push(' ');
         public_key_line.push_str(comment);
@@ -377,7 +381,7 @@ mod tests {
         let pair = generate_ed25519("").unwrap();
         let path = save_private_key(&pair.private_key_pem).unwrap();
         let loaded = russh::keys::load_secret_key(&path, None).unwrap();
-        let loaded_public = loaded.clone_public_key().unwrap();
+        let loaded_public = loaded.public_key();
         assert_eq!(loaded_public.public_key_base64(), pair.public_key_line.split(' ').nth(1).unwrap());
         std::fs::remove_file(path).ok();
     }
