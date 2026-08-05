@@ -241,7 +241,7 @@ fn build_ui(app: &adw::Application) {
         move |_| show_telnet_connect_dialog(&app, &area)
     ));
 
-    let serial_button = gtk::Button::from_icon_name("cable-modem-symbolic");
+    let serial_button = gtk::Button::from_icon_name("modem-symbolic");
     serial_button.set_tooltip_text(Some("Seriell/USB"));
     serial_button.connect_clicked(clone!(
         #[weak]

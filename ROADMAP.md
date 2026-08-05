@@ -355,6 +355,30 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **CI-kontroll av MSRV + BUGGFIX: Seriell/USB-knappen renderade tom**
+  (2026-08-05, `linuxapp-build.yml` + `main.rs`):
+  - **Nytt `linuxapp-msrv`-jobb** bygger med EXAKT den toolchain
+    `rust-version` utlovar. Siffran sätts inte av vår egen kod (edition
+    2024 kräver bara 1.85) utan av beroendena — gtk4-rs höjde sitt krav
+    till 1.92 utan att vi märkte det. Utan kontrollen upptäcks en
+    föråldrad MSRV först när någon med äldre toolchain försöker bygga,
+    vilket är precis vad fältet finns för att undvika. Versionen LÄSES ur
+    `Cargo.toml` i stället för att dupliceras i workflowen, annars hade
+    de två kunnat glida isär. Jobbet står medvetet utanför
+    `required_status_checks` — det ska informera, inte blockera.
+  - **Ikonbuggen hittades genom att FAKTISKT KÖRA appen** under Xvfb och
+    ta en skärmdump — första gången den möjligheten användes i det här
+    arbetet. `cable-modem-symbolic` finns inte i ikontemat, så
+    Seriell/USB-knappen ritades som en tom yta. Ingen kompilator, inget
+    test och ingen kodgranskning kunde ha sett det; GTK loggar inte ens
+    en varning för en saknad ikon. Bytt till `modem-symbolic` (finns, och
+    ligger närmast ursprungsavsikten) och visuellt verifierad före/efter.
+    Samtliga 23 ikonnamn i `main.rs` kontrollerades mot temat — bara den
+    här saknades.
+  - **Kvar**: sidopanelens rubrik klipps till "Vär…" eftersom nio
+    ikonknappar trängs i headern. Designfråga snarare än bugg — de mindre
+    använda hör troligen hemma i en meny.
+
 - **`rust-version = "1.92"` (MSRV) deklarerad i `LinuxApp/Cargo.toml`**
   (2026-08-05): fältet saknades helt, så den som hade en för gammal
   toolchain fick ett kryptiskt syntaxfel någonstans i ett beroende i
