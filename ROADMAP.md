@@ -355,6 +355,31 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **ROBUSTHETSFIX: OAuth-loopbacken band sig till FÖRSTA anslutningen**
+  (2026-08-05, `oauth.rs`): hittad vid egen genomläsning av den nyss
+  skeppade inloggningen (CodeRabbit borttaget ur repot — självgranskning
+  + CI är det som finns kvar).
+  - `await_redirect` gjorde ETT `accept()` och behandlade den
+    anslutningen som redirecten. Men webbläsare öppnar rutinmässigt
+    anslutningar som INTE är redirecten: spekulativ TCP-"preconnect"
+    (öppnas, skickar aldrig något) och `/favicon.ico` efter att
+    svarssidan renderats. En preconnect hade slukat platsen och lämnat
+    den riktiga redirecten obesvarad tills 5-minuterstimeouten löpte ut
+    — inloggningen "hänger" utan förklaring. En tidig favicon-begäran
+    hade i stället gett ett förvirrande "leverantören returnerade ett
+    fel: okänt fel".
+  - Fix: loopa över anslutningar tills en visar sig vara den riktiga
+    (har `code` eller `error`). Övriga får ett artigt 404 och loopen
+    väntar vidare. Per anslutning finns dessutom en 5 s lästimeout så
+    en tyst preconnect inte stoppar upp kön.
+  - Skärpte samtidigt state-hanteringen: en callback med `code` men
+    HELT UTAN `state` rapporterades tidigare som "okänt fel" (föll
+    igenom till leverantörsfel-grenen) i stället för det korrekta
+    state-felet — CSRF-skyddet kan inte verifieras utan `state`, så det
+    ÄR ett state-fel.
+  - Nytt test: en strö-begäran utan `code`/`state` besvaras med 404 och
+    den efterföljande riktiga redirecten accepteras ändå.
+
 - **Auto-poll av systemöversikten (dashboard) i den NYA Rust/GTK4-
   `LinuxApp`** (2026-08-05, `main.rs`): "Kvar" från dashboard-PR:en
   (#254) — motsvarar Swift-sidans `DashboardModel.startPolling()`,
