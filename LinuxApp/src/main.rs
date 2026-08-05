@@ -36,6 +36,59 @@ use ssh::SshEvent;
 
 const APP_ID: &str = "se.denied.bastion";
 
+/// De sju namngivna färgerna för `Host::color_tag` (`host.rs`) — fältet har
+/// funnits i datamodellen sedan starten (wire-kompatibelt med Swift-sidans
+/// `colorTag`, se `Host.swift`), men hade INGEN UI-koppling alls i
+/// `LinuxApp` innan detta: varken en väljare i värdredigeringsdialogen
+/// eller en visuell markering i värdlistan. Samma slags "fältet finns,
+/// ingen använder det"-gap som certifikatautentiseringen. Hex-värdena är
+/// GNOME/Adwaitas egna namngivna accentfärger (inte gissade), samma
+/// paletturval (röd/orange/gul/grön/blå/lila/grå) som `App/HostColor.swift`s
+/// `HostColorPalette`.
+const HOST_COLORS: &[(&str, &str)] = &[
+    ("red", "#e01b24"),
+    ("orange", "#ff7800"),
+    ("yellow", "#f6d32d"),
+    ("green", "#2ec27e"),
+    ("blue", "#3584e4"),
+    ("purple", "#9141ac"),
+    ("gray", "#9a9996"),
+];
+
+/// Laddar de sju `.host-color-<namn>`-CSS-klasserna EN gång, globalt för
+/// hela displayen. GTK4 har (till skillnad från GTK3) ingen per-widget
+/// `style_context()` längre — en delad `CssProvider` med fasta klasser är
+/// rätt väg för ett litet, fast antal namngivna färger som denna.
+fn load_host_color_css() {
+    let css = HOST_COLORS
+        .iter()
+        .map(|(name, hex)| format!(".host-color-{name} {{ background-color: {hex}; border-radius: 9999px; }}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let provider = gtk::CssProvider::new();
+    provider.load_from_string(&css);
+    gtk::style_context_add_provider_for_display(
+        &gtk::gdk::Display::default().expect("ingen display tillgänglig"),
+        &provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+}
+
+/// Motsvarar `HostRow`s prefix-cirkel i `App/HostListView.swift`. `None`
+/// (ospecificerat/okänt namn) ger ingen widget alls, inte en tom/grå
+/// cirkel — samma tystnad som Swift-sidans `if let color = ...`.
+fn host_color_dot(color_tag: &Option<String>) -> Option<gtk::Widget> {
+    let name = color_tag.as_deref()?;
+    if !HOST_COLORS.iter().any(|(n, _)| *n == name) {
+        return None;
+    }
+    let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    dot.set_size_request(10, 10);
+    dot.set_valign(gtk::Align::Center);
+    dot.add_css_class(&format!("host-color-{name}"));
+    Some(dot.upcast())
+}
+
 fn main() -> glib::ExitCode {
     let app = adw::Application::builder().application_id(APP_ID).build();
     app.connect_activate(build_ui);
@@ -43,6 +96,7 @@ fn main() -> glib::ExitCode {
 }
 
 fn build_ui(app: &adw::Application) {
+    load_host_color_css();
     let store = Rc::new(RefCell::new(
         HostStore::open(HostStore::default_path()).expect("kunde inte öppna host-databasen"),
     ));
@@ -318,6 +372,10 @@ fn refresh_list(
             .subtitle(format!("{}@{}:{}", h.user, h.host_name, h.port))
             .activatable(true)
             .build();
+
+        if let Some(dot) = host_color_dot(&h.color_tag) {
+            row.add_prefix(&dot);
+        }
 
         let menu_button = gtk::MenuButton::builder()
             .icon_name("view-more-symbolic")
@@ -811,6 +869,48 @@ fn show_host_dialog(
         .visible(false)
         .build();
 
+    // Färgmärkning: `host.color_tag` fanns i datamodellen sedan starten men
+    // saknade helt en väljare i den här dialogen (och en visuell markering
+    // i listan, se `host_color_dot`) — motsvarar `HostColorPicker` i
+    // `App/HostColor.swift`. Manuell exklusiv-val-logik (inte
+    // `ToggleButton::set_group`) eftersom Swift-sidans beteende — trycka på
+    // den REDAN valda färgen igen tar bort valet helt — inte är vanlig
+    // radioknapp-semantik.
+    let color_selection: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    let color_row = adw::ActionRow::builder().title("Färgmärkning").build();
+    let color_box = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(8).valign(gtk::Align::Center).build();
+    let mut color_buttons: Vec<(String, gtk::ToggleButton)> = Vec::new();
+    for (name, _hex) in HOST_COLORS {
+        let btn = gtk::ToggleButton::builder().width_request(24).height_request(24).build();
+        btn.add_css_class(&format!("host-color-{name}"));
+        btn.add_css_class("circular");
+        color_box.append(&btn);
+        color_buttons.push(((*name).to_string(), btn));
+    }
+    color_row.add_suffix(&color_box);
+    for (name, btn) in &color_buttons {
+        btn.connect_toggled(clone!(
+            #[strong]
+            color_selection,
+            #[strong(rename_to = my_name)]
+            name,
+            #[strong(rename_to = all_buttons)]
+            color_buttons,
+            move |btn| {
+                if btn.is_active() {
+                    *color_selection.borrow_mut() = Some(my_name.clone());
+                    for (other_name, other_btn) in &all_buttons {
+                        if other_name != &my_name {
+                            other_btn.set_active(false);
+                        }
+                    }
+                } else if color_selection.borrow().as_deref() == Some(my_name.as_str()) {
+                    *color_selection.borrow_mut() = None;
+                }
+            }
+        ));
+    }
+
     // Auth-metod: bara de FYRA Linux-representerbara `HostAuth`-varianterna
     // (`KeychainKey`/`BitwardenItem` är Apple/Keychain- respektive
     // Bitwarden-specifika, se `ssh.rs`s modulkommentar) — motsvarar
@@ -887,6 +987,12 @@ fn show_host_dialog(
         if let Some(mac) = &h.mac_address {
             mac_row.set_text(mac);
         }
+        if let Some(color) = &h.color_tag {
+            *color_selection.borrow_mut() = Some(color.clone());
+            if let Some((_, btn)) = color_buttons.iter().find(|(name, _)| name == color) {
+                btn.set_active(true);
+            }
+        }
         match &h.auth {
             host::HostAuth::AgentDefault => auth_row.set_selected(0),
             host::HostAuth::AskPassword => auth_row.set_selected(1),
@@ -958,6 +1064,7 @@ fn show_host_dialog(
     group.add(&port_row);
     group.add(&platform_row);
     group.add(&mac_row);
+    group.add(&color_row);
     group.add(&auth_row);
     group.add(&key_file_row);
     group.add(&cert_file_row);
@@ -1025,6 +1132,8 @@ fn show_host_dialog(
         cert_file_row,
         #[strong]
         auth_error_label,
+        #[strong]
+        color_selection,
         move |_| {
             let alias = alias_row.text().to_string();
             let host_name = host_row.text().to_string();
@@ -1077,6 +1186,7 @@ fn show_host_dialog(
                 }
             };
             auth_error_label.set_visible(false);
+            let color_tag = color_selection.borrow().clone();
             let host = if let Some(mut h) = existing.clone() {
                 h.alias = alias;
                 h.host_name = host_name;
@@ -1084,6 +1194,7 @@ fn show_host_dialog(
                 h.port = port;
                 h.platform = platform;
                 h.mac_address = mac_address;
+                h.color_tag = color_tag;
                 if !preserve_apple_only_auth {
                     h.auth = new_auth;
                 }
@@ -1093,6 +1204,7 @@ fn show_host_dialog(
                 h.port = port;
                 h.platform = platform;
                 h.mac_address = mac_address;
+                h.color_tag = color_tag;
                 h.auth = new_auth;
                 h
             };
