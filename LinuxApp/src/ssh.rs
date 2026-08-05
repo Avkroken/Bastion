@@ -242,11 +242,17 @@ pub(crate) async fn connect_with_forwards(
     remote_forwards: RemoteForwards,
     jump: Option<Host>,
 ) -> Result<Handle<ClientHandler>, String> {
-    let known_hosts = Arc::new(KnownHosts::open(Some(
-        known_hosts_path_override
-            .clone()
-            .unwrap_or_else(KnownHosts::default_path),
-    )));
+    // Faller stängt: går known_hosts-filen inte att läsa avbryts
+    // anslutningen hellre än att fortsätta utan MITM-skydd (se
+    // `KnownHosts::load`).
+    let known_hosts = Arc::new(
+        KnownHosts::open(Some(
+            known_hosts_path_override
+                .clone()
+                .unwrap_or_else(KnownHosts::default_path),
+        ))
+        .map_err(|e| format!("kunde inte läsa known_hosts (vägrar ansluta utan värdnyckelskontroll): {e}"))?,
+    );
     let target_handler = ClientHandler {
         host: host.host_name.clone(),
         port: host.port as u16,
@@ -321,9 +327,11 @@ async fn connect_via_jump(
     target_handler: ClientHandler,
     known_hosts_path_override: Option<std::path::PathBuf>,
 ) -> Result<Handle<ClientHandler>, String> {
-    let jump_known_hosts = Arc::new(KnownHosts::open(Some(
-        known_hosts_path_override.unwrap_or_else(KnownHosts::default_path),
-    )));
+    // Samma "fall stängt"-regel som i `connect_direct` ovan.
+    let jump_known_hosts = Arc::new(
+        KnownHosts::open(Some(known_hosts_path_override.unwrap_or_else(KnownHosts::default_path)))
+            .map_err(|e| format!("kunde inte läsa known_hosts för jump-hosten (vägrar ansluta utan värdnyckelskontroll): {e}"))?,
+    );
     let jump_handler = ClientHandler {
         host: jump_host.host_name.clone(),
         port: jump_host.port as u16,
