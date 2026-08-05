@@ -4019,28 +4019,83 @@ fn open_dashboard_view(area: &Rc<SessionArea>, host: host::Host, password: Optio
         move |_| refresh_dashboard(host.clone(), password.clone(), &list, jump.clone())
     ));
 
-    refresh_dashboard(host, password, &list, jump);
+    refresh_dashboard(host.clone(), password.clone(), &list, jump.clone());
+
+    // Auto-poll var 15:e sekund, samma intervall som Swift-sidans
+    // `DashboardModel.startPolling()` — hämtar direkt (ovan), sedan om och
+    // om igen tills fliken stängs. `refresh_dashboard_once` AWAITAS direkt
+    // i stället för att (som knappens `refresh_dashboard` gör) eldas iväg
+    // som en egen fristående task: `ssh::COMMAND_TIMEOUT` är 30 s, längre
+    // än 15 s-intervallet, så en fire-and-forget-variant hade kunnat
+    // trigga en ANDRA, överlappande uppdatering mot samma `ListBox` om en
+    // anslutning var ovanligt långsam (rensa/fylla-race, synligt som
+    // flimmer eller en halvfärdig lista). Genom att invänta varje
+    // uppdatering blir intervallet i värsta fall hämtningstid+15 s i
+    // stället — aldrig kortare, aldrig överlappande.
+    //
+    // OBS: `clone!`s `#[weak]`-uppgradering sker bara EN gång, vid start
+    // av `async move`-blocket (page/list är garanterat levande då, precis
+    // skapade) — INTE per loop-varv. Det faktiska stoppvillkoret är
+    // därför uteslutande `page_position(&page) < 0` nedan: en levande
+    // fråga mot flikvyns widget-träd, oberoende av hur många Rust-
+    // referenser till `page` som råkar finnas kvar — så fliken må hållas
+    // vid liv några extra sekunder efter stängning (ofarligt), men loopen
+    // upptäcker och avslutar sig pålitligt. Kollas EFTER en (ev.
+    // långsam) uppdatering också, inte bara innan — fliken kan ha
+    // stängts medan den pågick.
+    glib::spawn_future_local(clone!(
+        #[strong]
+        area,
+        #[weak]
+        page,
+        #[weak]
+        list,
+        #[strong]
+        host,
+        #[strong]
+        password,
+        #[strong]
+        jump,
+        async move {
+            loop {
+                glib::timeout_future_seconds(15).await;
+                if area.tab_view.page_position(&page) < 0 {
+                    break;
+                }
+                refresh_dashboard_once(host.clone(), password.clone(), &list, jump.clone()).await;
+                if area.tab_view.page_position(&page) < 0 {
+                    break;
+                }
+            }
+        }
+    ));
+}
+
+/// Kärnan i en uppdatering — rensar listan, hämtar, fyller i den igen.
+/// Delas av knappens `refresh_dashboard` (fire-and-forget, en egen task)
+/// och auto-pollningens loop (som AWAITAR den här direkt, se dess
+/// kommentar om varför) — samma logik, olika körningssätt.
+async fn refresh_dashboard_once(host: host::Host, password: Option<String>, list: &gtk::ListBox, jump: Option<host::Host>) {
+    while let Some(row) = list.row_at_index(0) {
+        list.remove(&row);
+    }
+    let rx = ssh::run_command(host, password, dashboard::COMMAND.to_string(), jump);
+    match rx.recv().await {
+        Ok(Ok(output)) => {
+            for row in build_dashboard_rows(&dashboard::parse(&output)) {
+                list.append(&row);
+            }
+        }
+        Ok(Err(e)) => list.append(&error_row(&e)),
+        Err(_) => list.append(&error_row("SSH-anslutningen avbröts oväntat")),
+    }
 }
 
 fn refresh_dashboard(host: host::Host, password: Option<String>, list: &gtk::ListBox, jump: Option<host::Host>) {
-    let rx = ssh::run_command(host, password, dashboard::COMMAND.to_string(), jump);
     glib::spawn_future_local(clone!(
         #[weak]
         list,
-        async move {
-            while let Some(row) = list.row_at_index(0) {
-                list.remove(&row);
-            }
-            match rx.recv().await {
-                Ok(Ok(output)) => {
-                    for row in build_dashboard_rows(&dashboard::parse(&output)) {
-                        list.append(&row);
-                    }
-                }
-                Ok(Err(e)) => list.append(&error_row(&e)),
-                Err(_) => list.append(&error_row("SSH-anslutningen avbröts oväntat")),
-            }
-        }
+        async move { refresh_dashboard_once(host, password, &list, jump).await }
     ));
 }
 

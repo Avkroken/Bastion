@@ -355,6 +355,33 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **Auto-poll av systemöversikten (dashboard) i den NYA Rust/GTK4-
+  `LinuxApp`** (2026-08-05, `main.rs`): "Kvar" från dashboard-PR:en
+  (#254) — motsvarar Swift-sidans `DashboardModel.startPolling()`,
+  15 s intervall, hämtar direkt sedan om och om igen tills fliken
+  stängs.
+  - **Genuin race hittad och fixad under självgranskningen** (inte
+    CodeRabbit den här gången — se nedan): `ssh::COMMAND_TIMEOUT` är
+    30 s, LÄNGRE än det tänkta 15 s-pollintervallet. Den ursprungliga
+    implementationen hade eldat av en NY fire-and-forget-uppdatering var
+    15:e sekund oavsett om föregående ännu väntade på svar — en ovanligt
+    långsam anslutning hade kunnat ge två samtidiga rensa/fylla-
+    körningar mot samma `ListBox` (flimmer eller en halvfärdig lista).
+    Löst genom att bryta ut kärnan (`refresh_dashboard_once`) och låta
+    pollningsloopen AWAITA den direkt i stället för att elda och glömma
+    — värsta fall blir hämtningstid+15 s mellan uppdateringar, aldrig
+    en överlappning.
+  - Stoppvillkor: `AdwTabView::page_position(&page) < 0` (fliken inte
+    längre i trädet), kollat både innan och efter varje uppdatering —
+    INTE en `clone!`-`#[weak]`-uppgradering (den sker bara en gång, vid
+    loopens start, inte per varv — en git-historik-anteckning värd att
+    komma ihåg nästa gång ett liknande mönster används).
+  - Ren GTK-limkod, ingen ny modul/inga nya tester. 195/195 `cargo test`
+    fortsatt gröna, `clippy` tyst.
+  - **CodeRabbit borttaget från repot under den här sessionen** — från
+    och med nu självgranskas varje PR mer noggrant innan den skickas,
+    med CI/dependabot som enda kvarvarande automatiska hjälp.
+
 - **Interaktiv OAuth2/PKCE-inloggning i den NYA Rust/GTK4-`LinuxApp`**
   (2026-08-05, `LinuxApp/src/oauth.rs` + `main.rs`): den del av
   OAuth-portningen (#256) som medvetet sköts upp — öppna en
