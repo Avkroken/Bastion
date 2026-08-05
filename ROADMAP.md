@@ -355,6 +355,36 @@ delvis andra, av konkreta skäl:
 
 ## Klart
 
+- **Sidopanelens header: nio ikonknappar → två knappar + primärmeny**
+  (2026-08-05, `LinuxApp/src/main.rs`) — den "Kvar" som lämnades i
+  posten om ikonbuggen nedan:
+  - **Problemet var synligt, inte logiskt.** Nio `pack_end`-knappar
+    trängde ut rubriken så att `adw::NavigationPage`-titeln "Värdar"
+    klipptes till "Vär…". Ingen kompilator, inget test och ingen
+    kodgranskning ser det — det upptäcktes, precis som ikonbuggen, genom
+    att köra appen under Xvfb och titta på resultatet.
+  - **Kvar som egna knappar**: lägg till värd (`+`) och snabbanslutning.
+    De två används oftast och tål att ta plats. **Flyttade till en
+    primärmeny** (`open-menu-symbolic`, GNOME:s eget mönster så fort en
+    header behöver mer än ett par åtgärder): Telnet, Seriell/USB,
+    Tailscale, WireGuard-profiler, S3-anslutningar, Importera ssh-config
+    och Funktioner. Menyn är sektionsindelad efter vad posterna gör
+    (andra anslutningstyper / nätverk+lagring / appens egna
+    inställningar) i stället för en odelad lista på sju rader.
+  - **Knapparnas `connect_clicked` blev `SimpleAction`-poster** i
+    gruppen `sidebar`, inlagd på sidopanelens behållare — GTK slår upp
+    `sidebar.*` uppåt i widgetträdet från posten som aktiveras, så
+    popovern hittar gruppen därifrån. Samma mönster som värdradernas
+    `host`-grupp. Stängningarna är oförändrade i sak; bara
+    signaturen (`|_|` → `|_, _|`).
+  - **Verifierat visuellt och funktionellt**, inte bara byggt: rubriken
+    "Värdar" står nu oklippt, menyn öppnas med rätt sektioner, och
+    Telnet- respektive Funktioner-posten öppnar sina dialoger på riktigt.
+    Att samtliga sju poster ritas aktiva (inte gråade) är i sig beviset
+    för att varje `sidebar.*`-namn faktiskt hittas — GTK gråar ut poster
+    vars action saknas, vilket gör ett felstavat actionnamn synligt utan
+    att man behöver klicka på varje rad.
+
 - **CI-kontroll av MSRV + BUGGFIX: Seriell/USB-knappen renderade tom**
   (2026-08-05, `linuxapp-build.yml` + `main.rs`):
   - **Nytt `linuxapp-msrv`-jobb** bygger med EXAKT den toolchain
