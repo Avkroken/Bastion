@@ -57,6 +57,62 @@ delvis andra, av konkreta skäl:
 | Tailscale-värdförslag | ✅ `TailscaleStatus.swift` (fetch/fetchLocal) — LinuxApp OCH App/-UI (2026-07-08, Xcode-only; `fetchLocal` villkorsstyrd bort på iOS, `Foundation.Process` saknas där) |
 | S3-kompatibel objektlagring | ✅ `S3Client.swift` + `S3ConnectionStore` — LinuxApp OCH App/-UI (2026-07-08, Xcode-only) |
 
+## Riktmärke: Termius (2026-08-05)
+
+Ägarbeslut: Termius är måttstocken för layout, funktioner och var saker
+hör hemma — bastion ska vara bättre i alla avseenden och helt gratis.
+Anledningen till att projektet finns är prislappen: Termius tar betalt per
+månad för en SSH-klient, och inte småpengar.
+
+**Vad Termius tar betalt för** (deras egen prissida, 2026-08-05):
+
+| Nivå | Pris | Vad som ingår utöver nivån under |
+|---|---|---|
+| Starter | Gratis | Lokalt valv, SSH och SFTP, AI-autokomplettering, portvidarebefordran |
+| Pro | $10/mån (årsvis) | Personligt molnvalv, **synk mellan enheter**, **snippets-automation**, log-bookmarks |
+| Team | $20/användare/mån | Delat teamvalv, realtidssamarbete, samlad fakturering |
+| Business | $30/användare/mån | Flera teamvalv, behörighetsstyrning per valv, SAML SSO (tillägg) |
+
+**Tre av fyra Pro-funktioner är redan gratis i bastion**: synk mellan
+enheter (mappbaserad transport + AES-256-GCM-kryptering + OAuth-konton),
+snippets/kommandobibliotek, och portvidarebefordran (som Termius ändå har
+i sin gratisnivå). Det som återstår på deras Pro-lista är log-bookmarks.
+Det är alltså inte funktionslistan som är den stora luckan — det är
+formen.
+
+**Termius desktoplayout att lära av** (deras redesign, "Termius X", och
+Workspaces-lanseringen):
+
+- **Horisontella flikar på översta nivån**, webbläsarlikt. Sidopanelen
+  tonades medvetet ned. bastion har redan `AdwTabView`-flikar.
+- **Ett samlat "Vaults"** — all sparad data på ETT ställe, skilt från de
+  aktiva sessionerna. Deras uttalade skäl: "each new element increased
+  navigation complexity". Det är precis bastions nuvarande svaga punkt:
+  värdar bor i sidopanelen medan WireGuard-profiler, S3-anslutningar,
+  kommandobibliotek och known_hosts ligger utspridda i var sin dialog
+  bakom primärmenyn. Samma innehåll, ingen gemensam plats.
+- **Kommandopalett** (`Ctrl+J` byt session, `Ctrl+T` ny anslutning) med
+  luddig sökning på värdnamn. bastion har **inga tangentbordsgenvägar
+  alls** — noll `set_accels_for_action`, ingen `ShortcutController`
+  (kontrollerat 2026-08-05). För en klient riktad mot vana användare är
+  det en verklig lucka, och den är dessutom grunden en palett byggs på.
+- **Workspaces med Focus Mode och Split View** — flikar grupperas genom
+  att dras på varandra, och en grupp visas antingen som en enda terminal
+  eller som upp till 16 sida vid sida. bastion har flikar men ingen
+  delad vy.
+
+**Prioritering som följer av det här** (inte huggen i sten, men i den
+ordning nyttan per arbetsinsats är störst):
+
+1. **Tangentbordsgenvägar + kommandopalett.** Störst daglig nytta, helt
+   fristående, inget protokollarbete. Genvägarna behövs ändå.
+2. **Delad vy (split).** `gtk::Paned` runt den befintliga terminalvyn;
+   flikarna finns redan.
+3. **En samlad plats för sparad data.** Rör mest UI-struktur och bör
+   göras efter att genvägarna finns, så navigeringen kan byggas åt båda
+   hållen samtidigt.
+4. **Log-bookmarks** — det enda som återstår av Termius Pro-lista.
+
 ## Nästa steg (i ordning)
 
 1. **Verifiera kontointegrationen i Xcode** — `OAuthAccountManager` och alla tre
