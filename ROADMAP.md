@@ -411,6 +411,39 @@ ordning nyttan per arbetsinsats är störst):
 
 ## Klart
 
+- **Åtgärder i kommandopaletten** (2026-08-06, `LinuxApp/src/main.rs` +
+  nya `LinuxApp/src/palette_actions.rs`) — det "Kvar" kommandopaletten
+  lämnade efter sig:
+  - **Paletten nådde bara värdar och öppna sessioner.** Allt annat appen
+    gör — importera en ssh-config, öppna S3-anslutningarna, ändra
+    inställningar — låg bakom primärmenyn och krävde musen. Det är
+    precis den halvan en palett finns till för. Tio åtgärder finns nu i
+    listan, sist efter värdarna: en maskin ska aldrig hamna under en
+    åtgärd, och eftersom `fuzzy::rank` sorterar stabilt räcker det att
+    lägga in dem sist.
+  - **Sökord, inte bara etiketter.** Menyposten heter "Funktioner", men
+    den som letar efter den skriver "inställningar" — eller "settings".
+    Varje åtgärd har därför en egen uppsättning synonymer att söka i
+    utöver sitt menynamn. Etiketten är fortfarande exakt menyns, två
+    namn på samma sak är värre än ett klumpigt namn.
+  - **Paletten lär också ut kortkommandona.** Undertiteln visar
+    åtgärdens tangentbordsgenväg när den har en, hämtad ur appen via
+    `accels_for_action` i stället för inskriven för hand — annars kan
+    paletten lära ut ett kortkommando som sedan ändrats.
+  - **`app.palette` är med avsikt INTE med** (paletten öppnar inte sig
+    själv), inte heller `app.focus-search` (att söka sig fram till en
+    annan sökruta är en omväg). "Stäng fliken" göms när ingen flik är
+    öppen — en rad som garanterat inte gör något är bara brus.
+  - **`palette_actions.rs` är GTK-fri och har nio tester.** Det viktiga
+    av dem läser `main.rs` och kräver att varje åtgärdsnamn faktiskt är
+    registrerat där: GTK ritar en post med felstavat åtgärdsnamn utan
+    att klaga, den gör bara ingenting när man klickar. Verifierat att
+    testet fångar felet genom att felstava ett namn med flit. 221 → 230
+    tester.
+  - **Verifierat i den körande appen**, inte bara byggt: `inställ` +
+    Enter öppnade Inställningar, och `stäng` utan öppen flik gav ingen
+    "Stäng fliken"-rad. Inga CRITICAL i loggen.
+
 - **Två flikbuggar som bara syntes när appen kördes** (2026-08-05,
   `LinuxApp/src/main.rs` + nya `LinuxApp/src/tab_title.rs`):
   - **`page_position` som existensfråga loggade en CRITICAL.** Fem
