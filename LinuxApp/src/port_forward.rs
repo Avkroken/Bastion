@@ -173,7 +173,7 @@ pub fn spawn_remote_forward(
             .expect("kunde inte starta tokio-runtimen för fjärr-port-forward-tråden");
         rt.block_on(async move {
             let remote_forwards = RemoteForwards::default();
-            let mut session = match crate::ssh::connect_with_forwards(&host, password, None, remote_forwards.clone(), jump).await {
+            let session = match crate::ssh::connect_with_forwards(&host, password, None, remote_forwards.clone(), jump).await {
                 Ok(s) => s,
                 Err(e) => {
                     let _ = result_tx.send(Err(e)).await;

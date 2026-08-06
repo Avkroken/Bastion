@@ -30,8 +30,8 @@ use crate::known_hosts::{KnownHosts, Verdict};
 use russh::client::Msg;
 use russh::client::{self, Handle};
 use russh::keys::agent::client::AgentClient;
-use russh::keys::key::PublicKey;
-use russh::keys::{PublicKeyBase64, load_secret_key};
+use russh::keys::ssh_key::PublicKey;
+use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKeyBase64, load_secret_key};
 use russh::{Channel, ChannelMsg};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -88,17 +88,13 @@ pub(crate) struct ClientHandler {
     remote_forwards: RemoteForwards,
 }
 
-#[async_trait::async_trait]
 impl client::Handler for ClientHandler {
     type Error = ConnectError;
 
-    async fn check_server_key(
-        &mut self,
-        server_public_key: &PublicKey,
-    ) -> Result<bool, Self::Error> {
+    async fn check_server_key(&mut self, server_public_key: &PublicKey) -> Result<bool, Self::Error> {
         let key_string = format!(
             "{} {}",
-            server_public_key.name(),
+            server_public_key.algorithm().as_str(),
             server_public_key.public_key_base64()
         );
         match self.known_hosts.check(&self.host, self.port, &key_string) {
@@ -126,6 +122,13 @@ impl client::Handler for ClientHandler {
         connected_port: u32,
         _originator_address: &str,
         _originator_port: u32,
+        // NY OCH OBLIGATORISK i russh 0.62: kanalöppningen måste
+        // uttryckligen accepteras eller avvisas. Att bara låta handtaget
+        // droppas skickar automatiskt `AdministrativelyProhibited` —
+        // vilket i praktiken stängde varje vidarebefordrad anslutning
+        // ("Connection reset by peer"). Fångat av `-R`-testet mot en
+        // riktig sshd under uppgraderingen från 0.45.
+        handle: russh::ChannelOpenHandleInner<Msg>,
         _session: &mut client::Session,
     ) -> Result<(), Self::Error> {
         let target = self
@@ -135,8 +138,12 @@ impl client::Handler for ClientHandler {
             .get(&connected_port)
             .cloned();
         let Some((target_host, target_port)) = target else {
+            // Ingen aktiv `-R` för den porten — avvisa uttryckligen,
+            // samma utfall som tidigare fast nu explicit uttryckt.
+            handle.reject(russh::ChannelOpenFailure::AdministrativelyProhibited).await;
             return Ok(());
         };
+        handle.accept().await;
         tokio::spawn(async move {
             let local = match TcpStream::connect((target_host.as_str(), target_port)).await {
                 Ok(s) => s,
@@ -199,7 +206,7 @@ const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 /// Hur länge ett engångskommando (`run_command_once`, Docker-listor/-loggar
 /// m.fl.) får köra innan det avbryts — samma resonemang som `CONNECT_TIMEOUT`,
 /// fast för fjärrkommandot självt (en hängande shell/process på fjärrsidan).
-const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+pub(crate) const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// Tak på hur mycket utdata ett engångskommando ackumulerar i minnet —
 /// `docker logs` utan `--tail` eller en oavsiktlig `cat` av en stor fil ska
 /// inte kunna svälta GUI-processen. 4 MiB räcker gott för det här
@@ -556,10 +563,20 @@ async fn authenticate(
             let key = load_secret_key(path, None).map_err(|e| {
                 format!("kunde inte läsa nyckelfilen {path}: {e} (lösenfraser stöds inte än)")
             })?;
+            // `PrivateKeyWithHashAlg`: russh 0.62 kräver ett uttryckligt
+            // hash-val för RSA-nycklar (ssh-rsa/rsa-sha2-256/-512).
+            // `best_supported_rsa_hash` frågar servern vad den klarar;
+            // för Ed25519/ECDSA ignoreras värdet helt.
+            let hash_alg = session
+                .best_supported_rsa_hash()
+                .await
+                .map_err(|e| format!("kunde inte förhandla hash-algoritm: {e}"))?
+                .flatten();
             session
-                .authenticate_publickey(&host.user, Arc::new(key))
+                .authenticate_publickey(&host.user, PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg))
                 .await
                 .map_err(|e| format!("publik nyckel-autentisering misslyckades: {e}"))?
+                .success()
         }
         HostAuth::AgentDefault => {
             let mut agent = AgentClient::connect_env()
@@ -576,12 +593,23 @@ async fn authenticate(
             // `ssh` provas var och en i tur och ordning tills en lyckas,
             // istället för att ge upp bara för att den FÖRSTA inte råkar
             // vara den servern accepterar (CodeRabbit-fynd).
+            // `authenticate_future` ersattes i russh 0.62 av
+            // `authenticate_publickey_with`, som lånar agenten i stället
+            // för att flytta in och tillbaka den — loopen blir enklare.
             let mut succeeded = false;
-            for key in identities {
-                let (returned_agent, result) =
-                    session.authenticate_future(&host.user, key, agent).await;
-                agent = returned_agent;
-                if matches!(result, Ok(true)) {
+            for identity in identities {
+                // `request_identities` ger nu `AgentIdentity` (nyckel +
+                // kommentar, eller ett certifikat). Bara rena publika
+                // nycklar används här — certifikat via agent har en egen
+                // väg (`HostAuth::CertificateFile`).
+                let russh::keys::agent::AgentIdentity::PublicKey { key, .. } = identity else {
+                    continue;
+                };
+                let hash_alg = if key.algorithm().is_rsa() { Some(HashAlg::Sha256) } else { None };
+                let result = session
+                    .authenticate_publickey_with(&host.user, key, hash_alg, &mut agent)
+                    .await;
+                if matches!(result, Ok(ref r) if r.success()) {
                     succeeded = true;
                     break;
                 }
@@ -594,6 +622,7 @@ async fn authenticate(
                 .authenticate_password(&host.user, pass)
                 .await
                 .map_err(|e| format!("lösenordsautentisering misslyckades: {e}"))?
+                .success()
         }
         HostAuth::CertificateFile { key_path, cert_path } => {
             let key = load_secret_key(key_path, None).map_err(|e| {
@@ -605,6 +634,7 @@ async fn authenticate(
                 .authenticate_openssh_cert(&host.user, Arc::new(key), cert)
                 .await
                 .map_err(|e| format!("certifikat-autentisering misslyckades: {e}"))?
+                .success()
         }
         HostAuth::BitwardenItem(item_id) => {
             // Till skillnad från Apple-sidan (där `resolveAuth` ALLTID
@@ -620,6 +650,7 @@ async fn authenticate(
                 .authenticate_password(&host.user, pass)
                 .await
                 .map_err(|e| format!("lösenordsautentisering misslyckades: {e}"))?
+                .success()
         }
         other => {
             return Err(format!(

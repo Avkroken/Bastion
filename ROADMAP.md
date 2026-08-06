@@ -57,6 +57,62 @@ delvis andra, av konkreta skäl:
 | Tailscale-värdförslag | ✅ `TailscaleStatus.swift` (fetch/fetchLocal) — LinuxApp OCH App/-UI (2026-07-08, Xcode-only; `fetchLocal` villkorsstyrd bort på iOS, `Foundation.Process` saknas där) |
 | S3-kompatibel objektlagring | ✅ `S3Client.swift` + `S3ConnectionStore` — LinuxApp OCH App/-UI (2026-07-08, Xcode-only) |
 
+## Riktmärke: Termius (2026-08-05)
+
+Ägarbeslut: Termius är måttstocken för layout, funktioner och var saker
+hör hemma — bastion ska vara bättre i alla avseenden och helt gratis.
+Anledningen till att projektet finns är prislappen: Termius tar betalt per
+månad för en SSH-klient, och inte småpengar.
+
+**Vad Termius tar betalt för** (deras egen prissida, 2026-08-05):
+
+| Nivå | Pris | Vad som ingår utöver nivån under |
+|---|---|---|
+| Starter | Gratis | Lokalt valv, SSH och SFTP, AI-autokomplettering, portvidarebefordran |
+| Pro | $10/mån (årsvis) | Personligt molnvalv, **synk mellan enheter**, **snippets-automation**, log-bookmarks |
+| Team | $20/användare/mån | Delat teamvalv, realtidssamarbete, samlad fakturering |
+| Business | $30/användare/mån | Flera teamvalv, behörighetsstyrning per valv, SAML SSO (tillägg) |
+
+**Tre av fyra Pro-funktioner är redan gratis i bastion**: synk mellan
+enheter (mappbaserad transport + AES-256-GCM-kryptering + OAuth-konton),
+snippets/kommandobibliotek, och portvidarebefordran (som Termius ändå har
+i sin gratisnivå). Det som återstår på deras Pro-lista är log-bookmarks.
+Det är alltså inte funktionslistan som är den stora luckan — det är
+formen.
+
+**Termius desktoplayout att lära av** (deras redesign, "Termius X", och
+Workspaces-lanseringen):
+
+- **Horisontella flikar på översta nivån**, webbläsarlikt. Sidopanelen
+  tonades medvetet ned. bastion har redan `AdwTabView`-flikar.
+- **Ett samlat "Vaults"** — all sparad data på ETT ställe, skilt från de
+  aktiva sessionerna. Deras uttalade skäl: "each new element increased
+  navigation complexity". Det är precis bastions nuvarande svaga punkt:
+  värdar bor i sidopanelen medan WireGuard-profiler, S3-anslutningar,
+  kommandobibliotek och known_hosts ligger utspridda i var sin dialog
+  bakom primärmenyn. Samma innehåll, ingen gemensam plats.
+- **Kommandopalett** (`Ctrl+J` byt session, `Ctrl+T` ny anslutning) med
+  luddig sökning på värdnamn. bastion har **inga tangentbordsgenvägar
+  alls** — noll `set_accels_for_action`, ingen `ShortcutController`
+  (kontrollerat 2026-08-05). För en klient riktad mot vana användare är
+  det en verklig lucka, och den är dessutom grunden en palett byggs på.
+- **Workspaces med Focus Mode och Split View** — flikar grupperas genom
+  att dras på varandra, och en grupp visas antingen som en enda terminal
+  eller som upp till 16 sida vid sida. bastion har flikar men ingen
+  delad vy.
+
+**Prioritering som följer av det här** (inte huggen i sten, men i den
+ordning nyttan per arbetsinsats är störst):
+
+1. **Tangentbordsgenvägar + kommandopalett.** Störst daglig nytta, helt
+   fristående, inget protokollarbete. Genvägarna behövs ändå.
+2. **Delad vy (split).** `gtk::Paned` runt den befintliga terminalvyn;
+   flikarna finns redan.
+3. **En samlad plats för sparad data.** Rör mest UI-struktur och bör
+   göras efter att genvägarna finns, så navigeringen kan byggas åt båda
+   hållen samtidigt.
+4. **Log-bookmarks** — det enda som återstår av Termius Pro-lista.
+
 ## Nästa steg (i ordning)
 
 1. **Verifiera kontointegrationen i Xcode** — `OAuthAccountManager` och alla tre
@@ -354,6 +410,336 @@ delvis andra, av konkreta skäl:
    — se "Uppskjutet med avsikt"-beslutet nedan.)
 
 ## Klart
+
+- **Åtgärder i kommandopaletten** (2026-08-06, `LinuxApp/src/main.rs` +
+  nya `LinuxApp/src/palette_actions.rs`) — det "Kvar" kommandopaletten
+  lämnade efter sig:
+  - **Paletten nådde bara värdar och öppna sessioner.** Allt annat appen
+    gör — importera en ssh-config, öppna S3-anslutningarna, ändra
+    inställningar — låg bakom primärmenyn och krävde musen. Det är
+    precis den halvan en palett finns till för. Tio åtgärder finns nu i
+    listan, sist efter värdarna: en maskin ska aldrig hamna under en
+    åtgärd, och eftersom `fuzzy::rank` sorterar stabilt räcker det att
+    lägga in dem sist.
+  - **Sökord, inte bara etiketter.** Menyposten heter "Funktioner", men
+    den som letar efter den skriver "inställningar" — eller "settings".
+    Varje åtgärd har därför en egen uppsättning synonymer att söka i
+    utöver sitt menynamn. Etiketten är fortfarande exakt menyns, två
+    namn på samma sak är värre än ett klumpigt namn.
+  - **Paletten lär också ut kortkommandona.** Undertiteln visar
+    åtgärdens tangentbordsgenväg när den har en, hämtad ur appen via
+    `accels_for_action` i stället för inskriven för hand — annars kan
+    paletten lära ut ett kortkommando som sedan ändrats.
+  - **`app.palette` är med avsikt INTE med** (paletten öppnar inte sig
+    själv), inte heller `app.focus-search` (att söka sig fram till en
+    annan sökruta är en omväg). "Stäng fliken" göms när ingen flik är
+    öppen — en rad som garanterat inte gör något är bara brus.
+  - **`palette_actions.rs` är GTK-fri och har nio tester.** Det viktiga
+    av dem läser `main.rs` och kräver att varje åtgärdsnamn faktiskt är
+    registrerat där: GTK ritar en post med felstavat åtgärdsnamn utan
+    att klaga, den gör bara ingenting när man klickar. Verifierat att
+    testet fångar felet genom att felstava ett namn med flit. 221 → 230
+    tester.
+  - **Verifierat i den körande appen**, inte bara byggt: `inställ` +
+    Enter öppnade Inställningar, och `stäng` utan öppen flik gav ingen
+    "Stäng fliken"-rad. Inga CRITICAL i loggen.
+
+- **Två flikbuggar som bara syntes när appen kördes** (2026-08-05,
+  `LinuxApp/src/main.rs` + nya `LinuxApp/src/tab_title.rs`):
+  - **`page_position` som existensfråga loggade en CRITICAL.** Fem
+    ställen frågade `area.tab_view.page_position(&page) >= 0` för att få
+    veta om fliken fanns kvar — men `adw_tab_view_get_page_position`
+    SVARAR inte för en sida som inte hör till vyn, den loggar
+    `assertion 'page_belongs_to_this_view (self, page)' failed`. Varje
+    flik som stängdes innan dess anslutning hann ge upp skrev alltså ut
+    en CRITICAL. Reproducerat med enbart mus (öppna en session mot en
+    oanträffbar adress, stäng fliken, vänta ut försöket), så det var
+    inte något kortkommandona införde. Ersatt av `tab_view_contains`,
+    som går igenom `pages()` och faktiskt svarar.
+  - **Snabbanslutningens flikar saknade namn.** De sparas aldrig i
+    värdlistan och får därför tomt alias, vilket gick rakt in i
+    fliknamnet — fliken hette bokstavligen ingenting, eller " (2)" när
+    det fanns fler än en. Faller nu tillbaka på `användare@värd`, samma
+    form som `ssh` självt. Verifierat på skärm: två anslutningar mot
+    samma värd ger `provare@10.255.255.1` och
+    `provare@10.255.255.1 (2)`.
+  - **Titellogiken lyftes ur `main.rs` till `tab_title.rs`** just för
+    att den skulle kunna testas — `main.rs` har ingen
+    `#[cfg(test)]`-täckning av hävd, så allt testvärt behöver bo
+    utanför. Sju tester, varav ett för vartdera felet ovan (214 → 221).
+
+- **Kommandopalett (`Ctrl+Shift+P`)** (2026-08-05, `LinuxApp/src/main.rs`
+  + nya `LinuxApp/src/fuzzy.rs`) — andra halvan av steg 1 i
+  Termius-prioriteringen, kortkommandona var första:
+  - **En sökruta över allt man rimligen vill nå snabbt**: de öppna
+    sessionerna och de sparade värdarna i samma lista. Öppna sessioner
+    läggs in först, och eftersom rankningen är stabil vinner "byt till
+    fliken du redan har" över "öppna en till mot samma värd" när poängen
+    är lika. Ett test vaktar just den ordningen — den är lätt att råka
+    förstöra vid en framtida sorteringsändring.
+  - **Sökningen är luddig men förutsägbar.** `pw1` hittar `prod-web-1`.
+    Tre regler, inte fler: tecknen måste finnas i ordning, träffar som
+    sitter ihop väger tyngre än utspridda, och träffar i början av ett
+    ord väger tyngre än mitt inne i ett. En palett som rankar
+    oförklarligt är värre än ingen palett alls. Det söks i alias,
+    `användare@värd` OCH taggar — man ska kunna leta upp en maskin på
+    sin IP eller sin tagg, inte bara på namnet man gav den.
+  - **`fuzzy.rs` är GTK-fri och har elva tester**, inklusive de
+    jämförelser som ordningen faktiskt bygger på (sammanhängande slår
+    utspridd, ordbörjan slår mitt i ordet, kort exakt namn slår långt).
+    Samma skäl som för `tab_title.rs`: `main.rs` har ingen
+    `#[cfg(test)]`-täckning av hävd. 203 → 214 tester.
+  - **Tangentbordet räcker hela vägen**: `Ctrl+Shift+P` öppnar, man
+    skriver, upp/ner flyttar markeringen UTAN att fokus lämnar sökrutan
+    (annars går det inte att fortsätta skriva efter att ha pilat), Enter
+    aktiverar och Escape stänger. Verifierat i den körande appen —
+    `dbb` + Enter anslöt till `db-backup`, och när paletten öppnades
+    igen låg den sessionen överst som "Öppen session · flik 1".
+  - **Ingen `adw::HeaderBar`**, till skillnad från appens övriga
+    dialoger: en palett ska vara sökrutan, inget annat.
+  - **Kvar**: åtgärder (inte bara värdar och sessioner) i paletten —
+    "öppna inställningar", "importera ssh-config" och liknande borde
+    också gå att nå därifrån.
+
+- **Kortkommandon — appen hade inga alls** (2026-08-05,
+  `LinuxApp/src/main.rs`), första steget i Termius-prioriteringen ovan:
+  - **`Ctrl+Shift`, inte `Ctrl`.** Appen ÄR en terminal: `Ctrl+T`,
+    `Ctrl+W` och `Ctrl+K` tillhör readline på andra sidan (transponera
+    tecken, radera ord bakåt, klipp rad). Tar appen dem försvinner de ur
+    skalet. Därför `Ctrl+Shift`+bokstav och `Alt`+siffra, samma val som
+    GNOME Terminal och Ptyxis. Termius använder `Ctrl+T`/`Ctrl+J` — här
+    är det avsiktligt INTE härmat. Att vara bättre än riktmärket betyder
+    ibland att inte kopiera det.
+  - `Ctrl+Shift+N` ny värd · `Ctrl+Shift+T` snabbanslutning ·
+    `Ctrl+Shift+W` stäng flik · `Ctrl+Shift+F` sök värdar ·
+    `Ctrl+,` inställningar · `Alt+1`–`Alt+9` växla flik.
+  - **Åtgärderna flyttades till APPEN** (`app.new-host` osv.) i stället
+    för gruppen som lades på sidopanelens behållare i föregående PR.
+    Skälet är tvingande: `set_accels_for_action` når bara `app.`- och
+    `win.`-prefix, inte en egen grupp på en widget. Vinsten är att meny,
+    knapp och tangentbord nu delar EN definition — knapparna fick
+    `set_action_name` i stället för egna stängningar, och GTK ritar ut
+    kortkommandot bredvid menyposten av sig självt (verifierat på skärm:
+    "Ctrl+," står bredvid Funktioner utan att texten skrivits någonstans).
+  - **Escape stänger dialoger.** GTK4 gör inte det av sig självt —
+    `GtkDialog` hade beteendet och är avvecklad. Ingen av appens tjugo
+    dialoger gick alltså att avbryta från tangentbordet; man var tvungen
+    att sikta på "Avbryt" med musen. Fixat på ETT ställe tack vare att
+    `dialog_window` blev enda vägen in i föregående PR, via en
+    `ShortcutController` mot GTK:s inbyggda `window.close` — knappen och
+    tangenten gör bokstavligen samma sak.
+  - **Två defekter i den nya koden hittades genom att köra den**, inte
+    genom att bygga den: `Alt+2` med bara en flik öppen gav en
+    Adwaita-CRITICAL i loggen (`ListModel::item` svarar normalt `None`
+    utanför intervallet, men den här modellen går via
+    `adw_tab_view_get_nth_page` som i stället loggar) och snabbt
+    upprepat `Ctrl+Shift+W` kunde röra en flik på väg ut. Båda kollar
+    nu antalet först. Ingenting av det syntes i UI:t — bara i loggen.
+  - **Kvar**: kommandopaletten (steg 1 i Termius-listan är därmed halv),
+    och ett fönster som listar kortkommandona.
+
+- **Dialogfönstren byggs genom en gemensam hjälpare i stället för
+  tjugo handplockade pixelpar** (2026-08-05, `LinuxApp/src/main.rs`):
+  - **Problemet var inte ett fel utan en form.** Var och en av appens
+    tjugo dialoger byggde sitt eget `adw::Window` med ett eget
+    `default_width`/`default_height`-par. Varje justering av hur
+    dialoger ser ut var alltså tjugo ändringar — och när något får
+    kosta tjugo ändringar blir det inte gjort. Sex dialoger hade hunnit
+    glida ifrån och saknade titel helt, däribland lösenordsprompten,
+    "Lägg till värd" och SFTP-filredigeraren: de skyltade
+    "bastion-linuxapp" i sin header, alltså appens namn där en rubrik
+    skulle stått.
+  - **`dialog_window(förälder, titel, storlek, innehåll)` är nu enda
+    vägen in.** Titeln är ett obligatoriskt ARGUMENT, inte en valfri
+    byggarmetod — det är det som gör "dialog utan titel" omöjligt att
+    råka ut för igen, i stället för att bara rätta de sex som råkade
+    sakna den. `DialogSize` uttrycker en avsikt (`Compact`/`Form`/
+    `List`/`Viewer`); pixlarna står på ett ställe.
+  - **Formulärhöjden mäts på innehållet i stället för att skrivas som en
+    siffra.** `content_height` frågar widgeten om dess naturliga höjd, så
+    ett formulär som får en rad till växer av sig självt. Det var inte
+    hypotetiskt: "Lägg till värd" hade en gång fem rader och ett
+    `default_height(360)`, men har nu tretton — fem av dem låg utanför
+    fönstret och nåddes bara genom att skrolla i en dialog som inte såg
+    skrollbar ut. Färgväljarens rad var dessutom så trång att etiketten
+    bröts mitt i ordet ("Färgmärk-ning").
+  - **Höjden har ett tak, och taket är skärmen.** Naturlig höjd är annars
+    obegränsad — `Inställningar` blev längre än skärmen så fort mätningen
+    infördes. Taket räknas ur bildskärmens faktiska arbetsyta (4/5 av
+    den) i stället för att vara ett fast tal, så samma kod ger en rimlig
+    dialog både på en liten laptop och på en stor skärm. Listor och
+    innehållsvyer (loggar, filredigerare) behåller en uttalad starthöjd:
+    en `gtk::ScrolledWindow` har ingen egen naturlig höjd att växa efter.
+  - **De två sätten att sätta titel blev ett.** WireGuard- och
+    S3-listorna satte en `adw::WindowTitle`-widget i headern med tom
+    undertitel — exakt vad fönstertiteln redan ritar. Widgetarna är
+    borttagna. Importdialogen behåller sin, eftersom den bär en verklig
+    undertitel ("Klistra in innehållet från din ~/.ssh/config").
+  - **Verifierat genom att köra appen**, dialog för dialog under Xvfb:
+    titlarna stämmer, formulären får plats, `Inställningar` ryms på
+    skärmen med resten skrollbart. Nettoresultat −210/+128 rader.
+
+- **Sidopanelens header: nio ikonknappar → två knappar + primärmeny**
+  (2026-08-05, `LinuxApp/src/main.rs`) — den "Kvar" som lämnades i
+  posten om ikonbuggen nedan:
+  - **Problemet var synligt, inte logiskt.** Nio `pack_end`-knappar
+    trängde ut rubriken så att `adw::NavigationPage`-titeln "Värdar"
+    klipptes till "Vär…". Ingen kompilator, inget test och ingen
+    kodgranskning ser det — det upptäcktes, precis som ikonbuggen, genom
+    att köra appen under Xvfb och titta på resultatet.
+  - **Kvar som egna knappar**: lägg till värd (`+`) och snabbanslutning.
+    De två används oftast och tål att ta plats. **Flyttade till en
+    primärmeny** (`open-menu-symbolic`, GNOME:s eget mönster så fort en
+    header behöver mer än ett par åtgärder): Telnet, Seriell/USB,
+    Tailscale, WireGuard-profiler, S3-anslutningar, Importera ssh-config
+    och Funktioner. Menyn är sektionsindelad efter vad posterna gör
+    (andra anslutningstyper / nätverk+lagring / appens egna
+    inställningar) i stället för en odelad lista på sju rader.
+  - **Knapparnas `connect_clicked` blev `SimpleAction`-poster** i
+    gruppen `sidebar`, inlagd på sidopanelens behållare — GTK slår upp
+    `sidebar.*` uppåt i widgetträdet från posten som aktiveras, så
+    popovern hittar gruppen därifrån. Samma mönster som värdradernas
+    `host`-grupp. Stängningarna är oförändrade i sak; bara
+    signaturen (`|_|` → `|_, _|`).
+  - **Verifierat visuellt och funktionellt**, inte bara byggt: rubriken
+    "Värdar" står nu oklippt, menyn öppnas med rätt sektioner, och
+    Telnet- respektive Funktioner-posten öppnar sina dialoger på riktigt.
+    Att samtliga sju poster ritas aktiva (inte gråade) är i sig beviset
+    för att varje `sidebar.*`-namn faktiskt hittas — GTK gråar ut poster
+    vars action saknas, vilket gör ett felstavat actionnamn synligt utan
+    att man behöver klicka på varje rad.
+
+- **CI-kontroll av MSRV + BUGGFIX: Seriell/USB-knappen renderade tom**
+  (2026-08-05, `linuxapp-build.yml` + `main.rs`):
+  - **Nytt `linuxapp-msrv`-jobb** bygger med EXAKT den toolchain
+    `rust-version` utlovar. Siffran sätts inte av vår egen kod (edition
+    2024 kräver bara 1.85) utan av beroendena — gtk4-rs höjde sitt krav
+    till 1.92 utan att vi märkte det. Utan kontrollen upptäcks en
+    föråldrad MSRV först när någon med äldre toolchain försöker bygga,
+    vilket är precis vad fältet finns för att undvika. Versionen LÄSES ur
+    `Cargo.toml` i stället för att dupliceras i workflowen, annars hade
+    de två kunnat glida isär. Jobbet står medvetet utanför
+    `required_status_checks` — det ska informera, inte blockera.
+  - **Ikonbuggen hittades genom att FAKTISKT KÖRA appen** under Xvfb och
+    ta en skärmdump — första gången den möjligheten användes i det här
+    arbetet. `cable-modem-symbolic` finns inte i ikontemat, så
+    Seriell/USB-knappen ritades som en tom yta. Ingen kompilator, inget
+    test och ingen kodgranskning kunde ha sett det; GTK loggar inte ens
+    en varning för en saknad ikon. Bytt till `modem-symbolic` (finns, och
+    ligger närmast ursprungsavsikten) och visuellt verifierad före/efter.
+    Samtliga 23 ikonnamn i `main.rs` kontrollerades mot temat — bara den
+    här saknades.
+  - **Kvar**: sidopanelens rubrik klipps till "Vär…" eftersom nio
+    ikonknappar trängs i headern. Designfråga snarare än bugg — de mindre
+    använda hör troligen hemma i en meny.
+
+- **`rust-version = "1.92"` (MSRV) deklarerad i `LinuxApp/Cargo.toml`**
+  (2026-08-05): fältet saknades helt, så den som hade en för gammal
+  toolchain fick ett kryptiskt syntaxfel någonstans i ett beroende i
+  stället för ett tydligt besked. Nu står `bastion-linuxapp@0.1.0
+  requires rustc 1.92` överst i felutskriften.
+  - **Siffran är VERIFIERAD, inte antagen.** Första gissningen var 1.88
+    (let-chains, som är det nyaste vår EGEN kod använder) — den var FEL.
+    Ett riktigt `cargo +1.88 build` visade att golvet i stället sätts av
+    GTK-stacken: `gdk4`/`cairo-rs`/`gio` kräver 1.92. Sedan kördes
+    `cargo +1.92 build` OCH hela testsviten (203/203) på just den
+    toolchainen för att bekräfta att den faktiskt duger.
+  - `edition = "2024"` kräver i sig bara 1.85 — MSRV:n kommer alltså helt
+    från beroendena, vilket är precis varför den behöver mätas om vid
+    varje större beroendeuppgradering.
+  - CI kör `dtolnay/rust-toolchain@stable`, alltså alltid senaste stabila.
+    MSRV:n är golvet, inte vad vi bygger med till vardags.
+
+- **SÄKERHET: russh 0.45 → 0.62.5, stänger 13 dependabot-varningar**
+  (2026-08-05, `Cargo.toml` + `ssh.rs`/`key_deploy.rs`/`port_forward.rs`):
+  samtliga öppna sårbarhetsvarningar i repot satt i `russh` — SSH-
+  biblioteket hela `LinuxApp` vilar på. Varningarna hade stått i varje
+  push-utskrift ("GitHub found 13 vulnerabilities") utan att åtgärdas.
+  - Flera är CLIENT-side, alltså nåbara från en illasinnad eller kapad
+    server vi ansluter till: panik vid X25519-nyckel med fel längd
+    (pre-auth DoS), panik vid all-zero Curve25519-värde, obegränsad
+    allokering efter dekomprimering, okontrollerat antal
+    keyboard-interactive-prompter, samt icke-kanoniska SSH-bannrar utan
+    längdgräns. Resten är server-side och berör inte oss (Bastion är
+    alltid klient — samma avgränsning som vid cert-auth).
+  - `russh-sftp` följde med 2.3.0 → 2.4.0.
+  - **API-migrering över 17 minorversioner**, de fem substantiella:
+    1. `Handler` använder nu native `async fn in trait` — vårt
+       `#[async_trait]` måste BORT, annars livstidskrock.
+    2. Nycklar bygger på `ssh_key`-typerna: `KeyPair` → `PrivateKey`,
+       `KeyPair::generate_ed25519()` → `PrivateKey::random(rng, alg)`,
+       `clone_public_key()` → `public_key()`, `key.name()` →
+       `algorithm().as_str()`.
+    3. Alla `authenticate_*` returnerar `AuthResult` i stället för
+       `bool` (`.success()`).
+    4. `authenticate_publickey` tar `PrivateKeyWithHashAlg` — RSA kräver
+       ett uttryckligt hash-val, hämtas via `best_supported_rsa_hash()`.
+       `authenticate_future` ersatt av `authenticate_publickey_with`,
+       som LÅNAR agenten i stället för att flytta den fram och tillbaka.
+       Agentidentiteter är nu `AgentIdentity` (nyckel + kommentar, eller
+       certifikat), inte rena `PublicKey`.
+    5. `server_channel_open_forwarded_tcpip` har fått ett
+       `ChannelOpenHandleInner`-argument som MÅSTE `accept()`:as eller
+       `reject()`:as — att bara låta det droppas skickar automatiskt
+       `AdministrativelyProhibited`.
+  - **Punkt 5 var en riktig regression som testsviten fångade**: första
+    migreringen lämnade handtaget oanvänt, vilket tyst stängde varje
+    vidarebefordrad anslutning ("Connection reset by peer"). Upptäckt av
+    `remote_forward_reaches_a_real_separate_echo_server_through_real_sshd`
+    — ett av de tester som kör mot en RIKTIG `sshd`, inte en mock. Utan
+    den sortens test hade `-R` gått sönder tyst.
+  - 201/201 `cargo test` gröna (stabilt över 4 körningar), `clippy`
+    oförändrat på baseline.
+
+- **BUGGFIX: S3-nedladdning läste hela objektet i minnet** (2026-08-05,
+  `s3.rs` + `main.rs`): `get_object` hämtade hela kroppen via
+  `Response::bytes()` innan något skrevs till disk. För en S3-bucket —
+  där flergigabyte-objekt (backuper, diskavbildningar, video) är helt
+  vardagliga — hade en nedladdning därmed krävt lika mycket RAM som
+  filen är stor och i praktiken dödat appen. Inkonsekvent med kodbasens
+  egen princip: `ssh.rs` har sedan tidigare ett 4 MiB-tak
+  (`MAX_COMMAND_OUTPUT_BYTES`) just för att inte svälla minnet.
+  - Ny `get_object_to_file` strömmar bit för bit direkt till disk, utan
+    att någon gång hålla hela filen i minnet. Skriver till en temporär
+    `.part`-fil i SAMMA katalog och byter namn först när hela
+    hämtningen lyckats — en avbruten nedladdning lämnar aldrig en halv
+    fil på målsökvägen (samma resonemang som
+    `external_binary_fetcher::fetch`). Övriga anrop
+    (`list_buckets`/`list_objects`/felsvar) är små XML-dokument och
+    läses fortfarande i ett svep.
+  - **Ingen ny beroendeyta**: `reqwest::Response::chunk()` fungerar utan
+    `stream`-featuren. Enda tillägget är `fs` på tokio — en extra
+    feature-flagga på ett redan befintligt beroende, inget nytt krat.
+  - Två nya tester: en ~3 MiB-kropp med ett mönstrat innehåll strömmas
+    ner och jämförs byte för byte (bevisar att bitarna sätts ihop rätt,
+    inte bara att den första stämmer) och att ingen `.part`-fil lämnas
+    kvar; samt att ett 404-svar ger ett tydligt fel UTAN att skapa någon
+    fil alls på målsökvägen.
+
+- **BUGGFIX: misslyckad nyckeldistribution rapporterades som ett
+  verifieringsfel** (2026-08-05, `key_deploy.rs`): `deploy_and_verify`
+  ignorerade distributionskommandots exitkod helt. Misslyckades det
+  (skrivskyddad `~/.ssh`, full disk, saknad rättighet) upptäcktes det
+  visserligen ändå — verifieringsanslutningen föll — men felet blev
+  missvisande: *"nyckeln deployades men verifieringen misslyckades"*,
+  när sanningen var att den aldrig deployades. Den säkerhetskritiska
+  egenskapen höll hela tiden (lösenordet tas aldrig bort utan bevisat
+  fungerande nyckel), men felsökningen blev onödigt svår.
+  - Nu läses exitkoden, och serverns stderr tas med i meddelandet:
+    "distributionskommandot misslyckades (exitkod N): … — nyckeln
+    deployades INTE".
+  - **Intressant fynd om meddelandeordningen** (empiriskt verifierat mot
+    en riktig `sshd`, inte antaget): här anländer `Eof`/`Close` FÖRE
+    `exit-status`. Ett första försök som bröt loopen på `Eof`/`Close`
+    tappade därför exitkoden helt och tolkade allt som lyckat. Det är
+    spegelbilden av #269:s buggmönster, och lärdomen är att de två
+    slutvillkoren INTE är utbytbara: utdata kan per definition inte komma
+    efter EOF, men `exit-status` är en kanalFÖRFRÅGAN och får det. Här
+    läses därför tills kanalen är HELT stängd (`wait()` → `None`), med
+    `COMMAND_TIMEOUT` som skydd mot en server som aldrig stänger.
+  - Nytt test som framkallar ett genuint misslyckat distributions-
+    kommando mot en riktig `TestSshd` och kräver att felet pekar ut
+    distributionen, inte verifieringen.
 
 - **BUGGFIX: kommandoutdata kunde tappas HELT (tom systemöversikt/
   Docker-lista)** (2026-08-05, `ssh.rs`): såg först ut som ett flakigt

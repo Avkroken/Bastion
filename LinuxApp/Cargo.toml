@@ -2,12 +2,25 @@
 name = "bastion-linuxapp"
 version = "0.1.0"
 edition = "2024"
+# Lägsta Rust-version som faktiskt bygger projektet. VERIFIERAD, inte
+# antagen: `cargo +1.92 build` + hela testsviten (203/203) kördes på
+# just den toolchainen. Sätts inte av vår egen kod — `edition = "2024"`
+# kräver bara 1.85 — utan av GTK-stacken, som höjde sitt krav till 1.92
+# (`gdk4`/`cairo-rs`/`gio`). Utan det här fältet får den som har en för
+# gammal toolchain ett kryptiskt syntaxfel i stället för ett tydligt
+# "requires rustc 1.92".
+#
+# CI kör `dtolnay/rust-toolchain@stable`, alltså alltid SENASTE stabila —
+# det här är golvet, inte vad vi bygger med till vardags. Höj det när ett
+# beroende kräver mer (bygget säger då själv vilken version), och kör om
+# testsviten på den nya siffran så den förblir verifierad.
+rust-version = "1.92"
 
 [dependencies]
 gtk = { version = "0.11", package = "gtk4", features = ["v4_12"] }
 adw = { version = "0.9", package = "libadwaita", features = ["v1_5"] }
-russh = "0.45"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+russh = "0.62"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -15,7 +28,7 @@ dirs = "5"
 async-channel = "2"
 async-trait = "0.1"
 vte = { version = "0.10", package = "vte4" }
-russh-sftp = "2.3.0"
+russh-sftp = "2.4.0"
 pbkdf2 = { version = "0.13.0", default-features = false, features = ["hmac"] }
 sha2 = "0.11.0"
 aes-gcm = "0.11.0"

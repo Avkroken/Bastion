@@ -65,3 +65,55 @@ jobs:
 
       - name: cargo test
         run: cargo test --verbose
+
+  # Bygger med EXAKT den toolchain `rust-version` i Cargo.toml utlovar, så
+  # siffran inte tyst blir fel. Den sätts nämligen inte av vår egen kod
+  # (edition 2024 kräver bara 1.85) utan av beroendena — gtk4-rs-stacken
+  # höjde t.ex. sitt krav till 1.92 utan att vi märkte det. Utan den här
+  # kontrollen upptäcks en föråldrad MSRV först när någon med en äldre
+  # toolchain försöker bygga, vilket är precis den situation fältet finns
+  # för att undvika.
+  #
+  # Versionen LÄSES ur Cargo.toml i stället för att dupliceras här — annars
+  # hade de två kunnat glida isär, och då vore kontrollen värdelös.
+  #
+  # Bygger bara (ingen testkörning): en MSRV-överträdelse är alltid ett
+  # KOMPILERINGSfel, så `cargo build` räcker och håller jobbet snabbt.
+  # Jobbet står medvetet UTANFÖR required_status_checks — det ska
+  # informera, inte blockera en brådskande fix.
+  linuxapp-msrv:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: LinuxApp
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+
+      - name: Installera GTK4/libadwaita/vte4-headers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
+
+      - name: Läs MSRV ur Cargo.toml
+        id: msrv
+        run: |
+          version="$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)"
+          if [ -z "$version" ]; then
+            echo "::error::rust-version saknas i LinuxApp/Cargo.toml"
+            exit 1
+          fi
+          echo "Deklarerad MSRV: $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - name: Visa Rust-version
+        run: rustc --version && cargo --version
+
+      - name: cargo build på MSRV
+        run: cargo build --verbose

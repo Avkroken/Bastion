@@ -12,11 +12,13 @@ mod dashboard;
 mod docker;
 mod external_binary_fetcher;
 mod fsutil;
+mod fuzzy;
 mod host;
 mod host_grouping;
 mod key_deploy;
 mod known_hosts;
 mod oauth;
+mod palette_actions;
 mod port_forward;
 mod s3;
 mod serial;
@@ -25,6 +27,7 @@ mod sftp;
 mod snippet;
 mod socks_proxy;
 mod ssh;
+mod tab_title;
 mod ssh_config;
 mod sync;
 mod sync_crypto;
@@ -172,9 +175,14 @@ fn build_ui(app: &adw::Application) {
         .vexpand(true)
         .build();
 
-    let add_button = gtk::Button::from_icon_name("list-add-symbolic");
-    add_button.set_tooltip_text(Some("Lägg till värd"));
-    add_button.connect_clicked(clone!(
+    // Åtgärderna ligger på APPEN, inte i en grupp på en widget. Skälet är
+    // tangentbordet: `set_accels_for_action` når bara `app.`- och
+    // `win.`-prefixade åtgärder, inte en egen grupp inlagd på en behållare.
+    // Med appen som hem delar meny, knapp och kortkommando exakt samma
+    // definition — och GTK ritar dessutom ut kortkommandot bredvid
+    // menyposten automatiskt, utan att texten skrivs in för hand.
+    let new_host_action = gtk::gio::SimpleAction::new("new-host", None);
+    new_host_action.connect_activate(clone!(
         #[weak]
         app,
         #[strong]
@@ -189,7 +197,7 @@ fn build_ui(app: &adw::Application) {
         snippet_store,
         #[strong]
         search_query,
-        move |_| show_host_dialog(
+        move |_, _| show_host_dialog(
             &app,
             &store,
             &list,
@@ -200,20 +208,36 @@ fn build_ui(app: &adw::Application) {
             None
         )
     ));
+    app.add_action(&new_host_action);
+
+    let add_button = gtk::Button::from_icon_name("list-add-symbolic");
+    add_button.set_tooltip_text(Some("Lägg till värd"));
+    add_button.set_action_name(Some("app.new-host"));
+
+    let quick_connect_action = gtk::gio::SimpleAction::new("new-connection", None);
+    quick_connect_action.connect_activate(clone!(
+        #[weak]
+        app,
+        #[strong]
+        area,
+        move |_, _| show_quick_connect_dialog(&app, &area)
+    ));
+    app.add_action(&quick_connect_action);
 
     let quick_connect_button = gtk::Button::from_icon_name("system-run-symbolic");
     quick_connect_button.set_tooltip_text(Some("Snabbanslutning"));
-    quick_connect_button.connect_clicked(clone!(
-        #[weak]
-        app,
-        #[strong]
-        area,
-        move |_| show_quick_connect_dialog(&app, &area)
-    ));
+    quick_connect_button.set_action_name(Some("app.new-connection"));
 
-    let import_button = gtk::Button::from_icon_name("document-open-symbolic");
-    import_button.set_tooltip_text(Some("Importera ssh-config"));
-    import_button.connect_clicked(clone!(
+    // Nio ikonknappar fick inte plats i sidopanelens header: rubriken
+    // "Värdar" klipptes till "Vär…" (hittat genom att faktiskt köra appen,
+    // se ROADMAP-posten om ikonbuggen). Bara de två vanligaste åtgärderna
+    // — lägg till värd och snabbanslutning — står kvar som egna knappar;
+    // resten flyttas in i en primärmeny, vilket dessutom är GNOME:s eget
+    // mönster så fort en header behöver mer än ett par åtgärder.
+    // Menyposterna körs som `SimpleAction`-poster på appen (se längre upp),
+    // så samma definition driver meny, knapp och kortkommando.
+    let import_action = gtk::gio::SimpleAction::new("import_ssh_config", None);
+    import_action.connect_activate(clone!(
         #[weak]
         app,
         #[strong]
@@ -228,32 +252,32 @@ fn build_ui(app: &adw::Application) {
         snippet_store,
         #[strong]
         search_query,
-        move |_| show_ssh_config_import_dialog(&app, &store, &list, &area, &settings_store, &snippet_store, &search_query)
+        move |_, _| show_ssh_config_import_dialog(&app, &store, &list, &area, &settings_store, &snippet_store, &search_query)
     ));
+    app.add_action(&import_action);
 
-    let telnet_button = gtk::Button::from_icon_name("utilities-terminal-symbolic");
-    telnet_button.set_tooltip_text(Some("Telnet"));
-    telnet_button.connect_clicked(clone!(
+    let telnet_action = gtk::gio::SimpleAction::new("telnet", None);
+    telnet_action.connect_activate(clone!(
         #[weak]
         app,
         #[strong]
         area,
-        move |_| show_telnet_connect_dialog(&app, &area)
+        move |_, _| show_telnet_connect_dialog(&app, &area)
     ));
+    app.add_action(&telnet_action);
 
-    let serial_button = gtk::Button::from_icon_name("cable-modem-symbolic");
-    serial_button.set_tooltip_text(Some("Seriell/USB"));
-    serial_button.connect_clicked(clone!(
+    let serial_action = gtk::gio::SimpleAction::new("serial", None);
+    serial_action.connect_activate(clone!(
         #[weak]
         app,
         #[strong]
         area,
-        move |_| show_serial_connect_dialog(&app, &area)
+        move |_, _| show_serial_connect_dialog(&app, &area)
     ));
+    app.add_action(&serial_action);
 
-    let tailscale_button = gtk::Button::from_icon_name("network-workgroup-symbolic");
-    tailscale_button.set_tooltip_text(Some("Tailscale"));
-    tailscale_button.connect_clicked(clone!(
+    let tailscale_action = gtk::gio::SimpleAction::new("tailscale", None);
+    tailscale_action.connect_activate(clone!(
         #[weak]
         app,
         #[strong]
@@ -268,7 +292,7 @@ fn build_ui(app: &adw::Application) {
         snippet_store,
         #[strong]
         search_query,
-        move |_| show_tailscale_discovery_dialog(
+        move |_, _| show_tailscale_discovery_dialog(
             &app,
             &store,
             &list,
@@ -278,32 +302,32 @@ fn build_ui(app: &adw::Application) {
             &search_query
         )
     ));
+    app.add_action(&tailscale_action);
 
-    let wireguard_button = gtk::Button::from_icon_name("network-vpn-symbolic");
-    wireguard_button.set_tooltip_text(Some("WireGuard-profiler"));
-    wireguard_button.connect_clicked(clone!(
+    let wireguard_action = gtk::gio::SimpleAction::new("wireguard", None);
+    wireguard_action.connect_activate(clone!(
         #[weak]
         app,
         #[strong]
         wireguard_store,
-        move |_| show_wireguard_profile_list(&app, &wireguard_store)
+        move |_, _| show_wireguard_profile_list(&app, &wireguard_store)
     ));
+    app.add_action(&wireguard_action);
 
-    let s3_button = gtk::Button::from_icon_name("folder-remote-symbolic");
-    s3_button.set_tooltip_text(Some("S3-anslutningar"));
-    s3_button.connect_clicked(clone!(
+    let s3_action = gtk::gio::SimpleAction::new("s3", None);
+    s3_action.connect_activate(clone!(
         #[weak]
         app,
         #[strong]
         area,
         #[strong]
         s3_store,
-        move |_| show_s3_connection_list(&app, &area, &s3_store)
+        move |_, _| show_s3_connection_list(&app, &area, &s3_store)
     ));
+    app.add_action(&s3_action);
 
-    let settings_button = gtk::Button::from_icon_name("preferences-system-symbolic");
-    settings_button.set_tooltip_text(Some("Funktioner"));
-    settings_button.connect_clicked(clone!(
+    let settings_action = gtk::gio::SimpleAction::new("settings", None);
+    settings_action.connect_activate(clone!(
         #[weak]
         app,
         #[strong]
@@ -320,7 +344,7 @@ fn build_ui(app: &adw::Application) {
         sync_config,
         #[strong]
         search_query,
-        move |_| show_settings_dialog(
+        move |_, _| show_settings_dialog(
             &app,
             &settings_store,
             &store,
@@ -331,17 +355,113 @@ fn build_ui(app: &adw::Application) {
             &search_query
         )
     ));
+    app.add_action(&settings_action);
+
+    let palette_action = gtk::gio::SimpleAction::new("palette", None);
+    palette_action.connect_activate(clone!(
+        #[weak]
+        app,
+        #[strong]
+        store,
+        #[strong]
+        area,
+        move |_, _| show_command_palette(&app, &store, &area)
+    ));
+    app.add_action(&palette_action);
+
+    let close_tab_action = gtk::gio::SimpleAction::new("close-tab", None);
+    close_tab_action.connect_activate(clone!(
+        #[strong]
+        area,
+        move |_, _| {
+            // `n_pages` kollas FÖRST: `selected_page` kan hinna svara med
+            // en sida som redan är på väg ut om kommandot trycks två
+            // gånger snabbt, och `close_page` på en sida som inte längre
+            // hör till vyn ger en Adwaita-CRITICAL.
+            if area.tab_view.n_pages() == 0 {
+                return;
+            }
+            if let Some(page) = area.tab_view.selected_page() {
+                area.tab_view.close_page(&page);
+            }
+        }
+    ));
+    app.add_action(&close_tab_action);
+
+    let focus_search_action = gtk::gio::SimpleAction::new("focus-search", None);
+    focus_search_action.connect_activate(clone!(
+        #[weak]
+        search_entry,
+        move |_, _| {
+            search_entry.grab_focus();
+        }
+    ));
+    app.add_action(&focus_search_action);
+
+    // En enda parametriserad åtgärd i stället för nio nästan identiska:
+    // `app.select-tab(3)` är samma sak för menyn, tangentbordet och en
+    // framtida kommandopalett.
+    let select_tab_action =
+        gtk::gio::SimpleAction::new("select-tab", Some(glib::VariantTy::INT32));
+    select_tab_action.connect_activate(clone!(
+        #[strong]
+        area,
+        move |_, parameter| {
+            let Some(number) = parameter.and_then(|p| p.get::<i32>()) else {
+                return;
+            };
+            // `AdwTabView` har ingen `nth_page` — sidorna nås via
+            // `pages()`, som är en `gio::ListModel`.
+            //
+            // Indexet måste kontrolleras SJÄLV. `ListModel::item` brukar
+            // svara `None` utanför intervallet, men den här modellen går
+            // via `adw_tab_view_get_nth_page`, som i stället loggar en
+            // Adwaita-CRITICAL. Upptäckt genom att trycka Alt+2 med bara
+            // en flik öppen och läsa appens logg — inget syntes i UI:t.
+            let index = (number - 1).max(0) as u32;
+            let pages = area.tab_view.pages();
+            if index >= pages.n_items() {
+                return; // färre flikar öppna än siffran som trycktes
+            }
+            let Some(page) = pages.item(index).and_downcast::<adw::TabPage>() else {
+                return;
+            };
+            area.tab_view.set_selected_page(&page);
+        }
+    ));
+    app.add_action(&select_tab_action);
+
+    // Kortkommandon.
+    //
+    // MEDVETET `Ctrl+Shift` och `Alt+siffra`, inte `Ctrl`+bokstav. Appen
+    // är en terminal: `Ctrl+T`, `Ctrl+W` och `Ctrl+K` är readlines egna
+    // (transponera tecken, radera ord bakåt, klipp rad) och tar appen dem
+    // försvinner de ur skalet på andra sidan. Det är samma val som
+    // GNOME Terminal och Ptyxis gör. Termius använder `Ctrl+T`/`Ctrl+J`
+    // — här är det avsiktligt INTE härmat.
+    app.set_accels_for_action("app.palette", &["<Ctrl><Shift>p"]);
+    app.set_accels_for_action("app.new-host", &["<Ctrl><Shift>n"]);
+    app.set_accels_for_action("app.new-connection", &["<Ctrl><Shift>t"]);
+    app.set_accels_for_action("app.close-tab", &["<Ctrl><Shift>w"]);
+    app.set_accels_for_action("app.focus-search", &["<Ctrl><Shift>f"]);
+    app.set_accels_for_action("app.settings", &["<Ctrl>comma"]);
+    for number in 1..=9 {
+        app.set_accels_for_action(
+            &format!("app.select-tab({number})"),
+            &[&format!("<Alt>{number}")],
+        );
+    }
+
+    let sidebar_menu_button = gtk::MenuButton::builder()
+        .icon_name("open-menu-symbolic")
+        .tooltip_text("Huvudmeny")
+        .menu_model(&sidebar_menu())
+        .build();
 
     let sidebar_header = adw::HeaderBar::new();
+    sidebar_header.pack_end(&sidebar_menu_button);
     sidebar_header.pack_end(&add_button);
     sidebar_header.pack_end(&quick_connect_button);
-    sidebar_header.pack_end(&import_button);
-    sidebar_header.pack_end(&telnet_button);
-    sidebar_header.pack_end(&serial_button);
-    sidebar_header.pack_end(&tailscale_button);
-    sidebar_header.pack_end(&wireguard_button);
-    sidebar_header.pack_end(&s3_button);
-    sidebar_header.pack_end(&settings_button);
 
     let sidebar_content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     sidebar_content.append(&sidebar_header);
@@ -864,6 +984,442 @@ fn refresh_list(
 /// — till skillnad från de andra posterna (styrda av globala
 /// `FeatureToggles`) är "Väck"-posten en PER-VÄRD-egenskap, samma UX-regel
 /// som App/HostListView.swift (`if host.macAddress != nil`).
+/// Hur ett dialogfönster tar plats — en AVSIKT, inte en mätning.
+///
+/// Appen har ett tjugotal dialoger. Tidigare byggde var och en sitt eget
+/// `adw::Window` med ett handplockat `default_width`/`default_height`-par,
+/// vilket betyder att varje justering av hur dialoger ser ut är tjugo
+/// ändringar — och att sex av dem hann glida ifrån och sakna titel helt
+/// (de skyltade "bastion-linuxapp" i sin header). Här ligger pixlarna på
+/// ETT ställe, och `dialog_window` är enda vägen in.
+///
+/// Formulärvarianterna sätter avsiktligt INGEN höjd: `adw::PreferencesPage`
+/// rapporterar sin naturliga höjd, så fönstret växer med innehållet. Det
+/// gör att en ny rad i ett formulär syns direkt utan att någon behöver
+/// leta rätt på en siffra att höja — vilket var precis vad som hänt med
+/// "Lägg till värd", där fem av tretton rader låg utanför fönstret.
+#[derive(Clone, Copy)]
+enum DialogSize {
+    /// Kort formulär: lösenordsprompt, "Ny mapp", enkla anslutningsformulär.
+    Compact,
+    /// Vanligt formulär med flera rader.
+    Form,
+    /// Lista eller annat skrollbart innehåll. Behöver en starthöjd — en
+    /// `gtk::ScrolledWindow` har ingen naturlig höjd att växa efter.
+    List,
+    /// Stor innehållsvy: loggar, filredigerare.
+    Viewer,
+}
+
+impl DialogSize {
+    fn width(self) -> i32 {
+        match self {
+            DialogSize::Compact => 400,
+            DialogSize::Form => 480,
+            DialogSize::List => 480,
+            DialogSize::Viewer => 760,
+        }
+    }
+
+    /// `None` = låt innehållet bestämma (se `content_height`).
+    fn height(self) -> Option<i32> {
+        match self {
+            DialogSize::Compact | DialogSize::Form => None,
+            DialogSize::List => Some(520),
+            DialogSize::Viewer => Some(560),
+        }
+    }
+}
+
+/// Innehållets egen naturliga höjd, men aldrig högre än vad skärmen
+/// rymmer.
+///
+/// Det här är poängen med formulärvarianterna: höjden mäts på widgeten i
+/// stället för att skrivas som en siffra i koden, så ett formulär som får
+/// en rad till växer av sig självt. Taket behövs för att "naturlig höjd"
+/// annars är obegränsad — `Inställningar` blev längre än skärmen när
+/// mätningen infördes utan det. Taket räknas ur den faktiska skärmens
+/// arbetsyta i stället för att vara ett fast tal, så samma kod ger en
+/// rimlig dialog på en liten laptop och på en 4K-skärm. `adw::Window`
+/// lägger sitt eget innehåll i en skrollbar vy, så det som inte får plats
+/// blir skrollbart — inte oåtkomligt.
+fn content_height(content: &impl IsA<gtk::Widget>, width: i32) -> i32 {
+    let (_, natural, _, _) = content.measure(gtk::Orientation::Vertical, width);
+
+    let available = gtk::gdk::Display::default()
+        .and_then(|display: gtk::gdk::Display| display.monitors().item(0))
+        .and_downcast::<gtk::gdk::Monitor>()
+        .map(|monitor| monitor.geometry().height())
+        .unwrap_or(0);
+    // Utan känd skärm (t.ex. udda headless-uppsättningar) faller vi
+    // tillbaka på ett tak som får plats även på en liten laptopskärm.
+    let cap = if available > 0 { available * 4 / 5 } else { 640 };
+
+    natural.min(cap).max(1)
+}
+
+/// Bygger ett modalt dialogfönster. Titeln är ett obligatoriskt argument,
+/// inte en valfri byggarmetod — det är det som gör "dialog utan titel"
+/// omöjligt att råka ut för.
+fn dialog_window(
+    parent: &impl IsA<gtk::Window>,
+    title: &str,
+    size: DialogSize,
+    content: &impl IsA<gtk::Widget>,
+) -> adw::Window {
+    let builder = adw::Window::builder()
+        .transient_for(parent)
+        .modal(true)
+        .title(title)
+        .default_width(size.width())
+        .content(content);
+    let height = size
+        .height()
+        .unwrap_or_else(|| content_height(content, size.width()));
+    let window = builder.default_height(height).build();
+
+    // Escape stänger dialogen. GTK4 gör INTE det av sig självt — det var
+    // `GtkDialog` som hade beteendet, och den är avvecklad. Utan det här
+    // gick ingen av appens tjugo dialoger att avbryta från tangentbordet;
+    // man var tvungen att sikta på "Avbryt" med musen. Att det räcker med
+    // ett ställe är hela poängen med att `dialog_window` blev enda vägen
+    // in. `window.close` är GTK:s egen inbyggda åtgärd, så knappen och
+    // tangenten gör bokstavligen samma sak.
+    let escape = gtk::ShortcutController::new();
+    escape.add_shortcut(gtk::Shortcut::new(
+        gtk::ShortcutTrigger::parse_string("Escape"),
+        Some(gtk::NamedAction::new("window.close")),
+    ));
+    window.add_controller(escape);
+
+    window
+}
+
+/// Föräldrafönstret för en dialog som öppnas från sidopanelen.
+fn app_window(app: &adw::Application) -> gtk::Window {
+    app.active_window().expect("inget aktivt fönster")
+}
+
+/// Föräldrafönstret för en dialog som öppnas inifrån en session.
+fn session_window(area: &Rc<SessionArea>) -> gtk::Window {
+    area.overlay
+        .root()
+        .and_downcast::<gtk::Window>()
+        .expect("inget fönster")
+}
+
+/// En rad i kommandopaletten.
+struct PaletteEntry {
+    /// Det som visas.
+    label: String,
+    /// Undertiteln — vad raden är och var den leder.
+    detail: String,
+    /// Det som söks i. Bredare än etiketten: en värd ska gå att hitta på
+    /// sin IP eller sin tagg, inte bara på sitt alias.
+    haystack: String,
+    action: PaletteAction,
+}
+
+enum PaletteAction {
+    /// Byt till en redan öppen flik.
+    Select(adw::TabPage),
+    /// Anslut till en sparad värd.
+    Connect(Box<host::Host>),
+    /// Kör en av appens egna åtgärder, `app.`-prefixet inkluderat.
+    Command(&'static str),
+}
+
+/// Kortkommandot för en åtgärd, skrivet som GTK skriver det i menyerna
+/// ("Ctrl+Skift+N"). Hämtas från appen i stället för att skrivas in för
+/// hand, så att paletten inte kan lära ut ett kortkommando som ändrats.
+fn accel_label(app: &adw::Application, action: &str) -> Option<String> {
+    let accel = app.accels_for_action(action).into_iter().next()?;
+    let (key, mods) = gtk::accelerator_parse(&accel)?;
+    let label = gtk::accelerator_get_label(key, mods);
+    (!label.is_empty()).then(|| label.to_string())
+}
+
+/// Öppna sessioner FÖRST, sedan sparade värdar, sedan appens åtgärder.
+/// Ordningen spelar roll: vid lika poäng behåller `fuzzy::rank` inbördes
+/// ordning, så en session man redan har uppe vinner över att öppna en
+/// till mot samma värd — och det man vill nå oftast, en maskin, hamnar
+/// aldrig under en åtgärd.
+fn palette_entries(
+    app: &adw::Application,
+    area: &Rc<SessionArea>,
+    store: &Rc<RefCell<HostStore>>,
+) -> Vec<PaletteEntry> {
+    let mut entries = Vec::new();
+
+    let pages = area.tab_view.pages();
+    for index in 0..pages.n_items() {
+        let Some(page) = pages.item(index).and_downcast::<adw::TabPage>() else {
+            continue;
+        };
+        let title = page.title().to_string();
+        entries.push(PaletteEntry {
+            haystack: title.clone(),
+            label: title,
+            detail: format!("Öppen session · flik {}", index + 1),
+            action: PaletteAction::Select(page),
+        });
+    }
+
+    let hosts: Vec<host::Host> = store.borrow().all().into_iter().cloned().collect();
+    for host in hosts {
+        let label = if host.alias.trim().is_empty() {
+            host.host_name.clone()
+        } else {
+            host.alias.clone()
+        };
+        entries.push(PaletteEntry {
+            haystack: format!(
+                "{} {}@{} {}",
+                host.alias,
+                host.user,
+                host.host_name,
+                host.tags.join(" ")
+            ),
+            label,
+            detail: format!("Anslut · {}@{}:{}", host.user, host.host_name, host.port),
+            action: PaletteAction::Connect(Box::new(host)),
+        });
+    }
+
+    let has_session = area.tab_view.n_pages() > 0;
+    for command in palette_actions::available(has_session) {
+        // Paletten är också det stället man LÄR SIG kortkommandona —
+        // samma sak som gör att GTK skriver ut dem i menyerna.
+        let detail = match accel_label(app, command.action) {
+            Some(accel) => format!("Åtgärd · {accel}"),
+            None => "Åtgärd".to_string(),
+        };
+        entries.push(PaletteEntry {
+            haystack: palette_actions::haystack(command),
+            label: command.label.to_string(),
+            detail,
+            action: PaletteAction::Command(command.action),
+        });
+    }
+
+    entries
+}
+
+/// Ritar om listan efter sökningen och kommer ihåg vilka poster raderna
+/// pekar på — radens index i listan är INTE samma sak som postens index i
+/// `entries` så snart något filtrerats bort.
+fn fill_palette_list(
+    list: &gtk::ListBox,
+    entries: &[PaletteEntry],
+    query: &str,
+    visible: &Rc<RefCell<Vec<usize>>>,
+) {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+
+    let candidates: Vec<(&str, usize)> = entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| (entry.haystack.as_str(), index))
+        .collect();
+
+    let ranked = fuzzy::rank(&candidates, query);
+    let mut order = Vec::with_capacity(ranked.len());
+    for (_, index) in ranked {
+        let entry = &entries[index];
+        let row = adw::ActionRow::builder()
+            .title(&entry.label)
+            .subtitle(&entry.detail)
+            .activatable(true)
+            .build();
+        list.append(&row);
+        order.push(index);
+    }
+    *visible.borrow_mut() = order;
+
+    if let Some(first) = list.row_at_index(0) {
+        list.select_row(Some(&first));
+    }
+}
+
+/// Kommandopaletten: en sökruta över allt man rimligen vill nå snabbt —
+/// de öppna sessionerna och de sparade värdarna. Termius har en
+/// motsvarighet; det här är den delen av deras form som är värd att ta
+/// efter (till skillnad från deras tangentval, se `set_accels_for_action`).
+fn show_command_palette(
+    app: &adw::Application,
+    store: &Rc<RefCell<HostStore>>,
+    area: &Rc<SessionArea>,
+) {
+    let search = gtk::SearchEntry::builder()
+        .placeholder_text("Sök värd, tagg eller öppen session")
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(12)
+        .margin_bottom(6)
+        .build();
+
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::Single)
+        .css_classes(["boxed-list"])
+        .margin_start(12)
+        .margin_end(12)
+        .margin_bottom(12)
+        .build();
+
+    let scrolled = gtk::ScrolledWindow::builder()
+        .child(&list)
+        .vexpand(true)
+        .build();
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&search);
+    content.append(&scrolled);
+
+    // Ingen `adw::HeaderBar` här, till skillnad från appens övriga
+    // dialoger: en palett ska vara sökrutan, inget annat. Fönstertiteln
+    // sätts ändå av `dialog_window`, för fönsterhanterarens skull.
+    let win = dialog_window(&app_window(app), "Kommandopalett", DialogSize::List, &content);
+
+    let entries = Rc::new(palette_entries(app, area, store));
+    let visible: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
+    fill_palette_list(&list, &entries, "", &visible);
+
+    search.connect_search_changed(clone!(
+        #[weak]
+        list,
+        #[strong]
+        entries,
+        #[strong]
+        visible,
+        move |entry| {
+            fill_palette_list(&list, &entries, &entry.text(), &visible);
+        }
+    ));
+
+    let activate = clone!(
+        #[strong]
+        entries,
+        #[strong]
+        visible,
+        #[strong]
+        area,
+        #[strong]
+        store,
+        #[weak]
+        app,
+        #[weak]
+        win,
+        move |row_index: i32| {
+            let Some(entry_index) = visible.borrow().get(row_index.max(0) as usize).copied() else {
+                return;
+            };
+            win.close();
+            match &entries[entry_index].action {
+                PaletteAction::Select(page) => {
+                    area.tab_view.set_selected_page(page);
+                }
+                PaletteAction::Connect(host) => {
+                    open_session(&area, &store, (**host).clone());
+                }
+                PaletteAction::Command(name) => {
+                    // `activate_action` på appen vill ha namnet UTAN
+                    // `app.`-prefixet — prefixet hör till widget- och
+                    // menysidan av åtgärdssystemet, inte till gruppen
+                    // åtgärden faktiskt bor i.
+                    let bare = name.strip_prefix("app.").unwrap_or(name);
+                    app.activate_action(bare, None);
+                }
+            }
+        }
+    );
+
+    list.connect_row_activated(clone!(
+        #[strong]
+        activate,
+        move |_, row| activate(row.index())
+    ));
+
+    // Enter i sökrutan tar den markerade raden — man ska aldrig behöva
+    // flytta handen till musen eller ens till listan.
+    search.connect_activate(clone!(
+        #[weak]
+        list,
+        #[strong]
+        activate,
+        move |_| {
+            let index = list.selected_row().map(|row| row.index()).unwrap_or(0);
+            activate(index);
+        }
+    ));
+
+    // Upp/ner flyttar markeringen UTAN att flytta tangentbordsfokus från
+    // sökrutan — annars kan man inte fortsätta skriva efter att ha pilat.
+    let keys = gtk::EventControllerKey::new();
+    keys.connect_key_pressed(clone!(
+        #[weak]
+        list,
+        #[strong]
+        visible,
+        #[upgrade_or]
+        glib::Propagation::Proceed,
+        move |_, key, _, _| {
+            let step = match key {
+                gtk::gdk::Key::Down => 1,
+                gtk::gdk::Key::Up => -1,
+                _ => return glib::Propagation::Proceed,
+            };
+            let count = visible.borrow().len() as i32;
+            if count == 0 {
+                return glib::Propagation::Stop;
+            }
+            let current = list.selected_row().map(|row| row.index()).unwrap_or(0);
+            let next = (current + step).clamp(0, count - 1);
+            if let Some(row) = list.row_at_index(next) {
+                list.select_row(Some(&row));
+            }
+            glib::Propagation::Stop
+        }
+    ));
+    search.add_controller(keys);
+
+    win.present();
+    search.grab_focus();
+}
+
+/// Sidopanelens primärmeny. Sektionerna grupperar posterna efter vad de
+/// gör — andra anslutningstyper, nätverk/lagring, och appens egna
+/// inställningar — och ritas som avdelade block med skiljelinje.
+fn sidebar_menu() -> gtk::gio::Menu {
+    let menu = gtk::gio::Menu::new();
+
+    let palette = gtk::gio::Menu::new();
+    palette.append(Some("Kommandopalett"), Some("app.palette"));
+    menu.append_section(None, &palette);
+
+    let connections = gtk::gio::Menu::new();
+    connections.append(Some("Telnet"), Some("app.telnet"));
+    connections.append(Some("Seriell/USB"), Some("app.serial"));
+    menu.append_section(None, &connections);
+
+    let network = gtk::gio::Menu::new();
+    network.append(Some("Tailscale"), Some("app.tailscale"));
+    network.append(Some("WireGuard-profiler"), Some("app.wireguard"));
+    network.append(Some("S3-anslutningar"), Some("app.s3"));
+    menu.append_section(None, &network);
+
+    let app_menu = gtk::gio::Menu::new();
+    app_menu.append(
+        Some("Importera ssh-config"),
+        Some("app.import_ssh_config"),
+    );
+    app_menu.append(Some("Funktioner"), Some("app.settings"));
+    menu.append_section(None, &app_menu);
+
+    menu
+}
+
 fn gio_menu_for(toggles: &settings::FeatureToggles, mac_address: &Option<String>) -> gtk::gio::Menu {
     let menu = gtk::gio::Menu::new();
     menu.append(Some("Redigera"), Some("host.edit"));
@@ -945,13 +1501,12 @@ fn show_ssh_config_import_dialog(
     content.append(&text_scrolled);
     content.append(&status_label);
 
-    let win = adw::Window::builder()
-        .transient_for(&app.active_window().expect("inget aktivt fönster"))
-        .modal(true)
-        .default_width(520)
-        .default_height(440)
-        .content(&content)
-        .build();
+    let win = dialog_window(
+        &app_window(app),
+        "Importera ssh-config",
+        DialogSize::List,
+        &content,
+    );
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -1280,13 +1835,12 @@ fn show_host_dialog(
     content.append(&mac_error_label);
     content.append(&auth_error_label);
 
-    let win = adw::Window::builder()
-        .transient_for(&app.active_window().expect("inget aktivt fönster"))
-        .modal(true)
-        .default_width(420)
-        .default_height(360)
-        .content(&content)
-        .build();
+    let win = dialog_window(
+        &app_window(app),
+        if is_edit { "Redigera värd" } else { "Lägg till värd" },
+        DialogSize::Form,
+        &content,
+    );
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -1670,14 +2224,7 @@ fn show_settings_dialog(
     content.append(&header);
     content.append(&page);
 
-    let win = adw::Window::builder()
-        .transient_for(&app.active_window().expect("inget aktivt fönster"))
-        .modal(true)
-        .default_width(420)
-        .default_height(260)
-        .title("Inställningar")
-        .content(&content)
-        .build();
+    let win = dialog_window(&app_window(app), "Inställningar", DialogSize::Form, &content);
 
     docker_row.connect_active_notify(clone!(
         #[strong]
@@ -2191,19 +2738,7 @@ fn prompt_password_then(
     content.append(&header);
     content.append(&page);
 
-    let win = adw::Window::builder()
-        .transient_for(
-            &area
-                .overlay
-                .root()
-                .and_downcast::<gtk::Window>()
-                .expect("inget fönster"),
-        )
-        .modal(true)
-        .default_width(360)
-        .default_height(180)
-        .content(&content)
-        .build();
+    let win = dialog_window(&session_window(area), "Lösenord", DialogSize::Compact, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -2246,19 +2781,30 @@ fn new_themed_terminal() -> vte::Terminal {
 /// befintliga flikar med titeln `alias` eller `alias (N)` via
 /// `AdwTabView::pages()` (inget `nth_page` i libadwaita-API:t, se
 /// `terminal_theme`-portens motsvarande kommentar).
-fn unique_session_tab_title(area: &Rc<SessionArea>, alias: &str) -> String {
-    let prefix = format!("{alias} (");
+/// Hämtar de öppna flikarnas namn och lämnar över till `tab_title`, som
+/// är GTK-fri och därför testbar.
+fn unique_session_tab_title(area: &Rc<SessionArea>, base: &str) -> String {
     let pages = area.tab_view.pages();
-    let mut existing = 0u32;
-    for i in 0..pages.n_items() {
-        let Some(page) = pages.item(i).and_downcast::<adw::TabPage>() else { continue };
-        let title = page.title();
-        let t = title.as_str();
-        if t == alias || t.starts_with(&prefix) {
-            existing += 1;
-        }
-    }
-    if existing == 0 { alias.to_string() } else { format!("{alias} ({})", existing + 1) }
+    let existing: Vec<String> = (0..pages.n_items())
+        .filter_map(|i| pages.item(i).and_downcast::<adw::TabPage>())
+        .map(|page| page.title().to_string())
+        .collect();
+    tab_title::unique_title(base, &existing)
+}
+
+/// Hör sidan fortfarande till flikvyn?
+///
+/// `AdwTabView::page_position` DUGER INTE som den frågan: för en sida som
+/// inte hör till vyn loggar den en Adwaita-CRITICAL i stället för att
+/// svara. Sex ställen i appen ställde ändå frågan så, och alla sex
+/// skrev ut en CRITICAL varje gång en flik stängdes innan dess
+/// anslutning hann ge upp. Reproducerat med enbart mus: öppna en session
+/// mot en oanträffbar adress, stäng fliken, vänta tills försöket ger upp.
+fn tab_view_contains(area: &Rc<SessionArea>, page: &adw::TabPage) -> bool {
+    let pages = area.tab_view.pages();
+    (0..pages.n_items())
+        .filter_map(|i| pages.item(i).and_downcast::<adw::TabPage>())
+        .any(|open| &open == page)
 }
 
 fn start_session(
@@ -2280,7 +2826,10 @@ fn start_session(
     }
 
     let page = area.tab_view.append(&terminal);
-    page.set_title(&unique_session_tab_title(area, &host.alias));
+    page.set_title(&unique_session_tab_title(
+        area,
+        &tab_title::base_title(&host.alias, &host.user, &host.host_name),
+    ));
     area.tab_view.set_selected_page(&page);
     area.update_placeholder();
 
@@ -2312,7 +2861,7 @@ fn start_session(
                     }
                     SshEvent::Connected => {}
                     SshEvent::Closed => {
-                        if area.tab_view.page_position(&page) >= 0 {
+                        if tab_view_contains(&area, &page) {
                             area.tab_view.close_page(&page);
                         }
                         break;
@@ -2372,7 +2921,7 @@ fn start_telnet_session(area: &Rc<SessionArea>, host: String, port: u16) {
                     }
                     telnet::TelnetEvent::Connected => {}
                     telnet::TelnetEvent::Closed => {
-                        if area.tab_view.page_position(&page) >= 0 {
+                        if tab_view_contains(&area, &page) {
                             area.tab_view.close_page(&page);
                         }
                         break;
@@ -2419,14 +2968,7 @@ fn show_telnet_connect_dialog(app: &adw::Application, area: &Rc<SessionArea>) {
     content.append(&page);
     content.append(&warning_label);
 
-    let win = adw::Window::builder()
-        .transient_for(&app.active_window().expect("inget aktivt fönster"))
-        .modal(true)
-        .default_width(380)
-        .default_height(220)
-        .title("Telnet")
-        .content(&content)
-        .build();
+    let win = dialog_window(&app_window(app), "Telnet", DialogSize::Compact, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -2495,7 +3037,7 @@ fn start_serial_session(area: &Rc<SessionArea>, path: String, baud_rate: u32) {
                     }
                     serial::SerialEvent::Connected => {}
                     serial::SerialEvent::Closed => {
-                        if area.tab_view.page_position(&page) >= 0 {
+                        if tab_view_contains(&area, &page) {
                             area.tab_view.close_page(&page);
                         }
                         break;
@@ -2555,14 +3097,7 @@ fn show_serial_connect_dialog(app: &adw::Application, area: &Rc<SessionArea>) {
     content.append(&header);
     content.append(&page);
 
-    let win = adw::Window::builder()
-        .transient_for(&app.active_window().expect("inget aktivt fönster"))
-        .modal(true)
-        .default_width(380)
-        .default_height(260)
-        .title("Seriell/USB-anslutning")
-        .content(&content)
-        .build();
+    let win = dialog_window(&app_window(app), "Seriell/USB-anslutning", DialogSize::Compact, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -2647,14 +3182,7 @@ fn show_quick_connect_dialog(app: &adw::Application, area: &Rc<SessionArea>) {
     content.append(&page);
     content.append(&info_label);
 
-    let win = adw::Window::builder()
-        .transient_for(&app.active_window().expect("inget aktivt fönster"))
-        .modal(true)
-        .default_width(380)
-        .default_height(320)
-        .title("Snabbanslutning")
-        .content(&content)
-        .build();
+    let win = dialog_window(&app_window(app), "Snabbanslutning", DialogSize::Compact, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -2764,14 +3292,7 @@ fn show_tailscale_discovery_dialog(
     content.append(&status_label);
     content.append(&results_scrolled);
 
-    let win = adw::Window::builder()
-        .transient_for(&app.active_window().expect("inget aktivt fönster"))
-        .modal(true)
-        .default_width(460)
-        .default_height(480)
-        .title("Tailscale")
-        .content(&content)
-        .build();
+    let win = dialog_window(&app_window(app), "Tailscale", DialogSize::List, &content);
 
     close_button.connect_clicked(clone!(
         #[weak]
@@ -2958,19 +3479,12 @@ fn show_wireguard_profile_list(
     add_button.set_tooltip_text(Some("Ny profil"));
     let header = adw::HeaderBar::new();
     header.pack_end(&add_button);
-    header.set_title_widget(Some(&adw::WindowTitle::new("WireGuard-profiler", "")));
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.append(&header);
     content.append(&scrolled);
 
-    let win = adw::Window::builder()
-        .transient_for(&app.active_window().expect("inget aktivt fönster"))
-        .modal(true)
-        .default_width(420)
-        .default_height(480)
-        .content(&content)
-        .build();
+    let win = dialog_window(&app_window(app), "WireGuard-profiler", DialogSize::List, &content);
 
     refresh_wireguard_profile_list(app, wireguard_store, &list, &win);
 
@@ -3102,14 +3616,7 @@ fn show_wireguard_profile_edit(
     content.append(&page);
     content.append(&text_scrolled);
 
-    let win = adw::Window::builder()
-        .transient_for(parent_win)
-        .modal(true)
-        .default_width(460)
-        .default_height(500)
-        .title("WireGuard-profil")
-        .content(&content)
-        .build();
+    let win = dialog_window(parent_win, "WireGuard-profil", DialogSize::Form, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -3173,19 +3680,12 @@ fn show_s3_connection_list(
     add_button.set_tooltip_text(Some("Ny anslutning"));
     let header = adw::HeaderBar::new();
     header.pack_end(&add_button);
-    header.set_title_widget(Some(&adw::WindowTitle::new("S3-anslutningar", "")));
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.append(&header);
     content.append(&scrolled);
 
-    let win = adw::Window::builder()
-        .transient_for(&app.active_window().expect("inget aktivt fönster"))
-        .modal(true)
-        .default_width(420)
-        .default_height(480)
-        .content(&content)
-        .build();
+    let win = dialog_window(&app_window(app), "S3-anslutningar", DialogSize::List, &content);
 
     refresh_s3_connection_list(app, area, s3_store, &list, &win);
 
@@ -3353,14 +3853,7 @@ fn show_s3_connection_edit(
     content.append(&test_button);
     content.append(&test_status_label);
 
-    let win = adw::Window::builder()
-        .transient_for(parent_win)
-        .modal(true)
-        .default_width(420)
-        .default_height(360)
-        .title("S3-anslutning")
-        .content(&content)
-        .build();
+    let win = dialog_window(parent_win, "S3-anslutning", DialogSize::Form, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -3808,13 +4301,12 @@ fn build_s3_object_row(
                         return;
                     };
                     let Some(local_path) = file.path() else { return };
-                    let rx = s3::spawn_get_object(connection, bucket_name, key);
+                    // Strömmar direkt till fil — ett flergigabyte-objekt
+                    // (backup, diskavbildning) ska inte behöva rymmas i
+                    // RAM först, se `s3::S3Client::get_object_to_file`.
+                    let rx = s3::spawn_download_object(connection, bucket_name, key, local_path.clone());
                     match rx.recv().await {
-                        Ok(Ok(data)) => {
-                            if let Err(e) = std::fs::write(&local_path, data) {
-                                list.append(&error_row(&format!("kunde inte skriva {}: {e}", local_path.display())));
-                            }
-                        }
+                        Ok(Ok(())) => {}
                         Ok(Err(e)) => list.append(&error_row(&e)),
                         Err(_) => list.append(&error_row("kanalen stängdes oväntat")),
                     }
@@ -3894,20 +4386,7 @@ fn prompt_new_bucket_name(
     content.append(&header);
     content.append(&page);
 
-    let win = adw::Window::builder()
-        .transient_for(
-            &area
-                .overlay
-                .root()
-                .and_downcast::<gtk::Window>()
-                .expect("inget fönster"),
-        )
-        .modal(true)
-        .default_width(360)
-        .default_height(160)
-        .title("Ny bucket")
-        .content(&content)
-        .build();
+    let win = dialog_window(&session_window(area), "Ny bucket", DialogSize::Compact, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -4095,7 +4574,7 @@ fn open_dashboard_view(area: &Rc<SessionArea>, host: host::Host, password: Optio
     // OBS: `clone!`s `#[weak]`-uppgradering sker bara EN gång, vid start
     // av `async move`-blocket (page/list är garanterat levande då, precis
     // skapade) — INTE per loop-varv. Det faktiska stoppvillkoret är
-    // därför uteslutande `page_position(&page) < 0` nedan: en levande
+    // därför uteslutande `tab_view_contains` nedan: en levande
     // fråga mot flikvyns widget-träd, oberoende av hur många Rust-
     // referenser till `page` som råkar finnas kvar — så fliken må hållas
     // vid liv några extra sekunder efter stängning (ofarligt), men loopen
@@ -4118,11 +4597,11 @@ fn open_dashboard_view(area: &Rc<SessionArea>, host: host::Host, password: Optio
         async move {
             loop {
                 glib::timeout_future_seconds(15).await;
-                if area.tab_view.page_position(&page) < 0 {
+                if !tab_view_contains(&area, &page) {
                     break;
                 }
                 refresh_dashboard_once(host.clone(), password.clone(), &list, jump.clone()).await;
-                if area.tab_view.page_position(&page) < 0 {
+                if !tab_view_contains(&area, &page) {
                     break;
                 }
             }
@@ -5045,20 +5524,12 @@ fn show_docker_logs(
         .child(&text_view)
         .vexpand(true)
         .build();
-    let win = adw::Window::builder()
-        .transient_for(
-            &area
-                .overlay
-                .root()
-                .and_downcast::<gtk::Window>()
-                .expect("inget fönster"),
-        )
-        .modal(true)
-        .default_width(700)
-        .default_height(500)
-        .title(format!("Loggar: {}", container.name))
-        .content(&scrolled)
-        .build();
+    let win = dialog_window(
+        &session_window(area),
+        &format!("Loggar: {}", container.name),
+        DialogSize::Viewer,
+        &scrolled,
+    );
     win.present();
 
     let rx = ssh::run_command(host.clone(), password.clone(), cmd, jump.clone());
@@ -5405,20 +5876,7 @@ fn prompt_snippet_variables(
     content.append(&header);
     content.append(&page);
 
-    let win = adw::Window::builder()
-        .transient_for(
-            &area
-                .overlay
-                .root()
-                .and_downcast::<gtk::Window>()
-                .expect("inget fönster"),
-        )
-        .modal(true)
-        .default_width(420)
-        .default_height(320)
-        .title("Fyll i kommandot")
-        .content(&content)
-        .build();
+    let win = dialog_window(&session_window(area), "Fyll i kommandot", DialogSize::Form, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -5497,20 +5955,7 @@ fn show_snippet_edit_dialog(
     content.append(&header);
     content.append(&page);
 
-    let win = adw::Window::builder()
-        .transient_for(
-            &area
-                .overlay
-                .root()
-                .and_downcast::<gtk::Window>()
-                .expect("inget fönster"),
-        )
-        .modal(true)
-        .default_width(420)
-        .default_height(240)
-        .title("Snippet")
-        .content(&content)
-        .build();
+    let win = dialog_window(&session_window(area), "Snippet", DialogSize::Form, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -6093,20 +6538,7 @@ fn prompt_new_folder_name(
     content.append(&header);
     content.append(&page);
 
-    let win = adw::Window::builder()
-        .transient_for(
-            &area
-                .overlay
-                .root()
-                .and_downcast::<gtk::Window>()
-                .expect("inget fönster"),
-        )
-        .modal(true)
-        .default_width(360)
-        .default_height(160)
-        .title("Ny mapp")
-        .content(&content)
-        .build();
+    let win = dialog_window(&session_window(area), "Ny mapp", DialogSize::Compact, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -6191,20 +6623,7 @@ fn prompt_rename(
     content.append(&header);
     content.append(&page);
 
-    let win = adw::Window::builder()
-        .transient_for(
-            &area
-                .overlay
-                .root()
-                .and_downcast::<gtk::Window>()
-                .expect("inget fönster"),
-        )
-        .modal(true)
-        .default_width(360)
-        .default_height(160)
-        .title("Döp om")
-        .content(&content)
-        .build();
+    let win = dialog_window(&session_window(area), "Döp om", DialogSize::Compact, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -6300,20 +6719,12 @@ fn prompt_permissions(
     content.append(&header);
     content.append(&page);
 
-    let win = adw::Window::builder()
-        .transient_for(
-            &area
-                .overlay
-                .root()
-                .and_downcast::<gtk::Window>()
-                .expect("inget fönster"),
-        )
-        .modal(true)
-        .default_width(420)
-        .default_height(280)
-        .title("Rättigheter/ägare")
-        .content(&content)
-        .build();
+    let win = dialog_window(
+        &session_window(area),
+        "Rättigheter/ägare",
+        DialogSize::Form,
+        &content,
+    );
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -6413,19 +6824,12 @@ fn open_sftp_file_editor(area: &Rc<SessionArea>, handle: sftp::SftpHandle, path:
     content.append(&save_status_label);
     content.append(&scrolled);
 
-    let win = adw::Window::builder()
-        .transient_for(
-            &area
-                .overlay
-                .root()
-                .and_downcast::<gtk::Window>()
-                .expect("inget fönster"),
-        )
-        .modal(true)
-        .default_width(700)
-        .default_height(500)
-        .content(&content)
-        .build();
+    let win = dialog_window(
+        &session_window(area),
+        &format!("Redigerar {path}"),
+        DialogSize::Viewer,
+        &content,
+    );
     win.present();
 
     close_button.connect_clicked(clone!(
