@@ -25,9 +25,26 @@ pub struct KnownHosts {
 
 impl KnownHosts {
     pub fn default_path() -> PathBuf {
-        dirs::home_dir()
-            .expect("kunde inte hitta hemkatalogen")
-            .join(".bastion/known_hosts")
+        // I testbinären pekas standardsökvägen om till en temporär fil.
+        // Flera tester ansluter mot riktiga test-sshd:er, och varje sådan
+        // anslutning TOFU-lär in sin värdnyckel — utan omdirigeringen
+        // hamnar de i användarens skarpa `~/.bastion/known_hosts`. Se
+        // `test_support::known_hosts_path` för vad det ställde till med.
+        //
+        // Alternativet vore att tråda en sökvägsparameter genom
+        // `sftp::spawn` och `key_deploy::deploy_and_verify` (som båda
+        // saknar en), alltså ändra produktions-API bara för testbarhet.
+        // Den här grenen finns inte i den byggda appen.
+        #[cfg(test)]
+        {
+            crate::test_support::known_hosts_path()
+        }
+        #[cfg(not(test))]
+        {
+            dirs::home_dir()
+                .expect("kunde inte hitta hemkatalogen")
+                .join(".bastion/known_hosts")
+        }
     }
 
     /// Fallerar om filen FINNS men inte går att läsa. Se `load` — det är
