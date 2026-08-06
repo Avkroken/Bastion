@@ -906,10 +906,7 @@ mod tests {
             let client_pub = std::fs::read_to_string(dir.join("client_key.pub")).ok()?;
             std::fs::write(dir.join("authorized_keys"), client_pub).ok()?;
 
-            let port = {
-                let l = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
-                l.local_addr().ok()?.port()
-            };
+            let port = crate::test_support::reserve_port()?;
             let config_path = dir.join("sshd_config");
             std::fs::write(
                 &config_path,
@@ -924,7 +921,7 @@ mod tests {
             )
             .ok()?;
 
-            let child = std::process::Command::new("/usr/sbin/sshd")
+            let mut child = std::process::Command::new("/usr/sbin/sshd")
                 .args(["-f"])
                 .arg(&config_path)
                 .args(["-D", "-e"])
@@ -933,13 +930,11 @@ mod tests {
                 .spawn()
                 .ok()?;
 
-            for _ in 0..50 {
-                if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
-                    return Some(TestSshd { child, port, dir });
-                }
-                std::thread::sleep(Duration::from_millis(100));
+            if !crate::test_support::wait_until_listening(&mut child, port) {
+                let _ = std::fs::remove_dir_all(&dir);
+                return None;
             }
-            None
+            Some(TestSshd { child, port, dir })
         }
 
         fn client_key_path(&self) -> String {
@@ -1135,10 +1130,7 @@ mod tests {
                 return None;
             }
 
-            let port = {
-                let l = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
-                l.local_addr().ok()?.port()
-            };
+            let port = crate::test_support::reserve_port()?;
             let config_path = dir.join("sshd_config");
             std::fs::write(
                 &config_path,
@@ -1153,7 +1145,7 @@ mod tests {
             )
             .ok()?;
 
-            let child = std::process::Command::new("/usr/sbin/sshd")
+            let mut child = std::process::Command::new("/usr/sbin/sshd")
                 .args(["-f"])
                 .arg(&config_path)
                 .args(["-D", "-e"])
@@ -1162,13 +1154,11 @@ mod tests {
                 .spawn()
                 .ok()?;
 
-            for _ in 0..50 {
-                if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
-                    return Some(TestCertSshd { child, port, dir });
-                }
-                std::thread::sleep(Duration::from_millis(100));
+            if !crate::test_support::wait_until_listening(&mut child, port) {
+                let _ = std::fs::remove_dir_all(&dir);
+                return None;
             }
-            None
+            Some(TestCertSshd { child, port, dir })
         }
     }
 
