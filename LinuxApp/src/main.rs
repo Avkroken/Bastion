@@ -26,6 +26,7 @@ mod sftp;
 mod snippet;
 mod socks_proxy;
 mod ssh;
+mod tab_title;
 mod ssh_config;
 mod sync;
 mod sync_crypto;
@@ -2735,19 +2736,30 @@ fn new_themed_terminal() -> vte::Terminal {
 /// befintliga flikar med titeln `alias` eller `alias (N)` via
 /// `AdwTabView::pages()` (inget `nth_page` i libadwaita-API:t, se
 /// `terminal_theme`-portens motsvarande kommentar).
-fn unique_session_tab_title(area: &Rc<SessionArea>, alias: &str) -> String {
-    let prefix = format!("{alias} (");
+/// Hämtar de öppna flikarnas namn och lämnar över till `tab_title`, som
+/// är GTK-fri och därför testbar.
+fn unique_session_tab_title(area: &Rc<SessionArea>, base: &str) -> String {
     let pages = area.tab_view.pages();
-    let mut existing = 0u32;
-    for i in 0..pages.n_items() {
-        let Some(page) = pages.item(i).and_downcast::<adw::TabPage>() else { continue };
-        let title = page.title();
-        let t = title.as_str();
-        if t == alias || t.starts_with(&prefix) {
-            existing += 1;
-        }
-    }
-    if existing == 0 { alias.to_string() } else { format!("{alias} ({})", existing + 1) }
+    let existing: Vec<String> = (0..pages.n_items())
+        .filter_map(|i| pages.item(i).and_downcast::<adw::TabPage>())
+        .map(|page| page.title().to_string())
+        .collect();
+    tab_title::unique_title(base, &existing)
+}
+
+/// Hör sidan fortfarande till flikvyn?
+///
+/// `AdwTabView::page_position` DUGER INTE som den frågan: för en sida som
+/// inte hör till vyn loggar den en Adwaita-CRITICAL i stället för att
+/// svara. Sex ställen i appen ställde ändå frågan så, och alla sex
+/// skrev ut en CRITICAL varje gång en flik stängdes innan dess
+/// anslutning hann ge upp. Reproducerat med enbart mus: öppna en session
+/// mot en oanträffbar adress, stäng fliken, vänta tills försöket ger upp.
+fn tab_view_contains(area: &Rc<SessionArea>, page: &adw::TabPage) -> bool {
+    let pages = area.tab_view.pages();
+    (0..pages.n_items())
+        .filter_map(|i| pages.item(i).and_downcast::<adw::TabPage>())
+        .any(|open| &open == page)
 }
 
 fn start_session(
@@ -2769,7 +2781,10 @@ fn start_session(
     }
 
     let page = area.tab_view.append(&terminal);
-    page.set_title(&unique_session_tab_title(area, &host.alias));
+    page.set_title(&unique_session_tab_title(
+        area,
+        &tab_title::base_title(&host.alias, &host.user, &host.host_name),
+    ));
     area.tab_view.set_selected_page(&page);
     area.update_placeholder();
 
@@ -2801,7 +2816,7 @@ fn start_session(
                     }
                     SshEvent::Connected => {}
                     SshEvent::Closed => {
-                        if area.tab_view.page_position(&page) >= 0 {
+                        if tab_view_contains(&area, &page) {
                             area.tab_view.close_page(&page);
                         }
                         break;
@@ -2861,7 +2876,7 @@ fn start_telnet_session(area: &Rc<SessionArea>, host: String, port: u16) {
                     }
                     telnet::TelnetEvent::Connected => {}
                     telnet::TelnetEvent::Closed => {
-                        if area.tab_view.page_position(&page) >= 0 {
+                        if tab_view_contains(&area, &page) {
                             area.tab_view.close_page(&page);
                         }
                         break;
@@ -2977,7 +2992,7 @@ fn start_serial_session(area: &Rc<SessionArea>, path: String, baud_rate: u32) {
                     }
                     serial::SerialEvent::Connected => {}
                     serial::SerialEvent::Closed => {
-                        if area.tab_view.page_position(&page) >= 0 {
+                        if tab_view_contains(&area, &page) {
                             area.tab_view.close_page(&page);
                         }
                         break;
@@ -4514,7 +4529,7 @@ fn open_dashboard_view(area: &Rc<SessionArea>, host: host::Host, password: Optio
     // OBS: `clone!`s `#[weak]`-uppgradering sker bara EN gång, vid start
     // av `async move`-blocket (page/list är garanterat levande då, precis
     // skapade) — INTE per loop-varv. Det faktiska stoppvillkoret är
-    // därför uteslutande `page_position(&page) < 0` nedan: en levande
+    // därför uteslutande `tab_view_contains` nedan: en levande
     // fråga mot flikvyns widget-träd, oberoende av hur många Rust-
     // referenser till `page` som råkar finnas kvar — så fliken må hållas
     // vid liv några extra sekunder efter stängning (ofarligt), men loopen
@@ -4537,11 +4552,11 @@ fn open_dashboard_view(area: &Rc<SessionArea>, host: host::Host, password: Optio
         async move {
             loop {
                 glib::timeout_future_seconds(15).await;
-                if area.tab_view.page_position(&page) < 0 {
+                if !tab_view_contains(&area, &page) {
                     break;
                 }
                 refresh_dashboard_once(host.clone(), password.clone(), &list, jump.clone()).await;
-                if area.tab_view.page_position(&page) < 0 {
+                if !tab_view_contains(&area, &page) {
                     break;
                 }
             }
