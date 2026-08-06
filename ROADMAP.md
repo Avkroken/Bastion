@@ -438,11 +438,35 @@ ordning nyttan per arbetsinsats är störst):
     av dem läser `main.rs` och kräver att varje åtgärdsnamn faktiskt är
     registrerat där: GTK ritar en post med felstavat åtgärdsnamn utan
     att klaga, den gör bara ingenting när man klickar. Verifierat att
-    testet fångar felet genom att felstava ett namn med flit. 214 → 223
+    testet fångar felet genom att felstava ett namn med flit. 221 → 230
     tester.
   - **Verifierat i den körande appen**, inte bara byggt: `inställ` +
     Enter öppnade Inställningar, och `stäng` utan öppen flik gav ingen
     "Stäng fliken"-rad. Inga CRITICAL i loggen.
+
+- **Två flikbuggar som bara syntes när appen kördes** (2026-08-05,
+  `LinuxApp/src/main.rs` + nya `LinuxApp/src/tab_title.rs`):
+  - **`page_position` som existensfråga loggade en CRITICAL.** Fem
+    ställen frågade `area.tab_view.page_position(&page) >= 0` för att få
+    veta om fliken fanns kvar — men `adw_tab_view_get_page_position`
+    SVARAR inte för en sida som inte hör till vyn, den loggar
+    `assertion 'page_belongs_to_this_view (self, page)' failed`. Varje
+    flik som stängdes innan dess anslutning hann ge upp skrev alltså ut
+    en CRITICAL. Reproducerat med enbart mus (öppna en session mot en
+    oanträffbar adress, stäng fliken, vänta ut försöket), så det var
+    inte något kortkommandona införde. Ersatt av `tab_view_contains`,
+    som går igenom `pages()` och faktiskt svarar.
+  - **Snabbanslutningens flikar saknade namn.** De sparas aldrig i
+    värdlistan och får därför tomt alias, vilket gick rakt in i
+    fliknamnet — fliken hette bokstavligen ingenting, eller " (2)" när
+    det fanns fler än en. Faller nu tillbaka på `användare@värd`, samma
+    form som `ssh` självt. Verifierat på skärm: två anslutningar mot
+    samma värd ger `provare@10.255.255.1` och
+    `provare@10.255.255.1 (2)`.
+  - **Titellogiken lyftes ur `main.rs` till `tab_title.rs`** just för
+    att den skulle kunna testas — `main.rs` har ingen
+    `#[cfg(test)]`-täckning av hävd, så allt testvärt behöver bo
+    utanför. Sju tester, varav ett för vartdera felet ovan (214 → 221).
 
 - **Kommandopalett (`Ctrl+Shift+P`)** (2026-08-05, `LinuxApp/src/main.rs`
   + nya `LinuxApp/src/fuzzy.rs`) — andra halvan av steg 1 i
