@@ -18,6 +18,7 @@ mod host_grouping;
 mod key_deploy;
 mod known_hosts;
 mod oauth;
+mod palette_actions;
 mod port_forward;
 mod s3;
 mod serial;
@@ -1106,9 +1107,6 @@ fn session_window(area: &Rc<SessionArea>) -> gtk::Window {
         .expect("inget fönster")
 }
 
-/// Sidopanelens primärmeny. Sektionerna grupperar posterna efter vad de
-/// gör — andra anslutningstyper, nätverk/lagring, och appens egna
-/// inställningar — och ritas som avdelade block med skiljelinje.
 /// En rad i kommandopaletten.
 struct PaletteEntry {
     /// Det som visas.
@@ -1126,12 +1124,30 @@ enum PaletteAction {
     Select(adw::TabPage),
     /// Anslut till en sparad värd.
     Connect(Box<host::Host>),
+    /// Kör en av appens egna åtgärder, `app.`-prefixet inkluderat.
+    Command(&'static str),
 }
 
-/// Öppna sessioner FÖRST, sedan sparade värdar. Ordningen spelar roll:
-/// vid lika poäng behåller `fuzzy::rank` inbördes ordning, så en session
-/// man redan har uppe vinner över att öppna en till mot samma värd.
-fn palette_entries(area: &Rc<SessionArea>, store: &Rc<RefCell<HostStore>>) -> Vec<PaletteEntry> {
+/// Kortkommandot för en åtgärd, skrivet som GTK skriver det i menyerna
+/// ("Ctrl+Skift+N"). Hämtas från appen i stället för att skrivas in för
+/// hand, så att paletten inte kan lära ut ett kortkommando som ändrats.
+fn accel_label(app: &adw::Application, action: &str) -> Option<String> {
+    let accel = app.accels_for_action(action).into_iter().next()?;
+    let (key, mods) = gtk::accelerator_parse(&accel)?;
+    let label = gtk::accelerator_get_label(key, mods);
+    (!label.is_empty()).then(|| label.to_string())
+}
+
+/// Öppna sessioner FÖRST, sedan sparade värdar, sedan appens åtgärder.
+/// Ordningen spelar roll: vid lika poäng behåller `fuzzy::rank` inbördes
+/// ordning, så en session man redan har uppe vinner över att öppna en
+/// till mot samma värd — och det man vill nå oftast, en maskin, hamnar
+/// aldrig under en åtgärd.
+fn palette_entries(
+    app: &adw::Application,
+    area: &Rc<SessionArea>,
+    store: &Rc<RefCell<HostStore>>,
+) -> Vec<PaletteEntry> {
     let mut entries = Vec::new();
 
     let pages = area.tab_view.pages();
@@ -1166,6 +1182,22 @@ fn palette_entries(area: &Rc<SessionArea>, store: &Rc<RefCell<HostStore>>) -> Ve
             label,
             detail: format!("Anslut · {}@{}:{}", host.user, host.host_name, host.port),
             action: PaletteAction::Connect(Box::new(host)),
+        });
+    }
+
+    let has_session = area.tab_view.n_pages() > 0;
+    for command in palette_actions::available(has_session) {
+        // Paletten är också det stället man LÄR SIG kortkommandona —
+        // samma sak som gör att GTK skriver ut dem i menyerna.
+        let detail = match accel_label(app, command.action) {
+            Some(accel) => format!("Åtgärd · {accel}"),
+            None => "Åtgärd".to_string(),
+        };
+        entries.push(PaletteEntry {
+            haystack: palette_actions::haystack(command),
+            label: command.label.to_string(),
+            detail,
+            action: PaletteAction::Command(command.action),
         });
     }
 
@@ -1249,7 +1281,7 @@ fn show_command_palette(
     // sätts ändå av `dialog_window`, för fönsterhanterarens skull.
     let win = dialog_window(&app_window(app), "Kommandopalett", DialogSize::List, &content);
 
-    let entries = Rc::new(palette_entries(area, store));
+    let entries = Rc::new(palette_entries(app, area, store));
     let visible: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
     fill_palette_list(&list, &entries, "", &visible);
 
@@ -1275,6 +1307,8 @@ fn show_command_palette(
         #[strong]
         store,
         #[weak]
+        app,
+        #[weak]
         win,
         move |row_index: i32| {
             let Some(entry_index) = visible.borrow().get(row_index.max(0) as usize).copied() else {
@@ -1287,6 +1321,14 @@ fn show_command_palette(
                 }
                 PaletteAction::Connect(host) => {
                     open_session(&area, &store, (**host).clone());
+                }
+                PaletteAction::Command(name) => {
+                    // `activate_action` på appen vill ha namnet UTAN
+                    // `app.`-prefixet — prefixet hör till widget- och
+                    // menysidan av åtgärdssystemet, inte till gruppen
+                    // åtgärden faktiskt bor i.
+                    let bare = name.strip_prefix("app.").unwrap_or(name);
+                    app.activate_action(bare, None);
                 }
             }
         }
@@ -1345,6 +1387,9 @@ fn show_command_palette(
     search.grab_focus();
 }
 
+/// Sidopanelens primärmeny. Sektionerna grupperar posterna efter vad de
+/// gör — andra anslutningstyper, nätverk/lagring, och appens egna
+/// inställningar — och ritas som avdelade block med skiljelinje.
 fn sidebar_menu() -> gtk::gio::Menu {
     let menu = gtk::gio::Menu::new();
 
