@@ -12,6 +12,7 @@ mod dashboard;
 mod docker;
 mod external_binary_fetcher;
 mod fsutil;
+mod fuzzy;
 mod host;
 mod host_grouping;
 mod key_deploy;
@@ -355,6 +356,18 @@ fn build_ui(app: &adw::Application) {
     ));
     app.add_action(&settings_action);
 
+    let palette_action = gtk::gio::SimpleAction::new("palette", None);
+    palette_action.connect_activate(clone!(
+        #[weak]
+        app,
+        #[strong]
+        store,
+        #[strong]
+        area,
+        move |_, _| show_command_palette(&app, &store, &area)
+    ));
+    app.add_action(&palette_action);
+
     let close_tab_action = gtk::gio::SimpleAction::new("close-tab", None);
     close_tab_action.connect_activate(clone!(
         #[strong]
@@ -425,6 +438,7 @@ fn build_ui(app: &adw::Application) {
     // försvinner de ur skalet på andra sidan. Det är samma val som
     // GNOME Terminal och Ptyxis gör. Termius använder `Ctrl+T`/`Ctrl+J`
     // — här är det avsiktligt INTE härmat.
+    app.set_accels_for_action("app.palette", &["<Ctrl><Shift>p"]);
     app.set_accels_for_action("app.new-host", &["<Ctrl><Shift>n"]);
     app.set_accels_for_action("app.new-connection", &["<Ctrl><Shift>t"]);
     app.set_accels_for_action("app.close-tab", &["<Ctrl><Shift>w"]);
@@ -1096,8 +1110,248 @@ fn session_window(area: &Rc<SessionArea>) -> gtk::Window {
 /// Sidopanelens primärmeny. Sektionerna grupperar posterna efter vad de
 /// gör — andra anslutningstyper, nätverk/lagring, och appens egna
 /// inställningar — och ritas som avdelade block med skiljelinje.
+/// En rad i kommandopaletten.
+struct PaletteEntry {
+    /// Det som visas.
+    label: String,
+    /// Undertiteln — vad raden är och var den leder.
+    detail: String,
+    /// Det som söks i. Bredare än etiketten: en värd ska gå att hitta på
+    /// sin IP eller sin tagg, inte bara på sitt alias.
+    haystack: String,
+    action: PaletteAction,
+}
+
+enum PaletteAction {
+    /// Byt till en redan öppen flik.
+    Select(adw::TabPage),
+    /// Anslut till en sparad värd.
+    Connect(Box<host::Host>),
+}
+
+/// Öppna sessioner FÖRST, sedan sparade värdar. Ordningen spelar roll:
+/// vid lika poäng behåller `fuzzy::rank` inbördes ordning, så en session
+/// man redan har uppe vinner över att öppna en till mot samma värd.
+fn palette_entries(area: &Rc<SessionArea>, store: &Rc<RefCell<HostStore>>) -> Vec<PaletteEntry> {
+    let mut entries = Vec::new();
+
+    let pages = area.tab_view.pages();
+    for index in 0..pages.n_items() {
+        let Some(page) = pages.item(index).and_downcast::<adw::TabPage>() else {
+            continue;
+        };
+        let title = page.title().to_string();
+        entries.push(PaletteEntry {
+            haystack: title.clone(),
+            label: title,
+            detail: format!("Öppen session · flik {}", index + 1),
+            action: PaletteAction::Select(page),
+        });
+    }
+
+    let hosts: Vec<host::Host> = store.borrow().all().into_iter().cloned().collect();
+    for host in hosts {
+        let label = if host.alias.trim().is_empty() {
+            host.host_name.clone()
+        } else {
+            host.alias.clone()
+        };
+        entries.push(PaletteEntry {
+            haystack: format!(
+                "{} {}@{} {}",
+                host.alias,
+                host.user,
+                host.host_name,
+                host.tags.join(" ")
+            ),
+            label,
+            detail: format!("Anslut · {}@{}:{}", host.user, host.host_name, host.port),
+            action: PaletteAction::Connect(Box::new(host)),
+        });
+    }
+
+    entries
+}
+
+/// Ritar om listan efter sökningen och kommer ihåg vilka poster raderna
+/// pekar på — radens index i listan är INTE samma sak som postens index i
+/// `entries` så snart något filtrerats bort.
+fn fill_palette_list(
+    list: &gtk::ListBox,
+    entries: &[PaletteEntry],
+    query: &str,
+    visible: &Rc<RefCell<Vec<usize>>>,
+) {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+
+    let candidates: Vec<(&str, usize)> = entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| (entry.haystack.as_str(), index))
+        .collect();
+
+    let ranked = fuzzy::rank(&candidates, query);
+    let mut order = Vec::with_capacity(ranked.len());
+    for (_, index) in ranked {
+        let entry = &entries[index];
+        let row = adw::ActionRow::builder()
+            .title(&entry.label)
+            .subtitle(&entry.detail)
+            .activatable(true)
+            .build();
+        list.append(&row);
+        order.push(index);
+    }
+    *visible.borrow_mut() = order;
+
+    if let Some(first) = list.row_at_index(0) {
+        list.select_row(Some(&first));
+    }
+}
+
+/// Kommandopaletten: en sökruta över allt man rimligen vill nå snabbt —
+/// de öppna sessionerna och de sparade värdarna. Termius har en
+/// motsvarighet; det här är den delen av deras form som är värd att ta
+/// efter (till skillnad från deras tangentval, se `set_accels_for_action`).
+fn show_command_palette(
+    app: &adw::Application,
+    store: &Rc<RefCell<HostStore>>,
+    area: &Rc<SessionArea>,
+) {
+    let search = gtk::SearchEntry::builder()
+        .placeholder_text("Sök värd, tagg eller öppen session")
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(12)
+        .margin_bottom(6)
+        .build();
+
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::Single)
+        .css_classes(["boxed-list"])
+        .margin_start(12)
+        .margin_end(12)
+        .margin_bottom(12)
+        .build();
+
+    let scrolled = gtk::ScrolledWindow::builder()
+        .child(&list)
+        .vexpand(true)
+        .build();
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&search);
+    content.append(&scrolled);
+
+    // Ingen `adw::HeaderBar` här, till skillnad från appens övriga
+    // dialoger: en palett ska vara sökrutan, inget annat. Fönstertiteln
+    // sätts ändå av `dialog_window`, för fönsterhanterarens skull.
+    let win = dialog_window(&app_window(app), "Kommandopalett", DialogSize::List, &content);
+
+    let entries = Rc::new(palette_entries(area, store));
+    let visible: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
+    fill_palette_list(&list, &entries, "", &visible);
+
+    search.connect_search_changed(clone!(
+        #[weak]
+        list,
+        #[strong]
+        entries,
+        #[strong]
+        visible,
+        move |entry| {
+            fill_palette_list(&list, &entries, &entry.text(), &visible);
+        }
+    ));
+
+    let activate = clone!(
+        #[strong]
+        entries,
+        #[strong]
+        visible,
+        #[strong]
+        area,
+        #[strong]
+        store,
+        #[weak]
+        win,
+        move |row_index: i32| {
+            let Some(entry_index) = visible.borrow().get(row_index.max(0) as usize).copied() else {
+                return;
+            };
+            win.close();
+            match &entries[entry_index].action {
+                PaletteAction::Select(page) => {
+                    area.tab_view.set_selected_page(page);
+                }
+                PaletteAction::Connect(host) => {
+                    open_session(&area, &store, (**host).clone());
+                }
+            }
+        }
+    );
+
+    list.connect_row_activated(clone!(
+        #[strong]
+        activate,
+        move |_, row| activate(row.index())
+    ));
+
+    // Enter i sökrutan tar den markerade raden — man ska aldrig behöva
+    // flytta handen till musen eller ens till listan.
+    search.connect_activate(clone!(
+        #[weak]
+        list,
+        #[strong]
+        activate,
+        move |_| {
+            let index = list.selected_row().map(|row| row.index()).unwrap_or(0);
+            activate(index);
+        }
+    ));
+
+    // Upp/ner flyttar markeringen UTAN att flytta tangentbordsfokus från
+    // sökrutan — annars kan man inte fortsätta skriva efter att ha pilat.
+    let keys = gtk::EventControllerKey::new();
+    keys.connect_key_pressed(clone!(
+        #[weak]
+        list,
+        #[strong]
+        visible,
+        #[upgrade_or]
+        glib::Propagation::Proceed,
+        move |_, key, _, _| {
+            let step = match key {
+                gtk::gdk::Key::Down => 1,
+                gtk::gdk::Key::Up => -1,
+                _ => return glib::Propagation::Proceed,
+            };
+            let count = visible.borrow().len() as i32;
+            if count == 0 {
+                return glib::Propagation::Stop;
+            }
+            let current = list.selected_row().map(|row| row.index()).unwrap_or(0);
+            let next = (current + step).clamp(0, count - 1);
+            if let Some(row) = list.row_at_index(next) {
+                list.select_row(Some(&row));
+            }
+            glib::Propagation::Stop
+        }
+    ));
+    search.add_controller(keys);
+
+    win.present();
+    search.grab_focus();
+}
+
 fn sidebar_menu() -> gtk::gio::Menu {
     let menu = gtk::gio::Menu::new();
+
+    let palette = gtk::gio::Menu::new();
+    palette.append(Some("Kommandopalett"), Some("app.palette"));
+    menu.append_section(None, &palette);
 
     let connections = gtk::gio::Menu::new();
     connections.append(Some("Telnet"), Some("app.telnet"));
