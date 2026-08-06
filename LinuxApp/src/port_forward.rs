@@ -292,13 +292,10 @@ mod tests {
             let authorized_keys = dir.join("authorized_keys");
             std::fs::write(&authorized_keys, client_pub).ok()?;
 
-            // Port 0 här bara för att välja en ledig port INNAN sshd startar
-            // — sshd själv kan inte binda "0" (OS-tilldelad), så en riktig
-            // ledig port hittas via en kort TCP-bind-och-släpp.
-            let port = {
-                let l = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
-                l.local_addr().ok()?.port()
-            };
+            // sshd kan inte binda "0" (OS-tilldelad), så en riktig ledig port
+            // måste hittas i förväg — och reserveras, annars kan ett annat
+            // test i samma process välja samma port ur samma glapp.
+            let port = crate::test_support::reserve_port()?;
 
             let config_path = dir.join("sshd_config");
             std::fs::write(
@@ -314,7 +311,7 @@ mod tests {
             )
             .ok()?;
 
-            let child = Command::new("/usr/sbin/sshd")
+            let mut child = Command::new("/usr/sbin/sshd")
                 .args(["-f"])
                 .arg(&config_path)
                 .args(["-D", "-e"])
@@ -323,14 +320,13 @@ mod tests {
                 .spawn()
                 .ok()?;
 
-            // Vänta tills porten faktiskt lyssnar, inte en gissad fast sleep.
-            for _ in 0..50 {
-                if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
-                    return Some(TestSshd { child, port, dir });
-                }
-                std::thread::sleep(std::time::Duration::from_millis(100));
+            // Vänta tills VÅR sshd faktiskt lyssnar, inte en gissad fast sleep
+            // och inte någon annans lyssnare på samma port.
+            if !crate::test_support::wait_until_listening(&mut child, port) {
+                let _ = std::fs::remove_dir_all(&dir);
+                return None;
             }
-            None
+            Some(TestSshd { child, port, dir })
         }
 
         fn client_key_path(&self) -> String {

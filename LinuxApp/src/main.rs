@@ -28,6 +28,8 @@ mod snippet;
 mod socks_proxy;
 mod ssh;
 mod tab_title;
+#[cfg(test)]
+mod test_support;
 mod ssh_config;
 mod sync;
 mod sync_crypto;
