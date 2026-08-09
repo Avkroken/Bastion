@@ -26,7 +26,7 @@ let package = Package(
         // den här pinningen (74 misslyckade körningar innan, 0 lyckade).
         // Ta bort pinningen och gå tillbaka till `from:` när uppströms
         // löser #3647 på riktigt.
-        .package(url: "https://github.com/apple/swift-nio.git", exact: "2.86.2"),
+        .package(url: "https://github.com/apple/swift-nio.git", exact: "2.101.3"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.5.0"),
     ],
     targets: [
