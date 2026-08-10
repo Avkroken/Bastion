@@ -106,8 +106,9 @@ ordning nyttan per arbetsinsats är störst):
 
 1. **Tangentbordsgenvägar + kommandopalett.** Störst daglig nytta, helt
    fristående, inget protokollarbete. Genvägarna behövs ändå.
-2. **Delad vy (split).** `gtk::Paned` runt den befintliga terminalvyn;
-   flikarna finns redan.
+2. **Delad vy (split).** ✅ KLART 2026-08-10 — `LinuxApp/src/split.rs`,
+   ett träd av `gtk::Paned` med `Ctrl+Shift+E`/`O`/`X`, utan övre gräns
+   på antalet rutor (Termius slutar vid 16). Se "Klart".
 3. **En samlad plats för sparad data.** Rör mest UI-struktur och bör
    göras efter att genvägarna finns, så navigeringen kan byggas åt båda
    hållen samtidigt.
@@ -410,6 +411,78 @@ ordning nyttan per arbetsinsats är störst):
    — se "Uppskjutet med avsikt"-beslutet nedan.)
 
 ## Klart
+
+- **Delad vy — flera terminaler i samma flik** (2026-08-10, ny
+  `LinuxApp/src/split.rs` + `LinuxApp/src/main.rs`) — steg 2 på
+  prioriteringslistan under "Riktmärke: Termius". Appen hade flikar men
+  ingen delad vy, så två maskiner samtidigt betydde att byta flik fram
+  och tillbaka:
+  - **Ett träd av `gtk::Paned`, inget rutnät.** En ruta som delas byts
+    ut mot en `Paned` med sig själv i ena halvan och den nya rutan i den
+    andra. Det ger godtyckliga layouter (dela höger, dela sedan den
+    nedre halvan, …) utan någon egen layoutkod, och är samma modell som
+    tmux och Terminator. Termius Split View slutar vid 16 rutor; här
+    finns ingen övre gräns, det är fönstrets storlek som blir gränsen.
+  - **Varje terminalflik har en `pane_root`.** `AdwTabPage:child` är
+    CONSTRUCT_ONLY — en sidas barn går inte att byta ut i efterhand, så
+    en flik vars barn är terminalen SJÄLV kan aldrig delas. Därför får
+    varje terminalflik en tom `gtk::Box` som barn, med terminalen (eller
+    `Paned`-trädet) i sig.
+  - **`app.split-right` / `app.split-down` / `app.close-pane`**,
+    `Ctrl+Shift+E` / `O` / `X`. `E` och `O` är Terminators, Tilix och
+    GNOME Terminals gemensamma val — den som redan delar rutor på Linux
+    har dem i fingrarna. Menyposterna heter efter RIKTNINGEN, inte efter
+    avdelarens orientering: "vertikal delning" betyder motsatsen till
+    vad de flesta gissar. Posterna gråas ut när ingen session är öppen.
+  - **Delning öppnar en till session mot samma sak**, utan att fråga om
+    det som redan är känt. Värden (och ev. jump-host) ligger på
+    terminalwidgeten; lösenordet gör det INTE — en `AskPassword`-värd
+    frågar igen, en hemlighet ska inte ligga kvar på en widget längre än
+    den behöver. Seriella rutor går med flit inte att dela: en fysisk
+    port kan bara öppnas av en process i taget.
+  - **Widgetträdet är enda sanningen.** Ingen parallell layoutmodell vid
+    sidan om — GTK vet redan hur rutorna sitter, och en kopia hade bara
+    kunnat hamna ur synk. Priset är att modulen inte är enhetstestbar
+    utan display; den verifierades i stället genom att appen KÖRDES
+    (Xvfb + `xdotool`) mot en riktig `sshd` och en riktig telnet-server:
+    delning åt båda hållen, kollaps vid stängning, `exit` i fjärrskalet,
+    fokus, och antalet levande TCP-anslutningar mätt med `ss` i varje
+    steg.
+  - **Buggen körningen avslöjade — anslutningar stängdes ALDRIG**
+    (fanns före delad vy, gällde flikstängning också). Städningen tog
+    bort EN klon av indatakanalens sändare, men `connect_commit` håller
+    en egen så länge terminalwidgeten lever — och widgeten levde, för
+    `clone!(#[weak] terminal, async move …)` uppgraderar för ett
+    ASYNC-BLOCK den svaga referensen till en STARK och håller den så
+    länge framtiden kör (verifierat i `glib-macros`-källan). Cykeln:
+    framtiden höll terminalen, terminalen höll sändaren, sändaren höll
+    bakgrundsloopen vid liv, och loopen var den enda som kunde skicka
+    `Closed` och avsluta framtiden. Följden var att en stängd flik
+    lämnade sin SSH- eller telnet-anslutning öppen — mätt: tre
+    anslutningar levde vidare efter att både rutor och flik stängts.
+    Fixat genom att STÄNGA kanalen (`Sender::close()`, gäller alla
+    kloner) i stället för att droppa en klon. Efter fixen: 3 rutor → 3
+    anslutningar, en stängd ruta → 2, stängd flik → 0.
+  - **Varje ruta stängs två gånger**, och den andra gången höll på att
+    bli dyr: först stänger användaren rutan, sedan skickar
+    bakgrundstråden sitt `Closed`. Den andra omgången läste "ingen
+    `Paned` ovanför mig" som "jag är flikens sista ruta" och stängde
+    HELA FLIKEN med alla dess andra sessioner (reproducerat: en
+    `Ctrl+Shift+X` tog alla tre rutorna). `PaneClosed::AlreadyGone`
+    skiljer nu "redan borttagen" från "sista rutan".
+  - **`has_focus()` är fel fråga.** Den betyder "har den GLOBALA
+    inmatningsfokusen" och kräver ett aktivt fönster — utan
+    fönsterhanterare är den aldrig sann, och delningen träffade då alltid
+    den FÖRSTA rutan i stället för den man skrev i. VTE ritade ändå
+    fokuserad markör, så skärmbilden såg rätt ut medan koden hade fel.
+    Fönstrets egen fokuswidget (`GtkWindowExt::focus`) är sann oavsett.
+    Fokus nollas dessutom före bortkopplingen av en ruta, annars klagar
+    GTK en gång per stängd ruta ("Error finding last focus widget of
+    GtkPaned").
+  - **Kvar**: att flytta fokus mellan rutor med tangentbordet (i dag
+    musklick), att dra ihop två redan öppna FLIKAR till en delad vy
+    (Termius gör det genom att dra en flik på en annan), och en tydligare
+    markering av vilken ruta som är aktiv än VTE:s egen markörform.
 
 - **Åtgärder i kommandopaletten** (2026-08-06, `LinuxApp/src/main.rs` +
   nya `LinuxApp/src/palette_actions.rs`) — det "Kvar" kommandopaletten
