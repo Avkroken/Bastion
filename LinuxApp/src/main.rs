@@ -26,6 +26,7 @@ mod settings;
 mod sftp;
 mod snippet;
 mod socks_proxy;
+mod split;
 mod ssh;
 mod tab_title;
 #[cfg(test)]
@@ -400,6 +401,52 @@ fn build_ui(app: &adw::Application) {
     ));
     app.add_action(&focus_search_action);
 
+    // Delad vy. Riktningen ligger i åtgärdsnamnet och inte som parameter,
+    // eftersom de två är olika saker i menyn och har var sitt
+    // kortkommando — en parametriserad åtgärd hade bara flyttat samma två
+    // rader någon annanstans.
+    let split_right_action = gtk::gio::SimpleAction::new("split-right", None);
+    split_right_action.connect_activate(clone!(
+        #[strong]
+        area,
+        move |_, _| split_focused_pane(&area, gtk::Orientation::Horizontal)
+    ));
+    app.add_action(&split_right_action);
+
+    let split_down_action = gtk::gio::SimpleAction::new("split-down", None);
+    split_down_action.connect_activate(clone!(
+        #[strong]
+        area,
+        move |_, _| split_focused_pane(&area, gtk::Orientation::Vertical)
+    ));
+    app.add_action(&split_down_action);
+
+    let close_pane_action = gtk::gio::SimpleAction::new("close-pane", None);
+    close_pane_action.connect_activate(clone!(
+        #[strong]
+        area,
+        move |_, _| {
+            if area.tab_view.n_pages() == 0 {
+                return; // samma skydd som `app.close-tab`, se ovan
+            }
+            close_focused_pane(&area);
+        }
+    ));
+    app.add_action(&close_pane_action);
+
+    // Rutåtgärderna betyder ingenting utan en öppen session. I stället
+    // för att tyst inte göra något gråas de ut i menyn, vilket GTK sköter
+    // självt så fort åtgärden är avstängd.
+    let session_actions = vec![split_right_action, split_down_action, close_pane_action];
+    let set_session_actions_enabled = move |enabled: bool| {
+        for action in &session_actions {
+            action.set_enabled(enabled);
+        }
+    };
+    set_session_actions_enabled(area.tab_view.n_pages() > 0);
+    area.tab_view
+        .connect_n_pages_notify(move |view| set_session_actions_enabled(view.n_pages() > 0));
+
     // En enda parametriserad åtgärd i stället för nio nästan identiska:
     // `app.select-tab(3)` är samma sak för menyn, tangentbordet och en
     // framtida kommandopalett.
@@ -446,6 +493,14 @@ fn build_ui(app: &adw::Application) {
     app.set_accels_for_action("app.new-connection", &["<Ctrl><Shift>t"]);
     app.set_accels_for_action("app.close-tab", &["<Ctrl><Shift>w"]);
     app.set_accels_for_action("app.focus-search", &["<Ctrl><Shift>f"]);
+    // `E` och `O` för delning är Terminators, Tilix och GNOME Terminals
+    // gemensamma val — den som redan delar rutor på Linux har dem i
+    // fingrarna. Deras egna namn ("vertikalt"/"horisontellt") syftar på
+    // AVDELAREN och betyder motsatsen till vad de flesta gissar, så
+    // menyposterna här heter efter RIKTNINGEN i stället.
+    app.set_accels_for_action("app.split-right", &["<Ctrl><Shift>e"]);
+    app.set_accels_for_action("app.split-down", &["<Ctrl><Shift>o"]);
+    app.set_accels_for_action("app.close-pane", &["<Ctrl><Shift>x"]);
     app.set_accels_for_action("app.settings", &["<Ctrl>comma"]);
     for number in 1..=9 {
         app.set_accels_for_action(
@@ -1399,6 +1454,15 @@ fn sidebar_menu() -> gtk::gio::Menu {
     let palette = gtk::gio::Menu::new();
     palette.append(Some("Kommandopalett"), Some("app.palette"));
     menu.append_section(None, &palette);
+
+    // Riktningen, inte avdelarens orientering — se kommentaren vid
+    // `set_accels_for_action` om varför "vertikalt"/"horisontellt" är
+    // sämre namn än de ser ut att vara.
+    let panes = gtk::gio::Menu::new();
+    panes.append(Some("Dela åt höger"), Some("app.split-right"));
+    panes.append(Some("Dela nedåt"), Some("app.split-down"));
+    panes.append(Some("Stäng ruta"), Some("app.close-pane"));
+    menu.append_section(None, &panes);
 
     let connections = gtk::gio::Menu::new();
     connections.append(Some("Telnet"), Some("app.telnet"));
@@ -2372,8 +2436,10 @@ fn show_settings_dialog(
             let pages = area.tab_view.pages();
             for i in 0..pages.n_items() {
                 let Some(page) = pages.item(i).and_downcast::<adw::TabPage>() else { continue };
-                if let Some(terminal) = page.child().downcast_ref::<vte::Terminal>() {
-                    terminal_theme::apply(terminal, theme);
+                // Varje ruta i fliken — en delad flik har flera terminaler
+                // och alla ska byta tema, inte bara den första.
+                for terminal in split::terminals_in(&page.child()) {
+                    terminal_theme::apply(&terminal, theme);
                 }
             }
         }
@@ -2598,14 +2664,12 @@ impl SessionArea {
             #[strong]
             area,
             move |_, page| {
-                if let Some(terminal) = page.child().downcast_ref::<vte::Terminal>() {
-                    // Att droppa sändaren stänger av bakgrundstrådens select-loop
-                    // (input_rx.recv() → Err → run() returnerar), vilket i sin
-                    // tur stänger SSH-anslutningen rent istället för att lämna
-                    // den övergiven i bakgrunden efter att fliken stängts.
-                    unsafe {
-                        terminal.steal_data::<async_channel::Sender<Vec<u8>>>("bastion-ssh-input");
-                    }
+                // VARJE ruta i fliken, inte bara `page.child()`: med delad
+                // vy (`split.rs`) är sidans barn en behållare med ett träd
+                // av terminaler i, och en flik som stängs ska stänga alla
+                // sina anslutningar — inte bara den första.
+                for terminal in split::terminals_in(&page.child()) {
+                    close_session_channel(&terminal);
                 }
                 if let Some(content_box) = page.child().downcast_ref::<gtk::Box>() {
                     // Tunnel-flikens innehåll (om den här sidan råkar vara
@@ -2684,10 +2748,10 @@ fn open_session(area: &Rc<SessionArea>, store: &Rc<RefCell<HostStore>>, host: ho
         move |host, jump| {
             if matches!(host.auth, host::HostAuth::AskPassword) {
                 prompt_password_then(&area, host, move |area, host, password| {
-                    start_session(area, host, Some(password), jump.clone())
+                    start_session(area, host, Some(password), jump.clone(), SessionTarget::NewTab)
                 });
             } else {
-                start_session(&area, host, None, jump);
+                start_session(&area, host, None, jump, SessionTarget::NewTab);
             }
         }
     ));
@@ -2809,31 +2873,222 @@ fn tab_view_contains(area: &Rc<SessionArea>, page: &adw::TabPage) -> bool {
         .any(|open| &open == page)
 }
 
+/// Var en ny terminalsession ska hamna.
+#[derive(Clone)]
+enum SessionTarget {
+    /// En egen flik, som allt gjorde innan delad vy fanns.
+    NewTab,
+    /// Delad vy: `pane` (en redan öppen ruta) delas och sessionen hamnar i
+    /// den nya halvan av SAMMA flik. Fliken byter inte titel — den
+    /// beskriver fortfarande sessionen den öppnades för.
+    Split {
+        pane: vte::Terminal,
+        orientation: gtk::Orientation,
+    },
+}
+
+/// Vad en ruta är ansluten till, sparat på terminalwidgeten så att "dela
+/// vyn" kan öppna EN TILL session mot samma sak utan att fråga om det som
+/// redan är känt.
+///
+/// Lösenordet sparas medvetet INTE här. En `AskPassword`-värd frågar igen
+/// vid delning, precis som den gjorde när sessionen öppnades — ett
+/// lösenord som ligger kvar på en widget är en hemlighet som lever längre
+/// än den behöver.
+///
+/// Seriella sessioner har med flit ingen variant: en fysisk port kan bara
+/// öppnas av en process i taget, så "en till mot samma sak" finns inte.
+/// Delningsåtgärderna gör därför ingenting i en seriell ruta.
+#[derive(Clone)]
+enum PaneSource {
+    Ssh {
+        host: Box<host::Host>,
+        jump: Option<Box<host::Host>>,
+    },
+    Telnet {
+        host: String,
+        port: u16,
+    },
+}
+
+const PANE_SOURCE_KEY: &str = "bastion-pane-source";
+
+fn set_pane_source(terminal: &vte::Terminal, source: PaneSource) {
+    unsafe {
+        terminal.set_data(PANE_SOURCE_KEY, source);
+    }
+}
+
+fn pane_source(terminal: &vte::Terminal) -> Option<PaneSource> {
+    unsafe {
+        terminal
+            .data::<PaneSource>(PANE_SOURCE_KEY)
+            .map(|ptr| ptr.as_ref().clone())
+    }
+}
+
+/// Fliken som `widget` sitter i, om någon.
+fn page_containing(area: &Rc<SessionArea>, widget: &impl IsA<gtk::Widget>) -> Option<adw::TabPage> {
+    let widget = widget.as_ref();
+    let pages = area.tab_view.pages();
+    (0..pages.n_items())
+        .filter_map(|i| pages.item(i).and_downcast::<adw::TabPage>())
+        .find(|page| {
+            let child = page.child();
+            child == *widget || widget.is_ancestor(&child)
+        })
+}
+
+/// Sätter in en nybyggd terminal där `target` säger och ger tillbaka
+/// fliken den hamnade i. Delad av alla tre sessionsstartare (SSH/Telnet/
+/// Seriell) så att ETT ställe känner till både flik- och ruttfallet.
+///
+/// `title` gäller bara `NewTab` — en delad ruta ärver flikens titel.
+fn place_terminal(
+    area: &Rc<SessionArea>,
+    terminal: &vte::Terminal,
+    target: SessionTarget,
+    title: &str,
+) -> adw::TabPage {
+    if let SessionTarget::Split { pane, orientation } = target {
+        // Rutan kan ha hunnit stängas mellan att åtgärden aktiverades och
+        // att lösenordsdialogen besvarades. Sessionen är redan startad då
+        // — en ny flik är rätt svar, inte att tappa bort den.
+        if let Some(page) = page_containing(area, &pane) {
+            split::split(&pane, orientation, terminal);
+            terminal.grab_focus();
+            return page;
+        }
+    }
+
+    let root = split::pane_root();
+    root.append(terminal);
+    let page = area.tab_view.append(&root);
+    page.set_title(title);
+    area.tab_view.set_selected_page(&page);
+    area.update_placeholder();
+    terminal.grab_focus();
+    page
+}
+
+/// Stryper anslutningen bakom en terminal — SSH, Telnet och Seriell delar
+/// mekanism (`async_channel` in, händelser ut) och därför den här vägen ut.
+///
+/// Kanalen STÄNGS, den droppas inte. Skillnaden är hela poängen:
+/// `steal_data` tog bara bort EN klon av sändaren, och den räckte inte,
+/// för det finns alltid en till — `terminal.connect_commit` håller en egen
+/// så länge widgeten lever. Och widgeten levde: `glib::spawn_future_local`
+/// får sin terminal genom `clone!(#[weak] terminal, async move …)`, och
+/// för ett ASYNC-BLOCK uppgraderar makrot den svaga referensen till en
+/// STARK direkt och håller den så länge framtiden kör (verifierat i
+/// `glib-macros`-källan, inte antaget). Det slöt en cykel: framtiden höll
+/// terminalen, terminalen höll sändaren, sändaren höll bakgrundsloopen
+/// vid liv, och loopen var den enda som kunde skicka `Closed` och därmed
+/// avsluta framtiden. Följden var att en stängd flik lämnade sin
+/// anslutning ÖPPEN — mätt med `ss -tn` mot en riktig server, tre
+/// anslutningar levde vidare efter att både rutor och flik stängts.
+/// `Sender::close()` stänger kanalen för alla klonerna på en gång och
+/// bryter cykeln där den ska brytas.
+fn close_session_channel(terminal: &vte::Terminal) {
+    unsafe {
+        if let Some(input) = terminal.steal_data::<async_channel::Sender<Vec<u8>>>("bastion-ssh-input")
+        {
+            input.close();
+        }
+    }
+}
+
+/// Stänger EN ruta: stryper anslutningen och låter syskonrutan ta över
+/// platsen. Var rutan flikens enda stängs hela fliken, precis som innan
+/// delad vy fanns.
+fn close_session_pane(area: &Rc<SessionArea>, terminal: &vte::Terminal, page: &adw::TabPage) {
+    close_session_channel(terminal);
+    if split::close_pane(terminal) == split::PaneClosed::PageEmpty && tab_view_contains(area, page)
+    {
+        area.tab_view.close_page(page);
+    }
+}
+
+/// Delar den ruta som har fokus i den valda fliken och öppnar en till
+/// session mot samma sak i den nya halvan. Gör ingenting om fliken inte
+/// är en terminalflik (Docker/SFTP/tunnlar har inga rutor) eller om rutan
+/// inte går att duplicera (seriell port, se [`PaneSource`]).
+fn split_focused_pane(area: &Rc<SessionArea>, orientation: gtk::Orientation) {
+    let Some(page) = area.tab_view.selected_page() else {
+        return;
+    };
+    let Some(pane) = split::focused_terminal(&page.child()) else {
+        return;
+    };
+    let Some(source) = pane_source(&pane) else {
+        return;
+    };
+    let target = SessionTarget::Split { pane, orientation };
+
+    match source {
+        PaneSource::Ssh { host, jump } => {
+            let jump = jump.map(|j| *j);
+            let host = *host;
+            if matches!(host.auth, host::HostAuth::AskPassword) {
+                prompt_password_then(area, host, move |area, host, password| {
+                    start_session(area, host, Some(password), jump.clone(), target.clone());
+                });
+            } else {
+                start_session(area, host, None, jump, target);
+            }
+        }
+        PaneSource::Telnet { host, port } => start_telnet_session(area, host, port, target),
+    }
+}
+
+/// Stänger rutan med fokus. Ett kortkommando för den som har en hängd
+/// session i en av rutorna — en fungerande session stängs annars med
+/// `exit` i skalet, som den alltid har kunnat.
+fn close_focused_pane(area: &Rc<SessionArea>) {
+    let Some(page) = area.tab_view.selected_page() else {
+        return;
+    };
+    let Some(pane) = split::focused_terminal(&page.child()) else {
+        // Ingen terminal i fliken (Docker/SFTP/…): då är hela fliken det
+        // enda som finns att stänga, samma sak som `app.close-tab`.
+        area.tab_view.close_page(&page);
+        return;
+    };
+    close_session_pane(area, &pane, &page);
+}
+
 fn start_session(
     area: &Rc<SessionArea>,
     host: host::Host,
     password: Option<String>,
     jump: Option<host::Host>,
+    target: SessionTarget,
 ) {
     let terminal = new_themed_terminal();
 
     let cols = 80u32;
     let rows = 24u32;
-    let session = ssh::spawn_shell(host.clone(), password, cols, rows, jump);
+    let session = ssh::spawn_shell(host.clone(), password, cols, rows, jump.clone());
 
-    // Lagras på widgeten så close-page-hanteraren kan droppa sändaren och
-    // därmed stänga SSH-anslutningen när fliken stängs manuellt.
+    // Lagras på widgeten så städningen hittar kanalen och kan STÄNGA den
+    // när rutan eller fliken stängs — se `close_session_channel` för varför
+    // det måste vara en stängning och inte bara ett släpp.
     unsafe {
         terminal.set_data("bastion-ssh-input", session.input.clone());
     }
+    set_pane_source(
+        &terminal,
+        PaneSource::Ssh {
+            host: Box::new(host.clone()),
+            jump: jump.map(Box::new),
+        },
+    );
 
-    let page = area.tab_view.append(&terminal);
-    page.set_title(&unique_session_tab_title(
+    let title = unique_session_tab_title(
         area,
         &tab_title::base_title(&host.alias, &host.user, &host.host_name),
-    ));
-    area.tab_view.set_selected_page(&page);
-    area.update_placeholder();
+    );
+    let page = place_terminal(area, &terminal, target, &title);
 
     terminal.connect_commit(clone!(
         #[strong(rename_to = input)]
@@ -2863,9 +3118,7 @@ fn start_session(
                     }
                     SshEvent::Connected => {}
                     SshEvent::Closed => {
-                        if tab_view_contains(&area, &page) {
-                            area.tab_view.close_page(&page);
-                        }
+                        close_session_pane(&area, &terminal, &page);
                         break;
                     }
                 }
@@ -2882,18 +3135,22 @@ fn start_session(
 /// `terminal.set_data("bastion-ssh-input", …)`-nyckel återanvänds rakt av
 /// så den redan existerande generiska close-page-städningen (`SessionArea::
 /// new`) fungerar identiskt utan telnet-specifik kod där.
-fn start_telnet_session(area: &Rc<SessionArea>, host: String, port: u16) {
+fn start_telnet_session(area: &Rc<SessionArea>, host: String, port: u16, target: SessionTarget) {
     let terminal = new_themed_terminal();
     let handle = telnet::spawn(host.clone(), port);
 
     unsafe {
         terminal.set_data("bastion-ssh-input", handle.input.clone());
     }
+    set_pane_source(
+        &terminal,
+        PaneSource::Telnet {
+            host: host.clone(),
+            port,
+        },
+    );
 
-    let page = area.tab_view.append(&terminal);
-    page.set_title(&format!("{host}:{port} (telnet)"));
-    area.tab_view.set_selected_page(&page);
-    area.update_placeholder();
+    let page = place_terminal(area, &terminal, target, &format!("{host}:{port} (telnet)"));
 
     terminal.connect_commit(clone!(
         #[strong(rename_to = input)]
@@ -2923,9 +3180,7 @@ fn start_telnet_session(area: &Rc<SessionArea>, host: String, port: u16) {
                     }
                     telnet::TelnetEvent::Connected => {}
                     telnet::TelnetEvent::Closed => {
-                        if tab_view_contains(&area, &page) {
-                            area.tab_view.close_page(&page);
-                        }
+                        close_session_pane(&area, &terminal, &page);
                         break;
                     }
                 }
@@ -2991,7 +3246,7 @@ fn show_telnet_connect_dialog(app: &adw::Application, area: &Rc<SessionArea>) {
                 return;
             }
             win.close();
-            start_telnet_session(&area, host, port);
+            start_telnet_session(&area, host, port, SessionTarget::NewTab);
         }
     ));
 
@@ -3006,10 +3261,14 @@ fn start_serial_session(area: &Rc<SessionArea>, path: String, baud_rate: u32) {
         terminal.set_data("bastion-ssh-input", handle.input.clone());
     }
 
-    let page = area.tab_view.append(&terminal);
-    page.set_title(&format!("{path} ({baud_rate} baud)"));
-    area.tab_view.set_selected_page(&page);
-    area.update_placeholder();
+    // Ingen `set_pane_source`: en seriell port går inte att öppna två
+    // gånger, så rutan går inte att duplicera (se `PaneSource`).
+    let page = place_terminal(
+        area,
+        &terminal,
+        SessionTarget::NewTab,
+        &format!("{path} ({baud_rate} baud)"),
+    );
 
     terminal.connect_commit(clone!(
         #[strong(rename_to = input)]
@@ -3039,9 +3298,7 @@ fn start_serial_session(area: &Rc<SessionArea>, path: String, baud_rate: u32) {
                     }
                     serial::SerialEvent::Connected => {}
                     serial::SerialEvent::Closed => {
-                        if tab_view_contains(&area, &page) {
-                            area.tab_view.close_page(&page);
-                        }
+                        close_session_pane(&area, &terminal, &page);
                         break;
                     }
                 }
@@ -3220,7 +3477,7 @@ fn show_quick_connect_dialog(app: &adw::Application, area: &Rc<SessionArea>) {
                 Some(password)
             };
             win.close();
-            start_session(&area, host, password, None);
+            start_session(&area, host, password, None, SessionTarget::NewTab);
         }
     ));
 
@@ -5467,7 +5724,7 @@ fn build_container_row(
                     let mut shell_host = host.clone();
                     shell_host.startup_command = Some(cmd);
                     shell_host.alias = format!("{}: {}", host.alias, container.name);
-                    start_session(&area, shell_host, password.clone(), jump.clone());
+                    start_session(&area, shell_host, password.clone(), jump.clone(), SessionTarget::NewTab);
                 }
             }
         ));
@@ -5838,7 +6095,7 @@ fn launch_rendered_command(
     let mut h = host;
     h.startup_command = Some(command);
     h.alias = format!("{}: {title_suffix}", h.alias);
-    start_session(area, h, password, jump);
+    start_session(area, h, password, jump, SessionTarget::NewTab);
 }
 
 fn prompt_snippet_variables(

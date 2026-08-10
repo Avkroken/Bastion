@@ -89,6 +89,24 @@ const ACTIONS: &[CommandAction] = &[
         needs_session: false,
     },
     CommandAction {
+        label: "Dela åt höger",
+        action: "app.split-right",
+        keywords: "delad vy split ruta pane sida vid sida vertikalt",
+        needs_session: true,
+    },
+    CommandAction {
+        label: "Dela nedåt",
+        action: "app.split-down",
+        keywords: "delad vy split ruta pane under horisontellt",
+        needs_session: true,
+    },
+    CommandAction {
+        label: "Stäng ruta",
+        action: "app.close-pane",
+        keywords: "close pane ruta delad vy",
+        needs_session: true,
+    },
+    CommandAction {
         label: "Stäng fliken",
         action: "app.close-tab",
         keywords: "close tab avsluta session",
