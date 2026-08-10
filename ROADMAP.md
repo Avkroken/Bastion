@@ -109,9 +109,10 @@ ordning nyttan per arbetsinsats är störst):
 2. **Delad vy (split).** ✅ KLART 2026-08-10 — `LinuxApp/src/split.rs`,
    ett träd av `gtk::Paned` med `Ctrl+Shift+E`/`O`/`X`, utan övre gräns
    på antalet rutor (Termius slutar vid 16). Se "Klart".
-3. **En samlad plats för sparad data.** Rör mest UI-struktur och bör
-   göras efter att genvägarna finns, så navigeringen kan byggas åt båda
-   hållen samtidigt.
+3. **En samlad plats för sparad data.** ✅ KLART 2026-08-10 — sidopanelen
+   är ett valv med kategoriväljare (`LinuxApp/src/vault.rs`), två
+   dialogfönster borta och kända värdar har fått sin första UI. Se
+   "Klart".
 4. **Log-bookmarks** — det enda som återstår av Termius Pro-lista.
 
 ## Nästa steg (i ordning)
@@ -411,6 +412,58 @@ ordning nyttan per arbetsinsats är störst):
    — se "Uppskjutet med avsikt"-beslutet nedan.)
 
 ## Klart
+
+- **Valvet — allt sparat i en och samma sidopanel** (2026-08-10, ny
+  `LinuxApp/src/vault.rs` + `LinuxApp/src/known_hosts.rs` +
+  `LinuxApp/src/main.rs`) — steg 3 under "Riktmärke: Termius". Deras
+  uttalade skäl till att samla sparad data: "each new element increased
+  navigation complexity". Bastion hade precis det problemet:
+  - **Tre olika sätt att nå samma sorts sak.** Värdarna bodde i
+    sidopanelen, WireGuard-profiler och S3-anslutningar i var sitt
+    dialogfönster bakom primärmenyn, och kända värdnycklar hade INGEN
+    yta alls. Nu är sidopanelen ett valv med en kategoriväljare överst:
+    Värdar · WireGuard-profiler · S3-anslutningar · Kända värdar.
+    Sessionerna ligger kvar till höger — det är just den uppdelningen
+    (sparat till vänster, körande till höger) valvet handlar om.
+  - **Två dialogfönster borta.** `show_wireguard_profile_list` och
+    `show_s3_connection_list` är raderade; listorna de byggde bor i
+    panelen i stället. `parent_win`-parametern föll bort ur fyra
+    funktioner — redigeringsdialogerna tar numera huvudfönstret via
+    `app_window`. Menyposterna och palettraderna finns kvar och gör
+    samma sak, fast utan ett fönster till att stänga.
+  - **`+` betyder olika saker i olika kategorier** ("Lägg till värd",
+    "Ny WireGuard-profil", "Ny S3-anslutning") och GÖMS i Kända värdar,
+    där rader hamnar genom att man ansluter. Knappen byter `app.`-åtgärd
+    i stället för att förgrena i sin klickhanterare, så menyn, paletten
+    och kortkommandot fortsätter dela definition med den.
+  - **Kända värdar fick sin första UI.** `known_hosts.rs` kunde bara
+    läras in i och kontrolleras mot — felmeddelandet vid en ändrad
+    värdnyckel bad rent ut användaren att "ta bort motsvarande rad i
+    ~/.bastion/known_hosts manuellt". Nu listas varje värd med sitt
+    **fingeravtryck i OpenSSH:s form** (`SHA256:…`, samma sträng som
+    `ssh-keygen -lf` skriver — verifierat mot en riktig `sshd` i appen,
+    och mot en `ssh-keygen`-genererad vektor i ett permanent test), och
+    går att glömma bakom en bekräftelsedialog som säger vad det
+    innebär. `KnownHosts::forget` skriver om filen ATOMISKT: en halv
+    `known_hosts` hade tyst gjort de bortfallna värdarna `Learned` igen,
+    alltså tappat MITM-skyddet för dem.
+  - **Listan läses om från disk vid varje besök.** Varje ny SSH-session
+    kan lägga till en rad, och den raden skrivs av anslutningens egen
+    `KnownHosts`-instans. En cachad lista hade blivit inaktuell utan att
+    synas vara det. Ett LÄSFEL visas dessutom som en felrad — inte som
+    en tom lista, samma princip som `open` självt följer.
+  - **Tomma kategorier säger att de är tomma.** En tom `boxed-list`
+    ritas som en blank vit ruta, och en blank ruta går inte att skilja
+    från något trasigt.
+  - **`vault.rs` är GTK-fri och testad** (kategorilistan som ren data,
+    samma skäl som `palette_actions.rs`): id:n och etiketter unika, och
+    två tester som läser `main.rs` och kräver att varje kategori har en
+    stack-sida OCH att varje `+`-åtgärd finns registrerad. Båda felen är
+    tysta i GTK — ett okänt sidnamn i `set_visible_child_name` gör
+    ingenting alls, och ett okänt åtgärdsnamn gör knappen overksam.
+  - **Kvar**: kommandobiblioteket (snippets) är fortfarande per värd och
+    hör hemma i valvet som en femte kategori, och sökrutan filtrerar bara
+    värdar — den borde gälla vilken kategori som än visas.
 
 - **Delad vy — flera terminaler i samma flik** (2026-08-10, ny
   `LinuxApp/src/split.rs` + `LinuxApp/src/main.rs`) — steg 2 på

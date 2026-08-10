@@ -37,6 +37,7 @@ mod sync_crypto;
 mod tailscale;
 mod telnet;
 mod terminal_theme;
+mod vault;
 mod wake_on_lan;
 mod wireguard;
 
@@ -178,6 +179,41 @@ fn build_ui(app: &adw::Application) {
         .vexpand(true)
         .build();
 
+    // ── Valvet ────────────────────────────────────────────────────────
+    //
+    // Allt appen har SPARAT, i en och samma sidopanel: värdar, WireGuard-
+    // profiler, S3-anslutningar och kända värdnycklar. Se `vault.rs` för
+    // varför (kort: WireGuard och S3 låg i var sitt dialogfönster bakom
+    // primärmenyn, och kända värdar hade ingen yta alls). Sessionerna
+    // ligger kvar till höger — det är just den uppdelningen valvet
+    // handlar om.
+    let vault_stack = gtk::Stack::new();
+
+    let hosts_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    hosts_page.append(&search_entry);
+    hosts_page.append(&scrolled);
+    vault_stack.add_named(&hosts_page, Some("hosts"));
+
+    let wireguard_list = vault_list_box();
+    vault_stack.add_named(&vault_page(&wireguard_list), Some("wireguard"));
+    refresh_wireguard_profile_list(app, &wireguard_store, &wireguard_list);
+
+    let s3_list = vault_list_box();
+    vault_stack.add_named(&vault_page(&s3_list), Some("s3"));
+    refresh_s3_connection_list(app, &area, &s3_store, &s3_list);
+
+    let known_hosts_list = vault_list_box();
+    vault_stack.add_named(&vault_page(&known_hosts_list), Some("known-hosts"));
+    refresh_known_hosts_list(&known_hosts_list);
+
+    let category_dropdown = gtk::DropDown::builder()
+        .model(&gtk::StringList::new(&vault::labels()))
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .tooltip_text("Vad sidopanelen visar")
+        .build();
+
     // Åtgärderna ligger på APPEN, inte i en grupp på en widget. Skälet är
     // tangentbordet: `set_accels_for_action` når bara `app.`- och
     // `win.`-prefixade åtgärder, inte en egen grupp inlagd på en behållare.
@@ -200,22 +236,59 @@ fn build_ui(app: &adw::Application) {
         snippet_store,
         #[strong]
         search_query,
-        move |_, _| show_host_dialog(
-            &app,
-            &store,
-            &list,
-            &area,
-            &settings_store,
-            &snippet_store,
-            &search_query,
-            None
-        )
+        #[weak]
+        category_dropdown,
+        move |_, _| {
+            // Samma skäl som `focus-search`: den nya värden ska hamna i
+            // en lista som faktiskt syns.
+            select_vault_category(&category_dropdown, "hosts");
+            show_host_dialog(
+                &app,
+                &store,
+                &list,
+                &area,
+                &settings_store,
+                &snippet_store,
+                &search_query,
+                None,
+            );
+        }
     ));
     app.add_action(&new_host_action);
 
     let add_button = gtk::Button::from_icon_name("list-add-symbolic");
-    add_button.set_tooltip_text(Some("Lägg till värd"));
-    add_button.set_action_name(Some("app.new-host"));
+
+    // Kategorin styr både vad sidopanelen visar och vad `+` betyder.
+    // Knappen får en ny åtgärd i stället för en förgrening i sin
+    // klickhanterare — då fortsätter menyn, paletten och kortkommandot
+    // att dela definition med den (se kommentaren om `app.`-åtgärder
+    // ovan).
+    let apply_vault_category = clone!(
+        #[weak]
+        vault_stack,
+        #[weak]
+        add_button,
+        move |index: u32| {
+            let Some(category) = vault::at(index as usize) else {
+                return;
+            };
+            vault_stack.set_visible_child_name(category.id);
+            match &category.add {
+                Some(add) => {
+                    add_button.set_visible(true);
+                    add_button.set_tooltip_text(Some(add.tooltip));
+                    add_button.set_action_name(Some(add.action));
+                }
+                // Kända värdar: raderna hamnar där genom att man
+                // ansluter. En `+` hade lovat något som inte finns.
+                None => add_button.set_visible(false),
+            }
+        }
+    );
+    apply_vault_category(category_dropdown.selected());
+    category_dropdown.connect_selected_notify(move |dropdown| {
+        apply_vault_category(dropdown.selected());
+    });
 
     let quick_connect_action = gtk::gio::SimpleAction::new("new-connection", None);
     quick_connect_action.connect_activate(clone!(
@@ -307,27 +380,86 @@ fn build_ui(app: &adw::Application) {
     ));
     app.add_action(&tailscale_action);
 
+    // De två åtgärderna öppnade förr var sitt dialogfönster. Nu VÄLJER de
+    // kategori i valvet i stället — samma menypost och samma palettrad
+    // leder till samma sak, bara utan ett fönster till att stänga.
     let wireguard_action = gtk::gio::SimpleAction::new("wireguard", None);
     wireguard_action.connect_activate(clone!(
         #[weak]
-        app,
-        #[strong]
-        wireguard_store,
-        move |_, _| show_wireguard_profile_list(&app, &wireguard_store)
+        category_dropdown,
+        move |_, _| select_vault_category(&category_dropdown, "wireguard")
     ));
     app.add_action(&wireguard_action);
 
     let s3_action = gtk::gio::SimpleAction::new("s3", None);
     s3_action.connect_activate(clone!(
         #[weak]
+        category_dropdown,
+        move |_, _| select_vault_category(&category_dropdown, "s3")
+    ));
+    app.add_action(&s3_action);
+
+    let known_hosts_action = gtk::gio::SimpleAction::new("known-hosts", None);
+    known_hosts_action.connect_activate(clone!(
+        #[weak]
+        category_dropdown,
+        #[weak]
+        known_hosts_list,
+        move |_, _| {
+            // Listan läses om vid varje besök: sessioner lär in nya
+            // värdnycklar medan appen kör, och en lista som visar läget
+            // vid uppstart hade varit fel utan att synas vara det.
+            refresh_known_hosts_list(&known_hosts_list);
+            select_vault_category(&category_dropdown, "known-hosts");
+        }
+    ));
+    app.add_action(&known_hosts_action);
+
+    // `+`-knappens innebörd följer kategorin. Egna åtgärder i stället för
+    // en förgrening i knappens klickhanterare, så att de också går att nå
+    // från paletten och menyn.
+    let new_wireguard_action = gtk::gio::SimpleAction::new("new-wireguard", None);
+    new_wireguard_action.connect_activate(clone!(
+        #[weak]
+        app,
+        #[strong]
+        wireguard_store,
+        #[weak]
+        wireguard_list,
+        move |_, _| show_wireguard_profile_edit(
+            &app,
+            &wireguard_store,
+            &wireguard_list,
+            wireguard::WireGuardProfile::new(String::new(), wireguard::WireGuardConfig::default()),
+        )
+    ));
+    app.add_action(&new_wireguard_action);
+
+    let new_s3_action = gtk::gio::SimpleAction::new("new-s3", None);
+    new_s3_action.connect_activate(clone!(
+        #[weak]
         app,
         #[strong]
         area,
         #[strong]
         s3_store,
-        move |_, _| show_s3_connection_list(&app, &area, &s3_store)
+        #[weak]
+        s3_list,
+        move |_, _| show_s3_connection_edit(
+            &app,
+            &area,
+            &s3_store,
+            &s3_list,
+            s3::S3Connection::new(
+                String::new(),
+                String::new(),
+                "us-east-1".to_string(),
+                String::new(),
+                String::new(),
+            ),
+        )
     ));
-    app.add_action(&s3_action);
+    app.add_action(&new_s3_action);
 
     let settings_action = gtk::gio::SimpleAction::new("settings", None);
     settings_action.connect_activate(clone!(
@@ -395,7 +527,14 @@ fn build_ui(app: &adw::Application) {
     focus_search_action.connect_activate(clone!(
         #[weak]
         search_entry,
+        #[weak]
+        category_dropdown,
         move |_, _| {
+            // Sökrutan bor i valvets värdkategori. Står panelen på en
+            // annan kategori är rutan inte bara ofokuserad utan DOLD, och
+            // `grab_focus` på en dold widget misslyckas tyst — kommandot
+            // hade sett trasigt ut. Byt kategori först.
+            select_vault_category(&category_dropdown, "hosts");
             search_entry.grab_focus();
         }
     ));
@@ -522,11 +661,11 @@ fn build_ui(app: &adw::Application) {
 
     let sidebar_content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     sidebar_content.append(&sidebar_header);
-    sidebar_content.append(&search_entry);
-    sidebar_content.append(&scrolled);
+    sidebar_content.append(&category_dropdown);
+    sidebar_content.append(&vault_stack);
 
     let sidebar_page = adw::NavigationPage::builder()
-        .title("Värdar")
+        .title("Valv")
         .child(&sidebar_content)
         .build();
 
@@ -1469,10 +1608,15 @@ fn sidebar_menu() -> gtk::gio::Menu {
     connections.append(Some("Seriell/USB"), Some("app.serial"));
     menu.append_section(None, &connections);
 
+    // Valvets kategorier. Posterna öppnar inte längre var sitt fönster —
+    // de byter vad sidopanelen visar (se `vault.rs`). Tailscale står kvar
+    // bland dem för att den hör hemma i samma tanke ("var finns mina
+    // maskiner"), även om den är en upptäcktsdialog och inte sparad data.
     let network = gtk::gio::Menu::new();
     network.append(Some("Tailscale"), Some("app.tailscale"));
     network.append(Some("WireGuard-profiler"), Some("app.wireguard"));
     network.append(Some("S3-anslutningar"), Some("app.s3"));
+    network.append(Some("Kända värdar"), Some("app.known-hosts"));
     menu.append_section(None, &network);
 
     let app_menu = gtk::gio::Menu::new();
@@ -3715,67 +3859,170 @@ fn show_tailscale_discovery_dialog(
     win.present();
 }
 
-/// Lista över sparade WireGuard-profiler — toppnivå, inte kopplat till en
-/// specifik `Host` (en profil beskriver en VPN-anslutning, inte en
-/// SSH-värd). Samma v1-avgränsning som App/-motsvarigheten: profilhantering
-/// (klistra in/visa/redigera/ta bort `.conf`-text), INTE att faktiskt
-/// upprätta tunneln — se `wireguard.rs`s doc-kommentar.
-fn show_wireguard_profile_list(
-    app: &adw::Application,
-    wireguard_store: &Rc<RefCell<wireguard::WireGuardProfileStore>>,
-) {
-    let list = gtk::ListBox::builder()
+/// En lista i valvet — samma form som värdlistan, så att sidopanelen ser
+/// likadan ut oavsett kategori.
+fn vault_list_box() -> gtk::ListBox {
+    gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
         .css_classes(["boxed-list"])
         .margin_start(12)
         .margin_end(12)
         .margin_top(12)
         .margin_bottom(12)
-        .build();
-    let scrolled = gtk::ScrolledWindow::builder().child(&list).vexpand(true).build();
-
-    let add_button = gtk::Button::from_icon_name("list-add-symbolic");
-    add_button.set_tooltip_text(Some("Ny profil"));
-    let header = adw::HeaderBar::new();
-    header.pack_end(&add_button);
-
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    content.append(&header);
-    content.append(&scrolled);
-
-    let win = dialog_window(&app_window(app), "WireGuard-profiler", DialogSize::List, &content);
-
-    refresh_wireguard_profile_list(app, wireguard_store, &list, &win);
-
-    add_button.connect_clicked(clone!(
-        #[strong]
-        app,
-        #[strong]
-        wireguard_store,
-        #[weak]
-        list,
-        #[weak]
-        win,
-        move |_| show_wireguard_profile_edit(
-            &app,
-            &wireguard_store,
-            &list,
-            &win,
-            wireguard::WireGuardProfile::new(String::new(), wireguard::WireGuardConfig::default()),
-        )
-    ));
-
-    win.present();
+        .build()
 }
 
+/// Raden som visas när en valvkategori är tom.
+///
+/// En tom `boxed-list` ritas som en blank vit ruta, och en blank ruta går
+/// inte att skilja från något som gått sönder. Raden säger både att det
+/// är tomt och hur man fyller det.
+fn vault_empty_row(title: &str, subtitle: &str) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
+        .title(title)
+        .subtitle(subtitle)
+        .build();
+    row.set_sensitive(false);
+    row
+}
+
+/// Rullbar behållare runt en valvlista.
+fn vault_page(list: &gtk::ListBox) -> gtk::ScrolledWindow {
+    gtk::ScrolledWindow::builder()
+        .child(list)
+        .vexpand(true)
+        .build()
+}
+
+/// Byter kategori i valvet, angivet med `vault::VaultCategory::id`.
+///
+/// Går via väljaren och inte direkt till stacken: väljaren måste visa
+/// samma sak som panelen, annars står det "Värdar" ovanför en lista med
+/// S3-anslutningar. `set_selected` utlöser dess `notify`, som i sin tur
+/// byter sida — ett ställe som byter, inte två.
+fn select_vault_category(dropdown: &gtk::DropDown, id: &str) {
+    if let Some(index) = vault::index_of(id) {
+        dropdown.set_selected(index as u32);
+    }
+}
+
+/// Värdnycklarna appen litar på (`~/.bastion/known_hosts`), med möjlighet
+/// att glömma en.
+///
+/// Filen läses om från disk vid varje uppdatering i stället för att en
+/// laddad kopia hålls vid liv: varje ny SSH-session kan lägga till en rad
+/// (TOFU), och de raderna skrivs av anslutningens egen `KnownHosts`-
+/// instans, inte av den här. En cachad lista hade tyst blivit inaktuell.
+fn refresh_known_hosts_list(list: &gtk::ListBox) {
+    while let Some(row) = list.row_at_index(0) {
+        list.remove(&row);
+    }
+
+    let known = match known_hosts::KnownHosts::open(Some(known_hosts::KnownHosts::default_path())) {
+        Ok(known) => known,
+        Err(e) => {
+            // Ett läsfel får INTE se ut som "inga kända värdar" — det är
+            // hela poängen med att `open` fallerar i stället för att ge
+            // en tom karta (se `known_hosts::load`). Raden säger vad som
+            // hänt i stället för att panelen ser tom och lugn ut.
+            let row = adw::ActionRow::builder()
+                .title("Kunde inte läsa kända värdar")
+                .subtitle(e.to_string())
+                .build();
+            row.add_css_class("error");
+            list.append(&row);
+            return;
+        }
+    };
+
+    let entries = known.entries();
+    if entries.is_empty() {
+        list.append(&vault_empty_row(
+            "Inga kända värdar än",
+            "En värd hamnar här första gången du ansluter till den",
+        ));
+        return;
+    }
+
+    for entry in entries {
+        let row = adw::ActionRow::builder()
+            .title(&entry.id)
+            .subtitle(format!("{} · {}", entry.algorithm(), entry.fingerprint()))
+            .subtitle_selectable(true)
+            .build();
+
+        let forget_button = gtk::Button::from_icon_name("user-trash-symbolic");
+        forget_button.set_tooltip_text(Some("Glöm den här värdnyckeln"));
+        forget_button.add_css_class("flat");
+        forget_button.connect_clicked(clone!(
+            #[weak]
+            list,
+            #[strong(rename_to = id)]
+            entry.id,
+            move |button| {
+                // Bekräftelse först: att glömma en nyckel är att stänga
+                // av MITM-skyddet för den värden till nästa anslutning.
+                let dialog = adw::AlertDialog::new(
+                    Some("Glömma värdnyckeln?"),
+                    Some(&format!(
+                        "Nästa anslutning till {id} godtar vilken nyckel servern än \
+                         visar, utan att jämföra med den här. Gör det bara om du VET \
+                         att servern bytt nyckel."
+                    )),
+                );
+                dialog.add_response("cancel", "Avbryt");
+                dialog.add_response("forget", "Glöm");
+                dialog.set_response_appearance("forget", adw::ResponseAppearance::Destructive);
+                dialog.set_default_response(Some("cancel"));
+                dialog.connect_response(
+                    None,
+                    clone!(
+                        #[weak]
+                        list,
+                        #[strong]
+                        id,
+                        move |_, response| {
+                            if response != "forget" {
+                                return;
+                            }
+                            let opened = known_hosts::KnownHosts::open(Some(
+                                known_hosts::KnownHosts::default_path(),
+                            ));
+                            match opened.and_then(|known| known.forget(&id)) {
+                                Ok(_) => refresh_known_hosts_list(&list),
+                                Err(e) => eprintln!("kunde inte glömma värdnyckeln: {e}"),
+                            }
+                        }
+                    ),
+                );
+                dialog.present(Some(button));
+            }
+        ));
+        row.add_suffix(&forget_button);
+
+        list.append(&row);
+    }
+}
+
+/// Valvets WireGuard-profiler — toppnivå, inte kopplat till en specifik
+/// `Host` (en profil beskriver en VPN-anslutning, inte en SSH-värd).
+/// Samma v1-avgränsning som App/-motsvarigheten: profilhantering
+/// (klistra in/visa/redigera/ta bort `.conf`-text), INTE att faktiskt
+/// upprätta tunneln — se `wireguard.rs`s doc-kommentar.
 fn refresh_wireguard_profile_list(
     app: &adw::Application,
     wireguard_store: &Rc<RefCell<wireguard::WireGuardProfileStore>>,
     list: &gtk::ListBox,
-    parent_win: &adw::Window,
 ) {
     while let Some(row) = list.row_at_index(0) {
         list.remove(&row);
+    }
+    if wireguard_store.borrow().all().is_empty() {
+        list.append(&vault_empty_row(
+            "Inga profiler än",
+            "Lägg till en med + och klistra in din .conf-text",
+        ));
+        return;
     }
     for profile in wireguard_store.borrow().all() {
         let address = profile
@@ -3802,8 +4049,6 @@ fn refresh_wireguard_profile_list(
             wireguard_store,
             #[weak]
             list,
-            #[weak]
-            parent_win,
             #[strong(rename_to = profile_id)]
             profile.id,
             move |_| {
@@ -3811,7 +4056,7 @@ fn refresh_wireguard_profile_list(
                     eprintln!("kunde inte ta bort wireguard-profilen: {e}");
                     return;
                 }
-                refresh_wireguard_profile_list(&app, &wireguard_store, &list, &parent_win);
+                refresh_wireguard_profile_list(&app, &wireguard_store, &list);
             }
         ));
         row.add_suffix(&delete_button);
@@ -3823,11 +4068,9 @@ fn refresh_wireguard_profile_list(
             wireguard_store,
             #[weak]
             list,
-            #[weak]
-            parent_win,
             #[strong]
             profile,
-            move |_| show_wireguard_profile_edit(&app, &wireguard_store, &list, &parent_win, profile.clone())
+            move |_| show_wireguard_profile_edit(&app, &wireguard_store, &list, profile.clone())
         ));
 
         list.append(&row);
@@ -3843,7 +4086,6 @@ fn show_wireguard_profile_edit(
     app: &adw::Application,
     wireguard_store: &Rc<RefCell<wireguard::WireGuardProfileStore>>,
     list: &gtk::ListBox,
-    parent_win: &adw::Window,
     profile: wireguard::WireGuardProfile,
 ) {
     let name_row = adw::EntryRow::builder().title("Namn").text(&profile.name).build();
@@ -3875,7 +4117,7 @@ fn show_wireguard_profile_edit(
     content.append(&page);
     content.append(&text_scrolled);
 
-    let win = dialog_window(parent_win, "WireGuard-profil", DialogSize::Form, &content);
+    let win = dialog_window(&app_window(app), "WireGuard-profil", DialogSize::Form, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -3889,8 +4131,6 @@ fn show_wireguard_profile_edit(
         wireguard_store,
         #[weak]
         list,
-        #[strong]
-        parent_win,
         #[weak]
         win,
         #[strong]
@@ -3909,7 +4149,7 @@ fn show_wireguard_profile_edit(
                 eprintln!("kunde inte spara wireguard-profilen: {e}");
                 return;
             }
-            refresh_wireguard_profile_list(&app, &wireguard_store, &list, &parent_win);
+            refresh_wireguard_profile_list(&app, &wireguard_store, &list);
             win.close();
         }
     ));
@@ -3917,76 +4157,24 @@ fn show_wireguard_profile_edit(
     win.present();
 }
 
-/// Lista över sparade S3-anslutningar. "Bläddra" på en rad öppnar en
-/// bucket-/objektbläddare i en ny flik (`open_s3_bucket_browser`); raden
-/// själv öppnar redigeringsdialogen (namn/endpoint/region/nycklar).
-fn show_s3_connection_list(
-    app: &adw::Application,
-    area: &Rc<SessionArea>,
-    s3_store: &Rc<RefCell<s3::S3ConnectionStore>>,
-) {
-    let list = gtk::ListBox::builder()
-        .selection_mode(gtk::SelectionMode::None)
-        .css_classes(["boxed-list"])
-        .margin_start(12)
-        .margin_end(12)
-        .margin_top(12)
-        .margin_bottom(12)
-        .build();
-    let scrolled = gtk::ScrolledWindow::builder().child(&list).vexpand(true).build();
-
-    let add_button = gtk::Button::from_icon_name("list-add-symbolic");
-    add_button.set_tooltip_text(Some("Ny anslutning"));
-    let header = adw::HeaderBar::new();
-    header.pack_end(&add_button);
-
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    content.append(&header);
-    content.append(&scrolled);
-
-    let win = dialog_window(&app_window(app), "S3-anslutningar", DialogSize::List, &content);
-
-    refresh_s3_connection_list(app, area, s3_store, &list, &win);
-
-    add_button.connect_clicked(clone!(
-        #[strong]
-        app,
-        #[strong]
-        area,
-        #[strong]
-        s3_store,
-        #[weak]
-        list,
-        #[weak]
-        win,
-        move |_| show_s3_connection_edit(
-            &app,
-            &area,
-            &s3_store,
-            &list,
-            &win,
-            s3::S3Connection::new(
-                String::new(),
-                String::new(),
-                "us-east-1".to_string(),
-                String::new(),
-                String::new(),
-            ),
-        )
-    ));
-
-    win.present();
-}
-
+/// Valvets S3-anslutningar. "Bläddra" på en rad öppnar en bucket-/
+/// objektbläddare i en ny flik (`open_s3_bucket_browser`); raden själv
+/// öppnar redigeringsdialogen (namn/endpoint/region/nycklar).
 fn refresh_s3_connection_list(
     app: &adw::Application,
     area: &Rc<SessionArea>,
     s3_store: &Rc<RefCell<s3::S3ConnectionStore>>,
     list: &gtk::ListBox,
-    parent_win: &adw::Window,
 ) {
     while let Some(row) = list.row_at_index(0) {
         list.remove(&row);
+    }
+    if s3_store.borrow().all().is_empty() {
+        list.append(&vault_empty_row(
+            "Inga anslutningar än",
+            "Lägg till en med + (endpoint, region och nycklar)",
+        ));
+        return;
     }
     for connection in s3_store.borrow().all() {
         let row = adw::ActionRow::builder()
@@ -4001,13 +4189,13 @@ fn refresh_s3_connection_list(
         browse_button.connect_clicked(clone!(
             #[strong]
             area,
-            #[weak]
-            parent_win,
             #[strong]
             connection,
             move |_| {
+                // Ingen stängning här längre: listan bor i sidopanelen,
+                // och det som förr var dialogfönstret är numera appens
+                // huvudfönster.
                 open_s3_bucket_browser(&area, connection.clone());
-                parent_win.close();
             }
         ));
         row.add_suffix(&browse_button);
@@ -4024,8 +4212,6 @@ fn refresh_s3_connection_list(
             s3_store,
             #[weak]
             list,
-            #[weak]
-            parent_win,
             #[strong(rename_to = connection_id)]
             connection.id,
             move |_| {
@@ -4033,7 +4219,7 @@ fn refresh_s3_connection_list(
                     eprintln!("kunde inte ta bort s3-anslutningen: {e}");
                     return;
                 }
-                refresh_s3_connection_list(&app, &area, &s3_store, &list, &parent_win);
+                refresh_s3_connection_list(&app, &area, &s3_store, &list);
             }
         ));
         row.add_suffix(&delete_button);
@@ -4047,11 +4233,9 @@ fn refresh_s3_connection_list(
             s3_store,
             #[weak]
             list,
-            #[weak]
-            parent_win,
             #[strong]
             connection,
-            move |_| show_s3_connection_edit(&app, &area, &s3_store, &list, &parent_win, connection.clone())
+            move |_| show_s3_connection_edit(&app, &area, &s3_store, &list, connection.clone())
         ));
 
         list.append(&row);
@@ -4063,7 +4247,6 @@ fn show_s3_connection_edit(
     area: &Rc<SessionArea>,
     s3_store: &Rc<RefCell<s3::S3ConnectionStore>>,
     list: &gtk::ListBox,
-    parent_win: &adw::Window,
     connection: s3::S3Connection,
 ) {
     let name_row = adw::EntryRow::builder().title("Namn").text(&connection.name).build();
@@ -4112,7 +4295,7 @@ fn show_s3_connection_edit(
     content.append(&test_button);
     content.append(&test_status_label);
 
-    let win = dialog_window(parent_win, "S3-anslutning", DialogSize::Form, &content);
+    let win = dialog_window(&app_window(app), "S3-anslutning", DialogSize::Form, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -4176,8 +4359,6 @@ fn show_s3_connection_edit(
         s3_store,
         #[weak]
         list,
-        #[strong]
-        parent_win,
         #[weak]
         win,
         #[strong]
@@ -4198,7 +4379,7 @@ fn show_s3_connection_edit(
                 eprintln!("kunde inte spara s3-anslutningen: {e}");
                 return;
             }
-            refresh_s3_connection_list(&app, &area, &s3_store, &list, &parent_win);
+            refresh_s3_connection_list(&app, &area, &s3_store, &list);
             win.close();
         }
     ));

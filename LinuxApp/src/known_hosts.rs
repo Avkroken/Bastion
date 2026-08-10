@@ -23,6 +23,48 @@ pub struct KnownHosts {
     entries: Mutex<HashMap<String, String>>,
 }
 
+/// En ihågkommen värdnyckel som den visas för användaren.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnownHostEntry {
+    /// `värd:port` — samma id som `check` slår upp på.
+    pub id: String,
+    /// Nyckeln som den lagrats: `"<algoritm> <base64>"`.
+    pub key: String,
+}
+
+impl KnownHostEntry {
+    /// Nyckelns algoritm, t.ex. `ssh-ed25519`. Tom sträng om raden inte
+    /// har den formen (filen kan vara handredigerad).
+    pub fn algorithm(&self) -> &str {
+        self.key.split_whitespace().next().unwrap_or("")
+    }
+
+    /// Fingeravtrycket i OpenSSH:s form, `SHA256:<base64 utan padding>` —
+    /// samma sträng som `ssh-keygen -lf` skriver ut, så den går att
+    /// jämföra med vad serverns ägare uppger utan att räkna om något.
+    /// Att visa hela base64-nyckeln i en lista hade varit oläsbart och
+    /// ändå inte gått att jämföra i huvudet.
+    ///
+    /// Går nyckeln inte att avkoda (handredigerad fil) blir svaret
+    /// nyckelsträngen som den står — hellre något ärligt än ett påhittat
+    /// fingeravtryck.
+    pub fn fingerprint(&self) -> String {
+        use base64::Engine;
+        let Some(encoded) = self.key.split_whitespace().nth(1) else {
+            return self.key.clone();
+        };
+        let Ok(blob) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
+            return self.key.clone();
+        };
+        use sha2::Digest;
+        let digest = sha2::Sha256::digest(&blob);
+        format!(
+            "SHA256:{}",
+            base64::engine::general_purpose::STANDARD_NO_PAD.encode(digest)
+        )
+    }
+}
+
 impl KnownHosts {
     pub fn default_path() -> PathBuf {
         // I testbinären pekas standardsökvägen om till en temporär fil.
@@ -101,6 +143,58 @@ impl KnownHosts {
             self.append(&id, key_string);
             Verdict::Learned
         }
+    }
+
+    /// Alla ihågkomna värdar, sorterade på id — underlaget för valvets
+    /// "Kända värdar". Filen var fram tills nu skrivbar bara av appen
+    /// själv och läsbar bara med en texteditor: felmeddelandet vid en
+    /// ändrad värdnyckel bad rent ut användaren att "ta bort motsvarande
+    /// rad i ~/.bastion/known_hosts manuellt".
+    pub fn entries(&self) -> Vec<KnownHostEntry> {
+        let entries = self.entries.lock().expect("known_hosts-låset förgiftat");
+        let mut all: Vec<KnownHostEntry> = entries
+            .iter()
+            .map(|(id, key)| KnownHostEntry {
+                id: id.clone(),
+                key: key.clone(),
+            })
+            .collect();
+        all.sort_by(|a, b| a.id.cmp(&b.id));
+        all
+    }
+
+    /// Glömmer en värd. Sant om den fanns.
+    ///
+    /// Hela filen skrivs om — `append` duger inte för borttagning — och
+    /// det sker atomiskt via `fsutil::atomic_write`, så ett avbrott mitt i
+    /// inte kan lämna en HALV `known_hosts` efter sig. En halv fil är
+    /// värre än ingen: de värdar som försvann blir tysta `Learned` igen
+    /// nästa gång, alltså precis det MITM-skydd filen finns för.
+    pub fn forget(&self, id: &str) -> std::io::Result<bool> {
+        let mut entries = self.entries.lock().expect("known_hosts-låset förgiftat");
+        if entries.remove(id).is_none() {
+            return Ok(false);
+        }
+        let Some(path) = &self.path else {
+            return Ok(true);
+        };
+
+        let mut lines: Vec<String> = entries
+            .iter()
+            .map(|(id, key)| format!("{id} {key}"))
+            .collect();
+        lines.sort();
+        let mut text = lines.join("\n");
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        crate::fsutil::atomic_write(path, text.as_bytes())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
+        Ok(true)
     }
 
     fn append(&self, id: &str, key_string: &str) {
@@ -214,5 +308,76 @@ mod tests {
         );
 
         std::fs::remove_dir_all(path).ok();
+    }
+
+    /// En RIKTIG ed25519-nyckel och det fingeravtryck `ssh-keygen -lf`
+    /// själv skrev ut för den (`ssh-keygen -q -N "" -t ed25519`, avläst
+    /// 2026-08-10). Poängen med en extern vektor är att testet inte kan
+    /// gå grönt mot vår egen felaktiga uträkning — det är OpenSSH:s
+    /// utdata som är facit, eftersom det är den strängen en
+    /// serveradministratör uppger.
+    #[test]
+    fn fingerprint_matches_what_ssh_keygen_prints() {
+        let entry = KnownHostEntry {
+            id: "example.com:22".into(),
+            key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDqNLHNI/tSXY+pQuTuyCmK68015Ihvn3ntQ62RJ79ZO"
+                .into(),
+        };
+        assert_eq!(
+            entry.fingerprint(),
+            "SHA256:nuTHjGaQhXNcV+k6CdwNSEKspddAuMD5PSIw8Ce4jkI"
+        );
+        assert_eq!(entry.algorithm(), "ssh-ed25519");
+    }
+
+    /// En handredigerad fil ska inte ge ett PÅHITTAT fingeravtryck.
+    #[test]
+    fn an_undecodable_key_shows_itself_instead_of_a_made_up_fingerprint() {
+        let entry = KnownHostEntry {
+            id: "example.com:22".into(),
+            key: "detta-är-inte-en-nyckel".into(),
+        };
+        assert_eq!(entry.fingerprint(), "detta-är-inte-en-nyckel");
+        assert_eq!(entry.algorithm(), "detta-är-inte-en-nyckel");
+    }
+
+    #[test]
+    fn entries_are_listed_sorted_and_forget_removes_one_for_good() {
+        let path = temp_path();
+        let kh = KnownHosts::open(Some(path.clone())).unwrap();
+        kh.check("zeta.example", 22, "ssh-ed25519 AAAAZ");
+        kh.check("alfa.example", 22, "ssh-ed25519 AAAAA");
+        kh.check("alfa.example", 2222, "ssh-ed25519 AAAAB");
+
+        let ids: Vec<String> = kh.entries().into_iter().map(|e| e.id).collect();
+        assert_eq!(
+            ids,
+            vec!["alfa.example:22", "alfa.example:2222", "zeta.example:22"]
+        );
+
+        assert!(kh.forget("alfa.example:22").unwrap());
+        assert!(
+            !kh.forget("alfa.example:22").unwrap(),
+            "att glömma något redan glömt är inte ett fel, men inte heller en ändring"
+        );
+
+        // Det viktiga: borttagningen ska överleva en omstart av appen,
+        // och de ANDRA raderna ska finnas kvar. En omskrivning som råkar
+        // tappa syskonraderna hade tyst tagit bort MITM-skyddet för dem.
+        let reopened = KnownHosts::open(Some(path.clone())).unwrap();
+        let ids: Vec<String> = reopened.entries().into_iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec!["alfa.example:2222", "zeta.example:22"]);
+        assert_eq!(
+            reopened.check("alfa.example", 2222, "ssh-ed25519 AAAAB"),
+            Verdict::Trusted,
+            "den kvarvarande värden ska fortfarande vara betrodd, inte inlärd på nytt"
+        );
+        assert_eq!(
+            reopened.check("alfa.example", 22, "ssh-ed25519 AAAA-NY"),
+            Verdict::Learned,
+            "den glömda värden ska läras in på nytt, inte rapporteras som ändrad"
+        );
+
+        std::fs::remove_file(path).ok();
     }
 }
