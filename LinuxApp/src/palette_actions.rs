@@ -67,13 +67,31 @@ const ACTIONS: &[CommandAction] = &[
     CommandAction {
         label: "WireGuard-profiler",
         action: "app.wireguard",
-        keywords: "nätverk vpn tunnel profil",
+        keywords: "nätverk vpn tunnel profil valv",
         needs_session: false,
     },
     CommandAction {
         label: "S3-anslutningar",
         action: "app.s3",
-        keywords: "lagring bucket objekt minio storage",
+        keywords: "lagring bucket objekt minio storage valv",
+        needs_session: false,
+    },
+    CommandAction {
+        label: "Kända värdar",
+        action: "app.known-hosts",
+        keywords: "known_hosts värdnyckel fingeravtryck tofu valv glöm",
+        needs_session: false,
+    },
+    CommandAction {
+        label: "Ny WireGuard-profil",
+        action: "app.new-wireguard",
+        keywords: "lägg till vpn tunnel conf",
+        needs_session: false,
+    },
+    CommandAction {
+        label: "Ny S3-anslutning",
+        action: "app.new-s3",
+        keywords: "lägg till lagring bucket minio",
         needs_session: false,
     },
     CommandAction {
@@ -87,6 +105,24 @@ const ACTIONS: &[CommandAction] = &[
         action: "app.settings",
         keywords: "inställningar settings preferenser val",
         needs_session: false,
+    },
+    CommandAction {
+        label: "Dela åt höger",
+        action: "app.split-right",
+        keywords: "delad vy split ruta pane sida vid sida vertikalt",
+        needs_session: true,
+    },
+    CommandAction {
+        label: "Dela nedåt",
+        action: "app.split-down",
+        keywords: "delad vy split ruta pane under horisontellt",
+        needs_session: true,
+    },
+    CommandAction {
+        label: "Stäng ruta",
+        action: "app.close-pane",
+        keywords: "close pane ruta delad vy",
+        needs_session: true,
     },
     CommandAction {
         label: "Stäng fliken",

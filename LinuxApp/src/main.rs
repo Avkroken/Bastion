@@ -26,6 +26,7 @@ mod settings;
 mod sftp;
 mod snippet;
 mod socks_proxy;
+mod split;
 mod ssh;
 mod tab_title;
 #[cfg(test)]
@@ -36,6 +37,7 @@ mod sync_crypto;
 mod tailscale;
 mod telnet;
 mod terminal_theme;
+mod vault;
 mod wake_on_lan;
 mod wireguard;
 
@@ -177,6 +179,41 @@ fn build_ui(app: &adw::Application) {
         .vexpand(true)
         .build();
 
+    // ── Valvet ────────────────────────────────────────────────────────
+    //
+    // Allt appen har SPARAT, i en och samma sidopanel: värdar, WireGuard-
+    // profiler, S3-anslutningar och kända värdnycklar. Se `vault.rs` för
+    // varför (kort: WireGuard och S3 låg i var sitt dialogfönster bakom
+    // primärmenyn, och kända värdar hade ingen yta alls). Sessionerna
+    // ligger kvar till höger — det är just den uppdelningen valvet
+    // handlar om.
+    let vault_stack = gtk::Stack::new();
+
+    let hosts_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    hosts_page.append(&search_entry);
+    hosts_page.append(&scrolled);
+    vault_stack.add_named(&hosts_page, Some("hosts"));
+
+    let wireguard_list = vault_list_box();
+    vault_stack.add_named(&vault_page(&wireguard_list), Some("wireguard"));
+    refresh_wireguard_profile_list(app, &wireguard_store, &wireguard_list);
+
+    let s3_list = vault_list_box();
+    vault_stack.add_named(&vault_page(&s3_list), Some("s3"));
+    refresh_s3_connection_list(app, &area, &s3_store, &s3_list);
+
+    let known_hosts_list = vault_list_box();
+    vault_stack.add_named(&vault_page(&known_hosts_list), Some("known-hosts"));
+    refresh_known_hosts_list(&known_hosts_list);
+
+    let category_dropdown = gtk::DropDown::builder()
+        .model(&gtk::StringList::new(&vault::labels()))
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .tooltip_text("Vad sidopanelen visar")
+        .build();
+
     // Åtgärderna ligger på APPEN, inte i en grupp på en widget. Skälet är
     // tangentbordet: `set_accels_for_action` når bara `app.`- och
     // `win.`-prefixade åtgärder, inte en egen grupp inlagd på en behållare.
@@ -199,22 +236,59 @@ fn build_ui(app: &adw::Application) {
         snippet_store,
         #[strong]
         search_query,
-        move |_, _| show_host_dialog(
-            &app,
-            &store,
-            &list,
-            &area,
-            &settings_store,
-            &snippet_store,
-            &search_query,
-            None
-        )
+        #[weak]
+        category_dropdown,
+        move |_, _| {
+            // Samma skäl som `focus-search`: den nya värden ska hamna i
+            // en lista som faktiskt syns.
+            select_vault_category(&category_dropdown, "hosts");
+            show_host_dialog(
+                &app,
+                &store,
+                &list,
+                &area,
+                &settings_store,
+                &snippet_store,
+                &search_query,
+                None,
+            );
+        }
     ));
     app.add_action(&new_host_action);
 
     let add_button = gtk::Button::from_icon_name("list-add-symbolic");
-    add_button.set_tooltip_text(Some("Lägg till värd"));
-    add_button.set_action_name(Some("app.new-host"));
+
+    // Kategorin styr både vad sidopanelen visar och vad `+` betyder.
+    // Knappen får en ny åtgärd i stället för en förgrening i sin
+    // klickhanterare — då fortsätter menyn, paletten och kortkommandot
+    // att dela definition med den (se kommentaren om `app.`-åtgärder
+    // ovan).
+    let apply_vault_category = clone!(
+        #[weak]
+        vault_stack,
+        #[weak]
+        add_button,
+        move |index: u32| {
+            let Some(category) = vault::at(index as usize) else {
+                return;
+            };
+            vault_stack.set_visible_child_name(category.id);
+            match &category.add {
+                Some(add) => {
+                    add_button.set_visible(true);
+                    add_button.set_tooltip_text(Some(add.tooltip));
+                    add_button.set_action_name(Some(add.action));
+                }
+                // Kända värdar: raderna hamnar där genom att man
+                // ansluter. En `+` hade lovat något som inte finns.
+                None => add_button.set_visible(false),
+            }
+        }
+    );
+    apply_vault_category(category_dropdown.selected());
+    category_dropdown.connect_selected_notify(move |dropdown| {
+        apply_vault_category(dropdown.selected());
+    });
 
     let quick_connect_action = gtk::gio::SimpleAction::new("new-connection", None);
     quick_connect_action.connect_activate(clone!(
@@ -306,27 +380,86 @@ fn build_ui(app: &adw::Application) {
     ));
     app.add_action(&tailscale_action);
 
+    // De två åtgärderna öppnade förr var sitt dialogfönster. Nu VÄLJER de
+    // kategori i valvet i stället — samma menypost och samma palettrad
+    // leder till samma sak, bara utan ett fönster till att stänga.
     let wireguard_action = gtk::gio::SimpleAction::new("wireguard", None);
     wireguard_action.connect_activate(clone!(
         #[weak]
-        app,
-        #[strong]
-        wireguard_store,
-        move |_, _| show_wireguard_profile_list(&app, &wireguard_store)
+        category_dropdown,
+        move |_, _| select_vault_category(&category_dropdown, "wireguard")
     ));
     app.add_action(&wireguard_action);
 
     let s3_action = gtk::gio::SimpleAction::new("s3", None);
     s3_action.connect_activate(clone!(
         #[weak]
+        category_dropdown,
+        move |_, _| select_vault_category(&category_dropdown, "s3")
+    ));
+    app.add_action(&s3_action);
+
+    let known_hosts_action = gtk::gio::SimpleAction::new("known-hosts", None);
+    known_hosts_action.connect_activate(clone!(
+        #[weak]
+        category_dropdown,
+        #[weak]
+        known_hosts_list,
+        move |_, _| {
+            // Listan läses om vid varje besök: sessioner lär in nya
+            // värdnycklar medan appen kör, och en lista som visar läget
+            // vid uppstart hade varit fel utan att synas vara det.
+            refresh_known_hosts_list(&known_hosts_list);
+            select_vault_category(&category_dropdown, "known-hosts");
+        }
+    ));
+    app.add_action(&known_hosts_action);
+
+    // `+`-knappens innebörd följer kategorin. Egna åtgärder i stället för
+    // en förgrening i knappens klickhanterare, så att de också går att nå
+    // från paletten och menyn.
+    let new_wireguard_action = gtk::gio::SimpleAction::new("new-wireguard", None);
+    new_wireguard_action.connect_activate(clone!(
+        #[weak]
+        app,
+        #[strong]
+        wireguard_store,
+        #[weak]
+        wireguard_list,
+        move |_, _| show_wireguard_profile_edit(
+            &app,
+            &wireguard_store,
+            &wireguard_list,
+            wireguard::WireGuardProfile::new(String::new(), wireguard::WireGuardConfig::default()),
+        )
+    ));
+    app.add_action(&new_wireguard_action);
+
+    let new_s3_action = gtk::gio::SimpleAction::new("new-s3", None);
+    new_s3_action.connect_activate(clone!(
+        #[weak]
         app,
         #[strong]
         area,
         #[strong]
         s3_store,
-        move |_, _| show_s3_connection_list(&app, &area, &s3_store)
+        #[weak]
+        s3_list,
+        move |_, _| show_s3_connection_edit(
+            &app,
+            &area,
+            &s3_store,
+            &s3_list,
+            s3::S3Connection::new(
+                String::new(),
+                String::new(),
+                "us-east-1".to_string(),
+                String::new(),
+                String::new(),
+            ),
+        )
     ));
-    app.add_action(&s3_action);
+    app.add_action(&new_s3_action);
 
     let settings_action = gtk::gio::SimpleAction::new("settings", None);
     settings_action.connect_activate(clone!(
@@ -394,11 +527,64 @@ fn build_ui(app: &adw::Application) {
     focus_search_action.connect_activate(clone!(
         #[weak]
         search_entry,
+        #[weak]
+        category_dropdown,
         move |_, _| {
+            // Sökrutan bor i valvets värdkategori. Står panelen på en
+            // annan kategori är rutan inte bara ofokuserad utan DOLD, och
+            // `grab_focus` på en dold widget misslyckas tyst — kommandot
+            // hade sett trasigt ut. Byt kategori först.
+            select_vault_category(&category_dropdown, "hosts");
             search_entry.grab_focus();
         }
     ));
     app.add_action(&focus_search_action);
+
+    // Delad vy. Riktningen ligger i åtgärdsnamnet och inte som parameter,
+    // eftersom de två är olika saker i menyn och har var sitt
+    // kortkommando — en parametriserad åtgärd hade bara flyttat samma två
+    // rader någon annanstans.
+    let split_right_action = gtk::gio::SimpleAction::new("split-right", None);
+    split_right_action.connect_activate(clone!(
+        #[strong]
+        area,
+        move |_, _| split_focused_pane(&area, gtk::Orientation::Horizontal)
+    ));
+    app.add_action(&split_right_action);
+
+    let split_down_action = gtk::gio::SimpleAction::new("split-down", None);
+    split_down_action.connect_activate(clone!(
+        #[strong]
+        area,
+        move |_, _| split_focused_pane(&area, gtk::Orientation::Vertical)
+    ));
+    app.add_action(&split_down_action);
+
+    let close_pane_action = gtk::gio::SimpleAction::new("close-pane", None);
+    close_pane_action.connect_activate(clone!(
+        #[strong]
+        area,
+        move |_, _| {
+            if area.tab_view.n_pages() == 0 {
+                return; // samma skydd som `app.close-tab`, se ovan
+            }
+            close_focused_pane(&area);
+        }
+    ));
+    app.add_action(&close_pane_action);
+
+    // Rutåtgärderna betyder ingenting utan en öppen session. I stället
+    // för att tyst inte göra något gråas de ut i menyn, vilket GTK sköter
+    // självt så fort åtgärden är avstängd.
+    let session_actions = vec![split_right_action, split_down_action, close_pane_action];
+    let set_session_actions_enabled = move |enabled: bool| {
+        for action in &session_actions {
+            action.set_enabled(enabled);
+        }
+    };
+    set_session_actions_enabled(area.tab_view.n_pages() > 0);
+    area.tab_view
+        .connect_n_pages_notify(move |view| set_session_actions_enabled(view.n_pages() > 0));
 
     // En enda parametriserad åtgärd i stället för nio nästan identiska:
     // `app.select-tab(3)` är samma sak för menyn, tangentbordet och en
@@ -446,6 +632,14 @@ fn build_ui(app: &adw::Application) {
     app.set_accels_for_action("app.new-connection", &["<Ctrl><Shift>t"]);
     app.set_accels_for_action("app.close-tab", &["<Ctrl><Shift>w"]);
     app.set_accels_for_action("app.focus-search", &["<Ctrl><Shift>f"]);
+    // `E` och `O` för delning är Terminators, Tilix och GNOME Terminals
+    // gemensamma val — den som redan delar rutor på Linux har dem i
+    // fingrarna. Deras egna namn ("vertikalt"/"horisontellt") syftar på
+    // AVDELAREN och betyder motsatsen till vad de flesta gissar, så
+    // menyposterna här heter efter RIKTNINGEN i stället.
+    app.set_accels_for_action("app.split-right", &["<Ctrl><Shift>e"]);
+    app.set_accels_for_action("app.split-down", &["<Ctrl><Shift>o"]);
+    app.set_accels_for_action("app.close-pane", &["<Ctrl><Shift>x"]);
     app.set_accels_for_action("app.settings", &["<Ctrl>comma"]);
     for number in 1..=9 {
         app.set_accels_for_action(
@@ -467,11 +661,11 @@ fn build_ui(app: &adw::Application) {
 
     let sidebar_content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     sidebar_content.append(&sidebar_header);
-    sidebar_content.append(&search_entry);
-    sidebar_content.append(&scrolled);
+    sidebar_content.append(&category_dropdown);
+    sidebar_content.append(&vault_stack);
 
     let sidebar_page = adw::NavigationPage::builder()
-        .title("Värdar")
+        .title("Valv")
         .child(&sidebar_content)
         .build();
 
@@ -1400,15 +1594,29 @@ fn sidebar_menu() -> gtk::gio::Menu {
     palette.append(Some("Kommandopalett"), Some("app.palette"));
     menu.append_section(None, &palette);
 
+    // Riktningen, inte avdelarens orientering — se kommentaren vid
+    // `set_accels_for_action` om varför "vertikalt"/"horisontellt" är
+    // sämre namn än de ser ut att vara.
+    let panes = gtk::gio::Menu::new();
+    panes.append(Some("Dela åt höger"), Some("app.split-right"));
+    panes.append(Some("Dela nedåt"), Some("app.split-down"));
+    panes.append(Some("Stäng ruta"), Some("app.close-pane"));
+    menu.append_section(None, &panes);
+
     let connections = gtk::gio::Menu::new();
     connections.append(Some("Telnet"), Some("app.telnet"));
     connections.append(Some("Seriell/USB"), Some("app.serial"));
     menu.append_section(None, &connections);
 
+    // Valvets kategorier. Posterna öppnar inte längre var sitt fönster —
+    // de byter vad sidopanelen visar (se `vault.rs`). Tailscale står kvar
+    // bland dem för att den hör hemma i samma tanke ("var finns mina
+    // maskiner"), även om den är en upptäcktsdialog och inte sparad data.
     let network = gtk::gio::Menu::new();
     network.append(Some("Tailscale"), Some("app.tailscale"));
     network.append(Some("WireGuard-profiler"), Some("app.wireguard"));
     network.append(Some("S3-anslutningar"), Some("app.s3"));
+    network.append(Some("Kända värdar"), Some("app.known-hosts"));
     menu.append_section(None, &network);
 
     let app_menu = gtk::gio::Menu::new();
@@ -2372,8 +2580,10 @@ fn show_settings_dialog(
             let pages = area.tab_view.pages();
             for i in 0..pages.n_items() {
                 let Some(page) = pages.item(i).and_downcast::<adw::TabPage>() else { continue };
-                if let Some(terminal) = page.child().downcast_ref::<vte::Terminal>() {
-                    terminal_theme::apply(terminal, theme);
+                // Varje ruta i fliken — en delad flik har flera terminaler
+                // och alla ska byta tema, inte bara den första.
+                for terminal in split::terminals_in(&page.child()) {
+                    terminal_theme::apply(&terminal, theme);
                 }
             }
         }
@@ -2598,14 +2808,12 @@ impl SessionArea {
             #[strong]
             area,
             move |_, page| {
-                if let Some(terminal) = page.child().downcast_ref::<vte::Terminal>() {
-                    // Att droppa sändaren stänger av bakgrundstrådens select-loop
-                    // (input_rx.recv() → Err → run() returnerar), vilket i sin
-                    // tur stänger SSH-anslutningen rent istället för att lämna
-                    // den övergiven i bakgrunden efter att fliken stängts.
-                    unsafe {
-                        terminal.steal_data::<async_channel::Sender<Vec<u8>>>("bastion-ssh-input");
-                    }
+                // VARJE ruta i fliken, inte bara `page.child()`: med delad
+                // vy (`split.rs`) är sidans barn en behållare med ett träd
+                // av terminaler i, och en flik som stängs ska stänga alla
+                // sina anslutningar — inte bara den första.
+                for terminal in split::terminals_in(&page.child()) {
+                    close_session_channel(&terminal);
                 }
                 if let Some(content_box) = page.child().downcast_ref::<gtk::Box>() {
                     // Tunnel-flikens innehåll (om den här sidan råkar vara
@@ -2684,10 +2892,10 @@ fn open_session(area: &Rc<SessionArea>, store: &Rc<RefCell<HostStore>>, host: ho
         move |host, jump| {
             if matches!(host.auth, host::HostAuth::AskPassword) {
                 prompt_password_then(&area, host, move |area, host, password| {
-                    start_session(area, host, Some(password), jump.clone())
+                    start_session(area, host, Some(password), jump.clone(), SessionTarget::NewTab)
                 });
             } else {
-                start_session(&area, host, None, jump);
+                start_session(&area, host, None, jump, SessionTarget::NewTab);
             }
         }
     ));
@@ -2809,31 +3017,222 @@ fn tab_view_contains(area: &Rc<SessionArea>, page: &adw::TabPage) -> bool {
         .any(|open| &open == page)
 }
 
+/// Var en ny terminalsession ska hamna.
+#[derive(Clone)]
+enum SessionTarget {
+    /// En egen flik, som allt gjorde innan delad vy fanns.
+    NewTab,
+    /// Delad vy: `pane` (en redan öppen ruta) delas och sessionen hamnar i
+    /// den nya halvan av SAMMA flik. Fliken byter inte titel — den
+    /// beskriver fortfarande sessionen den öppnades för.
+    Split {
+        pane: vte::Terminal,
+        orientation: gtk::Orientation,
+    },
+}
+
+/// Vad en ruta är ansluten till, sparat på terminalwidgeten så att "dela
+/// vyn" kan öppna EN TILL session mot samma sak utan att fråga om det som
+/// redan är känt.
+///
+/// Lösenordet sparas medvetet INTE här. En `AskPassword`-värd frågar igen
+/// vid delning, precis som den gjorde när sessionen öppnades — ett
+/// lösenord som ligger kvar på en widget är en hemlighet som lever längre
+/// än den behöver.
+///
+/// Seriella sessioner har med flit ingen variant: en fysisk port kan bara
+/// öppnas av en process i taget, så "en till mot samma sak" finns inte.
+/// Delningsåtgärderna gör därför ingenting i en seriell ruta.
+#[derive(Clone)]
+enum PaneSource {
+    Ssh {
+        host: Box<host::Host>,
+        jump: Option<Box<host::Host>>,
+    },
+    Telnet {
+        host: String,
+        port: u16,
+    },
+}
+
+const PANE_SOURCE_KEY: &str = "bastion-pane-source";
+
+fn set_pane_source(terminal: &vte::Terminal, source: PaneSource) {
+    unsafe {
+        terminal.set_data(PANE_SOURCE_KEY, source);
+    }
+}
+
+fn pane_source(terminal: &vte::Terminal) -> Option<PaneSource> {
+    unsafe {
+        terminal
+            .data::<PaneSource>(PANE_SOURCE_KEY)
+            .map(|ptr| ptr.as_ref().clone())
+    }
+}
+
+/// Fliken som `widget` sitter i, om någon.
+fn page_containing(area: &Rc<SessionArea>, widget: &impl IsA<gtk::Widget>) -> Option<adw::TabPage> {
+    let widget = widget.as_ref();
+    let pages = area.tab_view.pages();
+    (0..pages.n_items())
+        .filter_map(|i| pages.item(i).and_downcast::<adw::TabPage>())
+        .find(|page| {
+            let child = page.child();
+            child == *widget || widget.is_ancestor(&child)
+        })
+}
+
+/// Sätter in en nybyggd terminal där `target` säger och ger tillbaka
+/// fliken den hamnade i. Delad av alla tre sessionsstartare (SSH/Telnet/
+/// Seriell) så att ETT ställe känner till både flik- och ruttfallet.
+///
+/// `title` gäller bara `NewTab` — en delad ruta ärver flikens titel.
+fn place_terminal(
+    area: &Rc<SessionArea>,
+    terminal: &vte::Terminal,
+    target: SessionTarget,
+    title: &str,
+) -> adw::TabPage {
+    if let SessionTarget::Split { pane, orientation } = target {
+        // Rutan kan ha hunnit stängas mellan att åtgärden aktiverades och
+        // att lösenordsdialogen besvarades. Sessionen är redan startad då
+        // — en ny flik är rätt svar, inte att tappa bort den.
+        if let Some(page) = page_containing(area, &pane) {
+            split::split(&pane, orientation, terminal);
+            terminal.grab_focus();
+            return page;
+        }
+    }
+
+    let root = split::pane_root();
+    root.append(terminal);
+    let page = area.tab_view.append(&root);
+    page.set_title(title);
+    area.tab_view.set_selected_page(&page);
+    area.update_placeholder();
+    terminal.grab_focus();
+    page
+}
+
+/// Stryper anslutningen bakom en terminal — SSH, Telnet och Seriell delar
+/// mekanism (`async_channel` in, händelser ut) och därför den här vägen ut.
+///
+/// Kanalen STÄNGS, den droppas inte. Skillnaden är hela poängen:
+/// `steal_data` tog bara bort EN klon av sändaren, och den räckte inte,
+/// för det finns alltid en till — `terminal.connect_commit` håller en egen
+/// så länge widgeten lever. Och widgeten levde: `glib::spawn_future_local`
+/// får sin terminal genom `clone!(#[weak] terminal, async move …)`, och
+/// för ett ASYNC-BLOCK uppgraderar makrot den svaga referensen till en
+/// STARK direkt och håller den så länge framtiden kör (verifierat i
+/// `glib-macros`-källan, inte antaget). Det slöt en cykel: framtiden höll
+/// terminalen, terminalen höll sändaren, sändaren höll bakgrundsloopen
+/// vid liv, och loopen var den enda som kunde skicka `Closed` och därmed
+/// avsluta framtiden. Följden var att en stängd flik lämnade sin
+/// anslutning ÖPPEN — mätt med `ss -tn` mot en riktig server, tre
+/// anslutningar levde vidare efter att både rutor och flik stängts.
+/// `Sender::close()` stänger kanalen för alla klonerna på en gång och
+/// bryter cykeln där den ska brytas.
+fn close_session_channel(terminal: &vte::Terminal) {
+    unsafe {
+        if let Some(input) = terminal.steal_data::<async_channel::Sender<Vec<u8>>>("bastion-ssh-input")
+        {
+            input.close();
+        }
+    }
+}
+
+/// Stänger EN ruta: stryper anslutningen och låter syskonrutan ta över
+/// platsen. Var rutan flikens enda stängs hela fliken, precis som innan
+/// delad vy fanns.
+fn close_session_pane(area: &Rc<SessionArea>, terminal: &vte::Terminal, page: &adw::TabPage) {
+    close_session_channel(terminal);
+    if split::close_pane(terminal) == split::PaneClosed::PageEmpty && tab_view_contains(area, page)
+    {
+        area.tab_view.close_page(page);
+    }
+}
+
+/// Delar den ruta som har fokus i den valda fliken och öppnar en till
+/// session mot samma sak i den nya halvan. Gör ingenting om fliken inte
+/// är en terminalflik (Docker/SFTP/tunnlar har inga rutor) eller om rutan
+/// inte går att duplicera (seriell port, se [`PaneSource`]).
+fn split_focused_pane(area: &Rc<SessionArea>, orientation: gtk::Orientation) {
+    let Some(page) = area.tab_view.selected_page() else {
+        return;
+    };
+    let Some(pane) = split::focused_terminal(&page.child()) else {
+        return;
+    };
+    let Some(source) = pane_source(&pane) else {
+        return;
+    };
+    let target = SessionTarget::Split { pane, orientation };
+
+    match source {
+        PaneSource::Ssh { host, jump } => {
+            let jump = jump.map(|j| *j);
+            let host = *host;
+            if matches!(host.auth, host::HostAuth::AskPassword) {
+                prompt_password_then(area, host, move |area, host, password| {
+                    start_session(area, host, Some(password), jump.clone(), target.clone());
+                });
+            } else {
+                start_session(area, host, None, jump, target);
+            }
+        }
+        PaneSource::Telnet { host, port } => start_telnet_session(area, host, port, target),
+    }
+}
+
+/// Stänger rutan med fokus. Ett kortkommando för den som har en hängd
+/// session i en av rutorna — en fungerande session stängs annars med
+/// `exit` i skalet, som den alltid har kunnat.
+fn close_focused_pane(area: &Rc<SessionArea>) {
+    let Some(page) = area.tab_view.selected_page() else {
+        return;
+    };
+    let Some(pane) = split::focused_terminal(&page.child()) else {
+        // Ingen terminal i fliken (Docker/SFTP/…): då är hela fliken det
+        // enda som finns att stänga, samma sak som `app.close-tab`.
+        area.tab_view.close_page(&page);
+        return;
+    };
+    close_session_pane(area, &pane, &page);
+}
+
 fn start_session(
     area: &Rc<SessionArea>,
     host: host::Host,
     password: Option<String>,
     jump: Option<host::Host>,
+    target: SessionTarget,
 ) {
     let terminal = new_themed_terminal();
 
     let cols = 80u32;
     let rows = 24u32;
-    let session = ssh::spawn_shell(host.clone(), password, cols, rows, jump);
+    let session = ssh::spawn_shell(host.clone(), password, cols, rows, jump.clone());
 
-    // Lagras på widgeten så close-page-hanteraren kan droppa sändaren och
-    // därmed stänga SSH-anslutningen när fliken stängs manuellt.
+    // Lagras på widgeten så städningen hittar kanalen och kan STÄNGA den
+    // när rutan eller fliken stängs — se `close_session_channel` för varför
+    // det måste vara en stängning och inte bara ett släpp.
     unsafe {
         terminal.set_data("bastion-ssh-input", session.input.clone());
     }
+    set_pane_source(
+        &terminal,
+        PaneSource::Ssh {
+            host: Box::new(host.clone()),
+            jump: jump.map(Box::new),
+        },
+    );
 
-    let page = area.tab_view.append(&terminal);
-    page.set_title(&unique_session_tab_title(
+    let title = unique_session_tab_title(
         area,
         &tab_title::base_title(&host.alias, &host.user, &host.host_name),
-    ));
-    area.tab_view.set_selected_page(&page);
-    area.update_placeholder();
+    );
+    let page = place_terminal(area, &terminal, target, &title);
 
     terminal.connect_commit(clone!(
         #[strong(rename_to = input)]
@@ -2863,9 +3262,7 @@ fn start_session(
                     }
                     SshEvent::Connected => {}
                     SshEvent::Closed => {
-                        if tab_view_contains(&area, &page) {
-                            area.tab_view.close_page(&page);
-                        }
+                        close_session_pane(&area, &terminal, &page);
                         break;
                     }
                 }
@@ -2882,18 +3279,22 @@ fn start_session(
 /// `terminal.set_data("bastion-ssh-input", …)`-nyckel återanvänds rakt av
 /// så den redan existerande generiska close-page-städningen (`SessionArea::
 /// new`) fungerar identiskt utan telnet-specifik kod där.
-fn start_telnet_session(area: &Rc<SessionArea>, host: String, port: u16) {
+fn start_telnet_session(area: &Rc<SessionArea>, host: String, port: u16, target: SessionTarget) {
     let terminal = new_themed_terminal();
     let handle = telnet::spawn(host.clone(), port);
 
     unsafe {
         terminal.set_data("bastion-ssh-input", handle.input.clone());
     }
+    set_pane_source(
+        &terminal,
+        PaneSource::Telnet {
+            host: host.clone(),
+            port,
+        },
+    );
 
-    let page = area.tab_view.append(&terminal);
-    page.set_title(&format!("{host}:{port} (telnet)"));
-    area.tab_view.set_selected_page(&page);
-    area.update_placeholder();
+    let page = place_terminal(area, &terminal, target, &format!("{host}:{port} (telnet)"));
 
     terminal.connect_commit(clone!(
         #[strong(rename_to = input)]
@@ -2923,9 +3324,7 @@ fn start_telnet_session(area: &Rc<SessionArea>, host: String, port: u16) {
                     }
                     telnet::TelnetEvent::Connected => {}
                     telnet::TelnetEvent::Closed => {
-                        if tab_view_contains(&area, &page) {
-                            area.tab_view.close_page(&page);
-                        }
+                        close_session_pane(&area, &terminal, &page);
                         break;
                     }
                 }
@@ -2991,7 +3390,7 @@ fn show_telnet_connect_dialog(app: &adw::Application, area: &Rc<SessionArea>) {
                 return;
             }
             win.close();
-            start_telnet_session(&area, host, port);
+            start_telnet_session(&area, host, port, SessionTarget::NewTab);
         }
     ));
 
@@ -3006,10 +3405,14 @@ fn start_serial_session(area: &Rc<SessionArea>, path: String, baud_rate: u32) {
         terminal.set_data("bastion-ssh-input", handle.input.clone());
     }
 
-    let page = area.tab_view.append(&terminal);
-    page.set_title(&format!("{path} ({baud_rate} baud)"));
-    area.tab_view.set_selected_page(&page);
-    area.update_placeholder();
+    // Ingen `set_pane_source`: en seriell port går inte att öppna två
+    // gånger, så rutan går inte att duplicera (se `PaneSource`).
+    let page = place_terminal(
+        area,
+        &terminal,
+        SessionTarget::NewTab,
+        &format!("{path} ({baud_rate} baud)"),
+    );
 
     terminal.connect_commit(clone!(
         #[strong(rename_to = input)]
@@ -3039,9 +3442,7 @@ fn start_serial_session(area: &Rc<SessionArea>, path: String, baud_rate: u32) {
                     }
                     serial::SerialEvent::Connected => {}
                     serial::SerialEvent::Closed => {
-                        if tab_view_contains(&area, &page) {
-                            area.tab_view.close_page(&page);
-                        }
+                        close_session_pane(&area, &terminal, &page);
                         break;
                     }
                 }
@@ -3220,7 +3621,7 @@ fn show_quick_connect_dialog(app: &adw::Application, area: &Rc<SessionArea>) {
                 Some(password)
             };
             win.close();
-            start_session(&area, host, password, None);
+            start_session(&area, host, password, None, SessionTarget::NewTab);
         }
     ));
 
@@ -3458,67 +3859,170 @@ fn show_tailscale_discovery_dialog(
     win.present();
 }
 
-/// Lista över sparade WireGuard-profiler — toppnivå, inte kopplat till en
-/// specifik `Host` (en profil beskriver en VPN-anslutning, inte en
-/// SSH-värd). Samma v1-avgränsning som App/-motsvarigheten: profilhantering
-/// (klistra in/visa/redigera/ta bort `.conf`-text), INTE att faktiskt
-/// upprätta tunneln — se `wireguard.rs`s doc-kommentar.
-fn show_wireguard_profile_list(
-    app: &adw::Application,
-    wireguard_store: &Rc<RefCell<wireguard::WireGuardProfileStore>>,
-) {
-    let list = gtk::ListBox::builder()
+/// En lista i valvet — samma form som värdlistan, så att sidopanelen ser
+/// likadan ut oavsett kategori.
+fn vault_list_box() -> gtk::ListBox {
+    gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
         .css_classes(["boxed-list"])
         .margin_start(12)
         .margin_end(12)
         .margin_top(12)
         .margin_bottom(12)
-        .build();
-    let scrolled = gtk::ScrolledWindow::builder().child(&list).vexpand(true).build();
-
-    let add_button = gtk::Button::from_icon_name("list-add-symbolic");
-    add_button.set_tooltip_text(Some("Ny profil"));
-    let header = adw::HeaderBar::new();
-    header.pack_end(&add_button);
-
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    content.append(&header);
-    content.append(&scrolled);
-
-    let win = dialog_window(&app_window(app), "WireGuard-profiler", DialogSize::List, &content);
-
-    refresh_wireguard_profile_list(app, wireguard_store, &list, &win);
-
-    add_button.connect_clicked(clone!(
-        #[strong]
-        app,
-        #[strong]
-        wireguard_store,
-        #[weak]
-        list,
-        #[weak]
-        win,
-        move |_| show_wireguard_profile_edit(
-            &app,
-            &wireguard_store,
-            &list,
-            &win,
-            wireguard::WireGuardProfile::new(String::new(), wireguard::WireGuardConfig::default()),
-        )
-    ));
-
-    win.present();
+        .build()
 }
 
+/// Raden som visas när en valvkategori är tom.
+///
+/// En tom `boxed-list` ritas som en blank vit ruta, och en blank ruta går
+/// inte att skilja från något som gått sönder. Raden säger både att det
+/// är tomt och hur man fyller det.
+fn vault_empty_row(title: &str, subtitle: &str) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
+        .title(title)
+        .subtitle(subtitle)
+        .build();
+    row.set_sensitive(false);
+    row
+}
+
+/// Rullbar behållare runt en valvlista.
+fn vault_page(list: &gtk::ListBox) -> gtk::ScrolledWindow {
+    gtk::ScrolledWindow::builder()
+        .child(list)
+        .vexpand(true)
+        .build()
+}
+
+/// Byter kategori i valvet, angivet med `vault::VaultCategory::id`.
+///
+/// Går via väljaren och inte direkt till stacken: väljaren måste visa
+/// samma sak som panelen, annars står det "Värdar" ovanför en lista med
+/// S3-anslutningar. `set_selected` utlöser dess `notify`, som i sin tur
+/// byter sida — ett ställe som byter, inte två.
+fn select_vault_category(dropdown: &gtk::DropDown, id: &str) {
+    if let Some(index) = vault::index_of(id) {
+        dropdown.set_selected(index as u32);
+    }
+}
+
+/// Värdnycklarna appen litar på (`~/.bastion/known_hosts`), med möjlighet
+/// att glömma en.
+///
+/// Filen läses om från disk vid varje uppdatering i stället för att en
+/// laddad kopia hålls vid liv: varje ny SSH-session kan lägga till en rad
+/// (TOFU), och de raderna skrivs av anslutningens egen `KnownHosts`-
+/// instans, inte av den här. En cachad lista hade tyst blivit inaktuell.
+fn refresh_known_hosts_list(list: &gtk::ListBox) {
+    while let Some(row) = list.row_at_index(0) {
+        list.remove(&row);
+    }
+
+    let known = match known_hosts::KnownHosts::open(Some(known_hosts::KnownHosts::default_path())) {
+        Ok(known) => known,
+        Err(e) => {
+            // Ett läsfel får INTE se ut som "inga kända värdar" — det är
+            // hela poängen med att `open` fallerar i stället för att ge
+            // en tom karta (se `known_hosts::load`). Raden säger vad som
+            // hänt i stället för att panelen ser tom och lugn ut.
+            let row = adw::ActionRow::builder()
+                .title("Kunde inte läsa kända värdar")
+                .subtitle(e.to_string())
+                .build();
+            row.add_css_class("error");
+            list.append(&row);
+            return;
+        }
+    };
+
+    let entries = known.entries();
+    if entries.is_empty() {
+        list.append(&vault_empty_row(
+            "Inga kända värdar än",
+            "En värd hamnar här första gången du ansluter till den",
+        ));
+        return;
+    }
+
+    for entry in entries {
+        let row = adw::ActionRow::builder()
+            .title(&entry.id)
+            .subtitle(format!("{} · {}", entry.algorithm(), entry.fingerprint()))
+            .subtitle_selectable(true)
+            .build();
+
+        let forget_button = gtk::Button::from_icon_name("user-trash-symbolic");
+        forget_button.set_tooltip_text(Some("Glöm den här värdnyckeln"));
+        forget_button.add_css_class("flat");
+        forget_button.connect_clicked(clone!(
+            #[weak]
+            list,
+            #[strong(rename_to = id)]
+            entry.id,
+            move |button| {
+                // Bekräftelse först: att glömma en nyckel är att stänga
+                // av MITM-skyddet för den värden till nästa anslutning.
+                let dialog = adw::AlertDialog::new(
+                    Some("Glömma värdnyckeln?"),
+                    Some(&format!(
+                        "Nästa anslutning till {id} godtar vilken nyckel servern än \
+                         visar, utan att jämföra med den här. Gör det bara om du VET \
+                         att servern bytt nyckel."
+                    )),
+                );
+                dialog.add_response("cancel", "Avbryt");
+                dialog.add_response("forget", "Glöm");
+                dialog.set_response_appearance("forget", adw::ResponseAppearance::Destructive);
+                dialog.set_default_response(Some("cancel"));
+                dialog.connect_response(
+                    None,
+                    clone!(
+                        #[weak]
+                        list,
+                        #[strong]
+                        id,
+                        move |_, response| {
+                            if response != "forget" {
+                                return;
+                            }
+                            let opened = known_hosts::KnownHosts::open(Some(
+                                known_hosts::KnownHosts::default_path(),
+                            ));
+                            match opened.and_then(|known| known.forget(&id)) {
+                                Ok(_) => refresh_known_hosts_list(&list),
+                                Err(e) => eprintln!("kunde inte glömma värdnyckeln: {e}"),
+                            }
+                        }
+                    ),
+                );
+                dialog.present(Some(button));
+            }
+        ));
+        row.add_suffix(&forget_button);
+
+        list.append(&row);
+    }
+}
+
+/// Valvets WireGuard-profiler — toppnivå, inte kopplat till en specifik
+/// `Host` (en profil beskriver en VPN-anslutning, inte en SSH-värd).
+/// Samma v1-avgränsning som App/-motsvarigheten: profilhantering
+/// (klistra in/visa/redigera/ta bort `.conf`-text), INTE att faktiskt
+/// upprätta tunneln — se `wireguard.rs`s doc-kommentar.
 fn refresh_wireguard_profile_list(
     app: &adw::Application,
     wireguard_store: &Rc<RefCell<wireguard::WireGuardProfileStore>>,
     list: &gtk::ListBox,
-    parent_win: &adw::Window,
 ) {
     while let Some(row) = list.row_at_index(0) {
         list.remove(&row);
+    }
+    if wireguard_store.borrow().all().is_empty() {
+        list.append(&vault_empty_row(
+            "Inga profiler än",
+            "Lägg till en med + och klistra in din .conf-text",
+        ));
+        return;
     }
     for profile in wireguard_store.borrow().all() {
         let address = profile
@@ -3545,8 +4049,6 @@ fn refresh_wireguard_profile_list(
             wireguard_store,
             #[weak]
             list,
-            #[weak]
-            parent_win,
             #[strong(rename_to = profile_id)]
             profile.id,
             move |_| {
@@ -3554,7 +4056,7 @@ fn refresh_wireguard_profile_list(
                     eprintln!("kunde inte ta bort wireguard-profilen: {e}");
                     return;
                 }
-                refresh_wireguard_profile_list(&app, &wireguard_store, &list, &parent_win);
+                refresh_wireguard_profile_list(&app, &wireguard_store, &list);
             }
         ));
         row.add_suffix(&delete_button);
@@ -3566,11 +4068,9 @@ fn refresh_wireguard_profile_list(
             wireguard_store,
             #[weak]
             list,
-            #[weak]
-            parent_win,
             #[strong]
             profile,
-            move |_| show_wireguard_profile_edit(&app, &wireguard_store, &list, &parent_win, profile.clone())
+            move |_| show_wireguard_profile_edit(&app, &wireguard_store, &list, profile.clone())
         ));
 
         list.append(&row);
@@ -3586,7 +4086,6 @@ fn show_wireguard_profile_edit(
     app: &adw::Application,
     wireguard_store: &Rc<RefCell<wireguard::WireGuardProfileStore>>,
     list: &gtk::ListBox,
-    parent_win: &adw::Window,
     profile: wireguard::WireGuardProfile,
 ) {
     let name_row = adw::EntryRow::builder().title("Namn").text(&profile.name).build();
@@ -3618,7 +4117,7 @@ fn show_wireguard_profile_edit(
     content.append(&page);
     content.append(&text_scrolled);
 
-    let win = dialog_window(parent_win, "WireGuard-profil", DialogSize::Form, &content);
+    let win = dialog_window(&app_window(app), "WireGuard-profil", DialogSize::Form, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -3632,8 +4131,6 @@ fn show_wireguard_profile_edit(
         wireguard_store,
         #[weak]
         list,
-        #[strong]
-        parent_win,
         #[weak]
         win,
         #[strong]
@@ -3652,7 +4149,7 @@ fn show_wireguard_profile_edit(
                 eprintln!("kunde inte spara wireguard-profilen: {e}");
                 return;
             }
-            refresh_wireguard_profile_list(&app, &wireguard_store, &list, &parent_win);
+            refresh_wireguard_profile_list(&app, &wireguard_store, &list);
             win.close();
         }
     ));
@@ -3660,76 +4157,24 @@ fn show_wireguard_profile_edit(
     win.present();
 }
 
-/// Lista över sparade S3-anslutningar. "Bläddra" på en rad öppnar en
-/// bucket-/objektbläddare i en ny flik (`open_s3_bucket_browser`); raden
-/// själv öppnar redigeringsdialogen (namn/endpoint/region/nycklar).
-fn show_s3_connection_list(
-    app: &adw::Application,
-    area: &Rc<SessionArea>,
-    s3_store: &Rc<RefCell<s3::S3ConnectionStore>>,
-) {
-    let list = gtk::ListBox::builder()
-        .selection_mode(gtk::SelectionMode::None)
-        .css_classes(["boxed-list"])
-        .margin_start(12)
-        .margin_end(12)
-        .margin_top(12)
-        .margin_bottom(12)
-        .build();
-    let scrolled = gtk::ScrolledWindow::builder().child(&list).vexpand(true).build();
-
-    let add_button = gtk::Button::from_icon_name("list-add-symbolic");
-    add_button.set_tooltip_text(Some("Ny anslutning"));
-    let header = adw::HeaderBar::new();
-    header.pack_end(&add_button);
-
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    content.append(&header);
-    content.append(&scrolled);
-
-    let win = dialog_window(&app_window(app), "S3-anslutningar", DialogSize::List, &content);
-
-    refresh_s3_connection_list(app, area, s3_store, &list, &win);
-
-    add_button.connect_clicked(clone!(
-        #[strong]
-        app,
-        #[strong]
-        area,
-        #[strong]
-        s3_store,
-        #[weak]
-        list,
-        #[weak]
-        win,
-        move |_| show_s3_connection_edit(
-            &app,
-            &area,
-            &s3_store,
-            &list,
-            &win,
-            s3::S3Connection::new(
-                String::new(),
-                String::new(),
-                "us-east-1".to_string(),
-                String::new(),
-                String::new(),
-            ),
-        )
-    ));
-
-    win.present();
-}
-
+/// Valvets S3-anslutningar. "Bläddra" på en rad öppnar en bucket-/
+/// objektbläddare i en ny flik (`open_s3_bucket_browser`); raden själv
+/// öppnar redigeringsdialogen (namn/endpoint/region/nycklar).
 fn refresh_s3_connection_list(
     app: &adw::Application,
     area: &Rc<SessionArea>,
     s3_store: &Rc<RefCell<s3::S3ConnectionStore>>,
     list: &gtk::ListBox,
-    parent_win: &adw::Window,
 ) {
     while let Some(row) = list.row_at_index(0) {
         list.remove(&row);
+    }
+    if s3_store.borrow().all().is_empty() {
+        list.append(&vault_empty_row(
+            "Inga anslutningar än",
+            "Lägg till en med + (endpoint, region och nycklar)",
+        ));
+        return;
     }
     for connection in s3_store.borrow().all() {
         let row = adw::ActionRow::builder()
@@ -3744,13 +4189,13 @@ fn refresh_s3_connection_list(
         browse_button.connect_clicked(clone!(
             #[strong]
             area,
-            #[weak]
-            parent_win,
             #[strong]
             connection,
             move |_| {
+                // Ingen stängning här längre: listan bor i sidopanelen,
+                // och det som förr var dialogfönstret är numera appens
+                // huvudfönster.
                 open_s3_bucket_browser(&area, connection.clone());
-                parent_win.close();
             }
         ));
         row.add_suffix(&browse_button);
@@ -3767,8 +4212,6 @@ fn refresh_s3_connection_list(
             s3_store,
             #[weak]
             list,
-            #[weak]
-            parent_win,
             #[strong(rename_to = connection_id)]
             connection.id,
             move |_| {
@@ -3776,7 +4219,7 @@ fn refresh_s3_connection_list(
                     eprintln!("kunde inte ta bort s3-anslutningen: {e}");
                     return;
                 }
-                refresh_s3_connection_list(&app, &area, &s3_store, &list, &parent_win);
+                refresh_s3_connection_list(&app, &area, &s3_store, &list);
             }
         ));
         row.add_suffix(&delete_button);
@@ -3790,11 +4233,9 @@ fn refresh_s3_connection_list(
             s3_store,
             #[weak]
             list,
-            #[weak]
-            parent_win,
             #[strong]
             connection,
-            move |_| show_s3_connection_edit(&app, &area, &s3_store, &list, &parent_win, connection.clone())
+            move |_| show_s3_connection_edit(&app, &area, &s3_store, &list, connection.clone())
         ));
 
         list.append(&row);
@@ -3806,7 +4247,6 @@ fn show_s3_connection_edit(
     area: &Rc<SessionArea>,
     s3_store: &Rc<RefCell<s3::S3ConnectionStore>>,
     list: &gtk::ListBox,
-    parent_win: &adw::Window,
     connection: s3::S3Connection,
 ) {
     let name_row = adw::EntryRow::builder().title("Namn").text(&connection.name).build();
@@ -3855,7 +4295,7 @@ fn show_s3_connection_edit(
     content.append(&test_button);
     content.append(&test_status_label);
 
-    let win = dialog_window(parent_win, "S3-anslutning", DialogSize::Form, &content);
+    let win = dialog_window(&app_window(app), "S3-anslutning", DialogSize::Form, &content);
 
     cancel_button.connect_clicked(clone!(
         #[weak]
@@ -3919,8 +4359,6 @@ fn show_s3_connection_edit(
         s3_store,
         #[weak]
         list,
-        #[strong]
-        parent_win,
         #[weak]
         win,
         #[strong]
@@ -3941,7 +4379,7 @@ fn show_s3_connection_edit(
                 eprintln!("kunde inte spara s3-anslutningen: {e}");
                 return;
             }
-            refresh_s3_connection_list(&app, &area, &s3_store, &list, &parent_win);
+            refresh_s3_connection_list(&app, &area, &s3_store, &list);
             win.close();
         }
     ));
@@ -5467,7 +5905,7 @@ fn build_container_row(
                     let mut shell_host = host.clone();
                     shell_host.startup_command = Some(cmd);
                     shell_host.alias = format!("{}: {}", host.alias, container.name);
-                    start_session(&area, shell_host, password.clone(), jump.clone());
+                    start_session(&area, shell_host, password.clone(), jump.clone(), SessionTarget::NewTab);
                 }
             }
         ));
@@ -5838,7 +6276,7 @@ fn launch_rendered_command(
     let mut h = host;
     h.startup_command = Some(command);
     h.alias = format!("{}: {title_suffix}", h.alias);
-    start_session(area, h, password, jump);
+    start_session(area, h, password, jump, SessionTarget::NewTab);
 }
 
 fn prompt_snippet_variables(
