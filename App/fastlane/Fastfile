@@ -11,7 +11,7 @@ default_platform(:ios)
 # den kördes. Certifikat/profil är istället skapade EN gång (manuellt,
 # 2026-07-08, på en riktig Mac — `security`/Keychain-operationer kräver en
 # inloggad GUI-session, fungerar inte över ren SSH) och sparade krypterat
-# i `blixten85/bastion-certificates` (privat repo, `MATCH_PASSWORD`-skyddat).
+# i `denied-se/bastion-certificates` (privat repo, `MATCH_PASSWORD`-skyddat).
 # CI hämtar bara — skapar aldrig nya, för att inte krocka med Apples gräns
 # på antal distributionscertifikat (redan träffad en gång under felsökningen).
 platform :ios do
@@ -53,7 +53,7 @@ platform :ios do
       type: "appstore",
       app_identifier: "se.denied.bastion",
       team_id: ENV.fetch("APP_STORE_CONNECT_TEAM_ID"),
-      git_url: "git@github.com:blixten85/bastion-certificates.git",
+      git_url: "git@github.com:denied-se/bastion-certificates.git",
       readonly: true,
     )
 
@@ -88,7 +88,7 @@ end
 # Samma delade "Apple Distribution"-certifikat som iOS-appen använder
 # återanvänds här — bara provisioneringsprofilen, "match AppStore
 # se.denied.bastion.tv", är tvOS-specifik. Båda är redan bootstrappade i
-# blixten85/bastion-certificates sedan 2026-07-22; att tro att ett NYTT
+# denied-se/bastion-certificates sedan 2026-07-22; att tro att ett NYTT
 # eget tvOS-distributionscertifikat behövs kan onödigt trigga
 # certifikatsskapande och krocka med Apples gräns på antal
 # distributionscertifikat per konto.)
@@ -132,7 +132,7 @@ platform :tvos do
       platform: "tvos",
       app_identifier: "se.denied.bastion.tv",
       team_id: ENV.fetch("APP_STORE_CONNECT_TEAM_ID"),
-      git_url: "git@github.com:blixten85/bastion-certificates.git",
+      git_url: "git@github.com:denied-se/bastion-certificates.git",
       readonly: true,
     )
 
