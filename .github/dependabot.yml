@@ -35,6 +35,47 @@ updates:
       bundler-patch-minor:
         update-types: ["minor", "patch"]
 
+  # LinuxApp/Cargo.toml — Rust-appens beroendeträd var helt obevakat.
+  - package-ecosystem: "cargo"
+    directory: "/LinuxApp"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "00:40"
+      timezone: "Europe/Stockholm"
+    groups:
+      cargo-patch-minor:
+        update-types: ["minor", "patch"]
+
+  # Android/*.gradle.kts — helt obevakat.
+  - package-ecosystem: "gradle"
+    directories:
+      - "/Android"
+      - "/Android/app"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "00:50"
+      timezone: "Europe/Stockholm"
+    groups:
+      gradle-patch-minor:
+        update-types: ["minor", "patch"]
+
+  # WindowsApp/*.csproj — helt obevakat.
+  - package-ecosystem: "nuget"
+    directories:
+      - "/WindowsApp"
+      - "/WindowsApp/Bastion.Core"
+      - "/WindowsApp/Bastion.Core.Tests"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "00:55"
+      timezone: "Europe/Stockholm"
+    groups:
+      nuget-patch-minor:
+        update-types: ["minor", "patch"]
+
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
