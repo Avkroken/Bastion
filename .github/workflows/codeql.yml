@@ -5,6 +5,9 @@ name: CodeQL
 # säkerhetskänsliga ytorna bor (SSH-auth, nyckelparsning, Docker-kommando-
 # validering mot injektion). Gratis för publika repon.
 on:
+  # Krävs för merge queue: utan denna kör inga checkar på
+  # merge-gruppen, och kön kan aldrig merga något.
+  merge_group:
   push:
     branches: [main]
   pull_request:
