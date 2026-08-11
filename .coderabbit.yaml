@@ -1,9 +1,0 @@
-# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
-#
-# CodeRabbit ska granska VARJE PR automatiskt — "CodeRabbit" är en required
-# status check i branch-rulesetet (Protect main), så en hoppad/utebliven
-# granskning blockerar merge helt och hållet, den ska aldrig kunna tystas ner.
-reviews:
-  auto_review:
-    enabled: true
-    drafts: true
