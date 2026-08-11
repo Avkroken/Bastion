@@ -15,6 +15,12 @@
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Tillåter `dotnet restore` av detta Windows-riktade projekt på Linux.
+         Krävs av GitHubs Automatic Dependency Submission, som kör på ubuntu
+         och annars faller på NETSDK1100 — utan restore blir NuGet-grafen
+         aldrig inskickad och Dependabot ser inga transitiva beroenden.
+         No-op vid bygge på Windows; påverkar inte utdata. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
   </PropertyGroup>
 
   <ItemGroup>

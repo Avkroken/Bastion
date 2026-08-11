@@ -13,6 +13,16 @@ jobs:
     runs-on: ubuntu-latest
     if: github.actor == 'dependabot[bot]'
     steps:
+      # Apptoken, inte github.token. Merges gjorda med GITHUB_TOKEN triggar
+      # aldrig push-baserade workflows (ACCESS-STANDARD regel 1) — 29 tysta
+      # workflows i 8 repon, och inga releaser sedan 23-27 juli.
+      - name: Prägla apptoken
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+
       - name: Fetch Dependabot metadata
         id: metadata
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98
@@ -27,28 +37,43 @@ jobs:
           steps.metadata.outputs.update-type == 'version-update:semver-major')
         run: |
           for i in 1 2 3 4 5; do
-            gh pr merge --auto --delete-branch --squash "$PR_URL" && break
-            echo "attempt $i failed, retrying in 60s..."
+            gh pr merge --auto "$PR_URL" && exit 0
+            echo "försök $i misslyckades, väntar 60s..."
             sleep 60
           done
+          echo "::error::auto-merge kunde inte armeras efter 5 försök"
+          exit 1
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
 
+      # cargo/gradle/nuget är UNDANTAGNA: deras uppdateringar valideras inte
+      # av någon required check. Required är bara xcodegen-and-build,
+      # swiftpm-macos och linuxapp-build — linuxapp-msrv och android-build är
+      # det inte, och för WindowsApp finns ingen CI alls. En auto-mergad bump
+      # kunde alltså höja Rust-MSRV-golvet, bryta Android-bygget eller ändra
+      # .NET-beroenden utan att något körde. Låt dem stå öppna för granskning.
+      # Ta bort undantaget när respektive jobb gjorts required via
+      # apply-ruleset.sh (körs av människa, inte agent).
       - name: Auto-merge patch and minor updates (other ecosystems)
         if: |
-          steps.metadata.outputs.package-ecosystem != 'github_actions' && (
+          steps.metadata.outputs.package-ecosystem != 'github_actions' &&
+          steps.metadata.outputs.package-ecosystem != 'cargo' &&
+          steps.metadata.outputs.package-ecosystem != 'gradle' &&
+          steps.metadata.outputs.package-ecosystem != 'nuget' && (
           steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
           steps.metadata.outputs.update-type == 'version-update:semver-minor')
         run: |
           for i in 1 2 3 4 5; do
-            gh pr merge --auto --delete-branch --squash "$PR_URL" && break
-            echo "attempt $i failed, retrying in 60s..."
+            gh pr merge --auto "$PR_URL" && exit 0
+            echo "försök $i misslyckades, väntar 60s..."
             sleep 60
           done
+          echo "::error::auto-merge kunde inte armeras efter 5 försök"
+          exit 1
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
 
   security-autofix:
     runs-on: ubuntu-latest
@@ -56,16 +81,25 @@ jobs:
     # bidragsgivaren), så prefix/namn får aldrig ensamt öppna auto-merge.
     if: github.event.pull_request.head.repo.full_name == github.repository && contains(github.head_ref, 'alert-autofix')
     steps:
+      - name: Prägla apptoken
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+
       - name: Enable auto-merge for security fixes
         run: |
           for i in 1 2 3 4 5; do
-            gh pr merge --auto --squash --delete-branch "$PR_URL" && break
-            echo "attempt $i failed, retrying in 60s..."
+            gh pr merge --auto "$PR_URL" && exit 0
+            echo "försök $i misslyckades, väntar 60s..."
             sleep 60
           done
+          echo "::error::auto-merge kunde inte armeras efter 5 försök"
+          exit 1
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
 
   claude:
     runs-on: ubuntu-latest
@@ -76,6 +110,13 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       (startsWith(github.head_ref, 'claude/') || contains(github.event.pull_request.labels.*.name, 'claude'))
     steps:
+      - name: Prägla apptoken
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+
       - name: Auto-merge Claude AI PRs once checks pass
         run: |
           gh pr ready "$PR_URL" || true
@@ -86,62 +127,91 @@ jobs:
           # merge-försöket görs. Se blixten85/repo-standard#19.
           sleep 90
           for i in 1 2 3 4 5; do
-            gh pr merge --auto --squash --delete-branch "$PR_URL" && break
-            echo "attempt $i failed, retrying in 60s..."
+            gh pr merge --auto "$PR_URL" && exit 0
+            echo "försök $i misslyckades, väntar 60s..."
             sleep 60
           done
+          echo "::error::auto-merge kunde inte armeras efter 5 försök"
+          exit 1
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
 
   maintainer-fix:
     runs-on: ubuntu-latest
     if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login == 'blixten85' && startsWith(github.head_ref, 'fix/')
     steps:
+      - name: Prägla apptoken
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+
       - name: Auto-merge trusted fix PRs once checks pass
         run: |
           gh pr ready "$PR_URL" || true
           sleep 90 # se claude-jobbet ovan för varför
           for i in 1 2 3 4 5; do
-            gh pr merge --auto --squash --delete-branch "$PR_URL" && break
-            echo "attempt $i failed, retrying in 60s..."
+            gh pr merge --auto "$PR_URL" && exit 0
+            echo "försök $i misslyckades, väntar 60s..."
             sleep 60
           done
+          echo "::error::auto-merge kunde inte armeras efter 5 försök"
+          exit 1
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
 
   codex:
     runs-on: ubuntu-latest
     if: github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'codex/')
     steps:
+      - name: Prägla apptoken
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+
       - name: Auto-merge Codex AI PRs once checks pass
         run: |
           gh pr ready "$PR_URL" || true
           sleep 90 # se claude-jobbet ovan för varför
           for i in 1 2 3 4 5; do
-            gh pr merge --auto --squash --delete-branch "$PR_URL" && break
-            echo "attempt $i failed, retrying in 60s..."
+            gh pr merge --auto "$PR_URL" && exit 0
+            echo "försök $i misslyckades, väntar 60s..."
             sleep 60
           done
+          echo "::error::auto-merge kunde inte armeras efter 5 försök"
+          exit 1
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
 
   copilot:
     runs-on: ubuntu-latest
     if: github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'copilot/')
     steps:
+      - name: Prägla apptoken
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+
       - name: Auto-merge Copilot PRs once checks pass
         run: |
           gh pr ready "$PR_URL" || true
           sleep 90 # se claude-jobbet ovan för varför
           for i in 1 2 3 4 5; do
-            gh pr merge --auto --squash --delete-branch "$PR_URL" && break
-            echo "attempt $i failed, retrying in 60s..."
+            gh pr merge --auto "$PR_URL" && exit 0
+            echo "försök $i misslyckades, väntar 60s..."
             sleep 60
           done
+          echo "::error::auto-merge kunde inte armeras efter 5 försök"
+          exit 1
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
 
