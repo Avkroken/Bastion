@@ -21,6 +21,7 @@ updates:
       # bugg PR #149 fixade. Ta inte bort förrän uppströms löst #3647; se
       # kommentaren i Package.swift. Kontrollerat 2026-08-11: #3647 öppen.
       # Endast exakt paketnamn (ingen wildcard) så swift-nio-ssh inte fryses.
+      # review-by: 2027-02-11
       - dependency-name: "swift-nio"
 
   # App/Gemfile.lock (fastlane) saknade tidigare ekosystem här, så gems
