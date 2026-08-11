@@ -35,9 +35,20 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ github.token }}
 
+      # cargo/gradle/nuget är UNDANTAGNA: deras uppdateringar valideras inte
+      # av någon required check. Required är bara xcodegen-and-build,
+      # swiftpm-macos och linuxapp-build — linuxapp-msrv och android-build är
+      # det inte, och för WindowsApp finns ingen CI alls. En auto-mergad bump
+      # kunde alltså höja Rust-MSRV-golvet, bryta Android-bygget eller ändra
+      # .NET-beroenden utan att något körde. Låt dem stå öppna för granskning.
+      # Ta bort undantaget när respektive jobb gjorts required via
+      # apply-ruleset.sh (körs av människa, inte agent).
       - name: Auto-merge patch and minor updates (other ecosystems)
         if: |
-          steps.metadata.outputs.package-ecosystem != 'github_actions' && (
+          steps.metadata.outputs.package-ecosystem != 'github_actions' &&
+          steps.metadata.outputs.package-ecosystem != 'cargo' &&
+          steps.metadata.outputs.package-ecosystem != 'gradle' &&
+          steps.metadata.outputs.package-ecosystem != 'nuget' && (
           steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
           steps.metadata.outputs.update-type == 'version-update:semver-minor')
         run: |
