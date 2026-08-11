@@ -24,7 +24,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-uti
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
-dirs = "5"
+dirs = "6"
 async-channel = "2"
 async-trait = "0.1"
 vte = { version = "0.10", package = "vte4" }
