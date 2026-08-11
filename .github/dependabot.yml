@@ -22,6 +22,19 @@ updates:
       # wildcard) so this does not also freeze swift-nio-ssh.
       - dependency-name: "swift-nio"
 
+  # App/Gemfile.lock (fastlane) saknade tidigare ekosystem här, så gems
+  # uppdaterades aldrig — därav den kvarliggande json-alerten.
+  - package-ecosystem: "bundler"
+    directory: "/App"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "00:30"
+      timezone: "Europe/Stockholm"
+    groups:
+      bundler-patch-minor:
+        update-types: ["minor", "patch"]
+
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
