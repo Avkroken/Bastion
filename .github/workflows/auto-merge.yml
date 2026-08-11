@@ -37,10 +37,12 @@ jobs:
           steps.metadata.outputs.update-type == 'version-update:semver-major')
         run: |
           for i in 1 2 3 4 5; do
-            gh pr merge --auto --delete-branch --squash "$PR_URL" && break
-            echo "attempt $i failed, retrying in 60s..."
+            gh pr merge --auto "$PR_URL" && exit 0
+            echo "försök $i misslyckades, väntar 60s..."
             sleep 60
           done
+          echo "::error::auto-merge kunde inte armeras efter 5 försök"
+          exit 1
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -63,10 +65,12 @@ jobs:
           steps.metadata.outputs.update-type == 'version-update:semver-minor')
         run: |
           for i in 1 2 3 4 5; do
-            gh pr merge --auto --delete-branch --squash "$PR_URL" && break
-            echo "attempt $i failed, retrying in 60s..."
+            gh pr merge --auto "$PR_URL" && exit 0
+            echo "försök $i misslyckades, väntar 60s..."
             sleep 60
           done
+          echo "::error::auto-merge kunde inte armeras efter 5 försök"
+          exit 1
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -87,10 +91,12 @@ jobs:
       - name: Enable auto-merge for security fixes
         run: |
           for i in 1 2 3 4 5; do
-            gh pr merge --auto --squash --delete-branch "$PR_URL" && break
-            echo "attempt $i failed, retrying in 60s..."
+            gh pr merge --auto "$PR_URL" && exit 0
+            echo "försök $i misslyckades, väntar 60s..."
             sleep 60
           done
+          echo "::error::auto-merge kunde inte armeras efter 5 försök"
+          exit 1
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -121,10 +127,12 @@ jobs:
           # merge-försöket görs. Se blixten85/repo-standard#19.
           sleep 90
           for i in 1 2 3 4 5; do
-            gh pr merge --auto --squash --delete-branch "$PR_URL" && break
-            echo "attempt $i failed, retrying in 60s..."
+            gh pr merge --auto "$PR_URL" && exit 0
+            echo "försök $i misslyckades, väntar 60s..."
             sleep 60
           done
+          echo "::error::auto-merge kunde inte armeras efter 5 försök"
+          exit 1
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -145,10 +153,12 @@ jobs:
           gh pr ready "$PR_URL" || true
           sleep 90 # se claude-jobbet ovan för varför
           for i in 1 2 3 4 5; do
-            gh pr merge --auto --squash --delete-branch "$PR_URL" && break
-            echo "attempt $i failed, retrying in 60s..."
+            gh pr merge --auto "$PR_URL" && exit 0
+            echo "försök $i misslyckades, väntar 60s..."
             sleep 60
           done
+          echo "::error::auto-merge kunde inte armeras efter 5 försök"
+          exit 1
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -169,10 +179,12 @@ jobs:
           gh pr ready "$PR_URL" || true
           sleep 90 # se claude-jobbet ovan för varför
           for i in 1 2 3 4 5; do
-            gh pr merge --auto --squash --delete-branch "$PR_URL" && break
-            echo "attempt $i failed, retrying in 60s..."
+            gh pr merge --auto "$PR_URL" && exit 0
+            echo "försök $i misslyckades, väntar 60s..."
             sleep 60
           done
+          echo "::error::auto-merge kunde inte armeras efter 5 försök"
+          exit 1
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -193,10 +205,12 @@ jobs:
           gh pr ready "$PR_URL" || true
           sleep 90 # se claude-jobbet ovan för varför
           for i in 1 2 3 4 5; do
-            gh pr merge --auto --squash --delete-branch "$PR_URL" && break
-            echo "attempt $i failed, retrying in 60s..."
+            gh pr merge --auto "$PR_URL" && exit 0
+            echo "försök $i misslyckades, väntar 60s..."
             sleep 60
           done
+          echo "::error::auto-merge kunde inte armeras efter 5 försök"
+          exit 1
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
