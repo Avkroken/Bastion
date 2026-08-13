@@ -25,7 +25,7 @@
 
   <ItemGroup>
     <!-- Windows App SDK / WinUI 3 -->
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.250108002" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260710003" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.1742" />
     <!-- Terminalen renderas med xterm.js i en WebView2 — WinUI 3 har ingen
          inbyggd VTE-motsvarighet (se Assets/xterm/, vendrat lokalt, ingen CDN). -->
