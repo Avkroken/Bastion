@@ -1,0 +1,228 @@
+name: LinuxApp-paketering (.deb)
+
+# Paketerar bastion-linuxapp (den native Rust/GTK4/libadwaita-klienten i
+# LinuxApp/, se ROADMAP.md "Arkitekturbeslut") som ett fristående .deb-paket
+# — samma "Paketering + BSD-täckning"-backloggpunkt som redan täcker
+# bastion-cli (.deb/.rpm). Till skillnad från Swift-CLI:t länkas
+# bastion-linuxapp DYNAMISKT mot systemets GTK4/libadwaita/VTE4-bibliotek
+# (ingen statisk-runtime-motsvarighet för Rust/GTK4-stacken) — paketet
+# deklarerar därför riktiga runtime-Depends i stället för att bunta ihop
+# delade bibliotek (den mycket dyrare vägen som det numera rivna
+# SwiftCrossUI-spårets bastion-gui behövde, se ROADMAP.md).
+#
+# Samma härledda-beroende-strategi som bastion-cli/.deb (`readelf -d` mot
+# binärens EGNA DT_NEEDED-lista, uppslaget mot Debian-paket via `dpkg -S`)
+# — bara en annan biblioteksfamilj (GTK4/GLib/libadwaita/VTE i stället för
+# libcurl/libxml2).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: linuxapp-packaging-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-deb-linuxapp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: LinuxApp
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Läs version (senaste v[0-9]*-tagg, annars 0.0.0)
+        id: version
+        working-directory: .
+        run: |
+          TAG=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
+          VERSION="${TAG#v}"
+          if [ -z "$VERSION" ]; then VERSION="0.0.0"; fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Installera GTK4/libadwaita/vte4-headers + binutils
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config binutils
+
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
+        with:
+          toolchain: stable
+
+      - name: cargo build --release
+        run: cargo build --release --verbose
+
+      # `readelf -d` läser binärens egen DT_NEEDED-lista (dess faktiska
+      # dynamiska beroenden) — inte en gissning om vilka GTK4-relaterade
+      # paket som "brukar" behövas.
+      - name: Bestäm faktiska körtidsberoenden (DT_NEEDED → Debian-paket)
+        id: deps
+        run: |
+          set -euo pipefail
+          BIN=target/release/bastion-linuxapp
+          # LC_ALL=C: readelfs "Shared library:"-etikett är lokalberoende
+          # (t.ex. "delat bibliotek:" på en sv_SE-miljö) — matcha alltid mot
+          # den engelska outputen oavsett runnerns/skalets standardlokal.
+          NEEDED=$(LC_ALL=C readelf -d "$BIN" | sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p')
+          echo "Direkta delade bibliotek (DT_NEEDED):"
+          echo "$NEEDED"
+
+          PACKAGES=""
+          for LIB in $NEEDED; do
+            case "$LIB" in
+              # Grundläggande glibc-familjen (samma logiska beroende, täcks
+              # av `libc6` nedan) — utesluts bara från den HÄRLEDDA listan,
+              # inte från kontrollen.
+              libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libutil.so*|libgcc_s.so*|ld-linux*|linux-vdso*)
+                continue
+                ;;
+            esac
+            # ldconfig -p listar SAMMA biblioteksnamn i flera arkitektur-
+            # varianter (t.ex. x32 FÖRE x86-64) på en Ubuntu-runner — matcha
+            # explicit mot x86-64-taggen, annars slår uppslaget fel väg
+            # (CI-fynd, samma symlänk-/arkitekturfälla som redan dokumenterats
+            # för bastion-cli/.deb men här mot ldconfig -p:s flera rader i
+            # stället för /lib→usr/lib-symlänken).
+            LIBPATH=$(ldconfig -p | awk -v lib="$LIB" '$1 == lib && $0 ~ /x86-64/ { print $NF; exit }')
+            if [ -z "$LIBPATH" ]; then
+              echo "::error::hittar inte $LIB (x86-64) via ldconfig — kan inte slå upp vilket Debian-paket det tillhör"
+              exit 1
+            fi
+            LIBPATH=$(readlink -f "$LIBPATH")
+            PKG=$(dpkg -S "$LIBPATH" | head -1 | cut -d: -f1 | cut -d, -f1 | xargs)
+            if [ -z "$PKG" ]; then
+              echo "::error::$LIBPATH (från $LIB) tillhör inget känt Debian-paket"
+              exit 1
+            fi
+            PACKAGES="$PACKAGES $PKG"
+          done
+
+          EXTRA=$(printf '%s\n' $PACKAGES | sort -u | grep -v '^$' | grep -v '^libc6$' | paste -sd, - | sed 's/,/, /g')
+          DEPENDS="libc6${EXTRA:+, $EXTRA}"
+          echo "Härledd Depends-rad: $DEPENDS"
+          echo "depends=$DEPENDS" >> "$GITHUB_OUTPUT"
+
+      - name: Bygg .deb-paketträd
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DEPENDS: ${{ steps.deps.outputs.depends }}
+        run: |
+          set -euo pipefail
+          ROOT="dist/bastion-linuxapp_${VERSION}_amd64"
+          mkdir -p "$ROOT/DEBIAN" "$ROOT/usr/bin" "$ROOT/usr/share/applications"
+          cp target/release/bastion-linuxapp "$ROOT/usr/bin/bastion-linuxapp"
+          chmod 755 "$ROOT/usr/bin/bastion-linuxapp"
+          cp packaging/bastion-linuxapp.desktop "$ROOT/usr/share/applications/bastion-linuxapp.desktop"
+          cat > "$ROOT/DEBIAN/control" <<EOF
+          Package: bastion-linuxapp
+          Version: $VERSION
+          Section: net
+          Priority: optional
+          Architecture: amd64
+          Maintainer: blixten85 <noreply@github.com>
+          Homepage: https://github.com/blixten85/bastion
+          Depends: $DEPENDS
+          Description: Fri, öppen, fristående SSH-klient (GTK4-skrivbordsklient)
+           bastion-linuxapp är den native Rust/GTK4/libadwaita-skrivbordsklienten:
+           värdlista, terminal (VTE4), SFTP, Docker, kommandobibliotek, synk.
+          EOF
+          dpkg-deb --build --root-owner-group "$ROOT"
+          mkdir -p dist-out
+          mv "dist/bastion-linuxapp_${VERSION}_amd64.deb" dist-out/
+
+      # Installeras + körs i en HELT FRISK ubuntu:24.04-container (inte på
+      # byggvärden, som redan har -dev-paketen och deras runtime-bibliotek
+      # på disk sedan installationssteget ovan — samma "fel sak bevisad"-
+      # fälla som CodeRabbit flaggade för bastion-guis .deb-jobb).
+      # `apt-get install ./paket.deb` löser Depends-raden på riktigt via
+      # apt, till skillnad från `dpkg -i` som bara installerar paketet och
+      # lämnar olösta beroenden bakom sig.
+      - name: Installera och kör paketet i en frisk container
+        # Skyddsnät: en tidigare hängning i det här steget (needrestart-
+        # prompten, se kommentaren nedan) åt upp hela jobbets 20-minuters-
+        # tak innan felet syntes någonstans (CI-fynd) — ett kort steg-eget
+        # tak ger ett snabbt, tydligt fel i stället.
+        #
+        # CI-fynd (2026-08-04, tredje körningen på PR #241): steget tog
+        # fortfarande hela 5-minuterstaket EFTER DEBIAN_FRONTEND/
+        # NEEDRESTART_MODE-fixen ovan (`-qq` dolde all output, så det gick
+        # inte att se om det satt fast eller bara var långsamt). Troligaste
+        # förklaringen: den fräscha `ubuntu:24.04`-containern har ingen
+        # apt-cache/proxy (till skillnad från byggvärdens EGEN
+        # apt-get-installation två steg upp, som tar ~25 s för en jämförbar
+        # GTK4-paketmängd tack vare runnerns paketcache) — ett fullt
+        # GTK4/libadwaita/VTE4+X11-skrivbordsträd över öppna internet kan
+        # rimligen ta längre än 5 minuter, inte bara hänga. Åtgärdat med:
+        # (1) `--no-install-recommends` för att undvika onödiga extra-paket,
+        # (2) `</dev/null` på varje apt-get-anrop som ett billigt skydd om
+        # någon prompt ändå läser stdin, (3) tidsstämplad progress-output
+        # (utan `-qq`) så nästa körnings logg visar VILKET kommando som
+        # faktiskt tar tiden i stället för att vara helt tyst, (4) taket
+        # höjt 5 → 12 minuter — fortfarande långt under jobbets 20-minuters-
+        # gräns, men rum för en kall paketinstallation.
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/dist-out:/dist-out:ro" \
+            -e DEBIAN_FRONTEND=noninteractive -e NEEDRESTART_MODE=a \
+            ubuntu:24.04 bash -euo pipefail -c '
+            # `DEBIAN_FRONTEND=noninteractive`/`NEEDRESTART_MODE=a`: ett
+            # `apt-get install` av ett paket med `dbus`/GTK-bibliotek som
+            # beroende drar in `needrestart`, som annars öppnar en
+            # interaktiv whiptail-dialog ("vilka tjänster ska startas om?")
+            # och HÄNGER hela jobbet till 20-minuters-taket i en tom
+            # container utan TTY (CI-fynd — `xvfb-run`-bytet till manuell
+            # Xvfb ovan löste INTE detta, roten var apt-installationen
+            # själv, inte GUI-uppstarten).
+            echo "[$(date -u +%H:%M:%S)] apt-get update"
+            apt-get update -q </dev/null
+            echo "[$(date -u +%H:%M:%S)] installerar bastion-linuxapp + beroenden"
+            apt-get install -y -q --no-install-recommends /dist-out/*.deb </dev/null
+            echo "[$(date -u +%H:%M:%S)] installerar xvfb + dbus-x11"
+            apt-get install -y -q --no-install-recommends xvfb dbus-x11 </dev/null
+            echo "[$(date -u +%H:%M:%S)] apt klar"
+
+            # `xvfb-run -a` HÄNGDE hela jobbet till 20-minuters-taket i
+            # CI (ingen output, ingen krasch, bara tyst — CI-fynd) — samma
+            # manuella Xvfb+DISPLAY-mönster som redan verifierat fungerar
+            # (körd interaktivt tidigare i den här sessionen) används i
+            # stället. `dbus-run-session` ger en riktig session-bus +
+            # maskin-ID, annars kraschar GTK ("Cannot spawn a message bus
+            # without a machine-id") i en helt tom container.
+            Xvfb :99 -screen 0 1280x800x24 >/tmp/xvfb.log 2>&1 &
+            XVFB_PID=$!
+            export DISPLAY=:99
+            sleep 1
+            dbus-run-session -- bastion-linuxapp >/tmp/app.log 2>&1 &
+            APP_PID=$!
+            sleep 5
+            if ! kill -0 "$APP_PID" 2>/dev/null; then
+              echo "::error::bastion-linuxapp dog inom 5s efter start (troligen ett olöst runtime-beroende)"
+              cat /tmp/app.log
+              exit 1
+            fi
+            echo "[$(date -u +%H:%M:%S)] bastion-linuxapp lever, städar upp"
+            kill "$APP_PID" 2>/dev/null || true
+            kill "$XVFB_PID" 2>/dev/null || true
+          '
+
+      - name: Ladda upp .deb-artefakt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: bastion-linuxapp-deb
+          # `actions/upload-artifact` respekterar INTE jobbets
+          # `defaults.run.working-directory` (bara `run:`-steg gör det) —
+          # sökvägen måste vara relativ till $GITHUB_WORKSPACE, alltså med
+          # `LinuxApp/`-prefixet (CI-fynd: "No files were found").
+          path: LinuxApp/dist-out/*.deb
+          if-no-files-found: error

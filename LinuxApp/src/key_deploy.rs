@@ -157,9 +157,21 @@ fn deploy_command_for_host(host: &Host, public_key_line: &str) -> String {
 fn deploy_command_windows(public_key_line: &str, path: &str, set_acl: bool) -> String {
     let ps_quote = |s: &str| format!("'{}'", s.replace('\'', "''"));
     let ps_key = ps_quote(public_key_line);
-    let ps_path = ps_quote(path);
+
+    // `path` kan innehålla `$env:USERPROFILE` (standardkontogrenen) — ett
+    // enkelcitat PowerShell-argument är en LITERAL sträng, variabeln
+    // expanderas då aldrig och nyckeln hade skrivits till en fil som
+    // bokstavligen heter "$env:USERPROFILE\.ssh\authorized_keys" (CodeRabbit-
+    // fynd). `Join-Path $env:USERPROFILE <resten enkelciterad>` expanderar
+    // variabeln på RÄTT sida (PowerShell-uttrycket), medan resten av
+    // sökvägen förblir en literal, injektionssäker sträng.
+    let ps_expr = |p: &str| match p.strip_prefix(r"$env:USERPROFILE\") {
+        Some(rest) => format!("(Join-Path $env:USERPROFILE {})", ps_quote(rest)),
+        None => ps_quote(p),
+    };
+    let ps_path = ps_expr(path);
     let dir = path.rsplit_once('\\').map(|(d, _)| d).unwrap_or(path);
-    let ps_dir = ps_quote(dir);
+    let ps_dir = ps_expr(dir);
 
     let mut script = format!(
         "$ErrorActionPreference = 'Stop'\n\
@@ -167,7 +179,7 @@ fn deploy_command_windows(public_key_line: &str, path: &str, set_acl: bool) -> S
          $path = {ps_path}\n\
          $dir = {ps_dir}\n\
          if (!(Test-Path $dir)) {{ New-Item -ItemType Directory -Path $dir -Force | Out-Null }}\n\
-         if (!(Test-Path $path) -or -not (Select-String -Path $path -Pattern ([regex]::Escape($key)) -SimpleMatch -Quiet)) {{\n    \
+         if (!(Test-Path $path) -or -not (Select-String -LiteralPath $path -Pattern $key -SimpleMatch -Quiet)) {{\n    \
              Add-Content -Path $path -Value $key\n\
          }}"
     );
@@ -425,8 +437,43 @@ mod tests {
     fn deploy_command_windows_standard_skips_the_acl_lockdown() {
         let cmd = deploy_command_windows("ssh-ed25519 AAAA bastion@test", r"$env:USERPROFILE\.ssh\authorized_keys", false);
         let script = decode_powershell_script(&cmd);
-        assert!(script.contains(r"$env:USERPROFILE\.ssh\authorized_keys"));
         assert!(!script.contains("icacls"), "standardkontot ska INTE låsa ner ACL:er");
+    }
+
+    /// `-SimpleMatch` gör redan sökningen LITERAL — att ändå köra `$key`
+    /// genom `[regex]::Escape` (TIDIGARE kod) bäddar in bakstreck i en
+    /// kommentar som t.ex. `key[prod]`, vilket gör att det escapade
+    /// mönstret ALDRIG matchar den riktiga, oescapade raden i filen.
+    /// Idempotensen hade alltså varit trasig för varje nyckelkommentar med
+    /// hakparenteser eller andra regex-specialtecken — samma nyckel hade
+    /// lagts till på nytt vid varje körning (CodeRabbit-fynd).
+    #[test]
+    fn deploy_command_windows_uses_a_literal_simplematch_not_a_regex_escaped_one() {
+        let cmd = deploy_command_windows("ssh-ed25519 AAAA key[prod]", r"C:\path\authorized_keys", false);
+        let script = decode_powershell_script(&cmd);
+        assert!(!script.contains("[regex]::Escape"), "fick: {script}");
+        assert!(script.contains("-Pattern $key -SimpleMatch"), "fick: {script}");
+    }
+
+    /// `$env:USERPROFILE` fick TIDIGARE inbäddas i ett enkelcitat PowerShell-
+    /// argument, som är literalt — variabeln expanderades aldrig, och
+    /// nyckeln hade skrivits till en fil som bokstavligen HETER
+    /// "$env:USERPROFILE\.ssh\authorized_keys" i stället för användarens
+    /// riktiga hemkatalog (CodeRabbit-fynd). `Join-Path $env:USERPROFILE …`
+    /// (utanför citattecken, i PowerShell-uttrycket) expanderar variabeln
+    /// korrekt.
+    #[test]
+    fn deploy_command_windows_standard_expands_userprofile_via_join_path() {
+        let cmd = deploy_command_windows("ssh-ed25519 AAAA bastion@test", r"$env:USERPROFILE\.ssh\authorized_keys", false);
+        let script = decode_powershell_script(&cmd);
+        assert!(
+            script.contains(r"Join-Path $env:USERPROFILE '.ssh\authorized_keys'"),
+            "$env:USERPROFILE måste expanderas via Join-Path, inte bäddas in i ett literalt enkelcitat, fick: {script}"
+        );
+        assert!(
+            !script.contains(r"'$env:USERPROFILE"),
+            "$env:USERPROFILE får aldrig hamna INUTI ett enkelcitat (då expanderas det aldrig), fick: {script}"
+        );
     }
 
     #[test]

@@ -1,0 +1,101 @@
+name: LinuxApp-paketering (.rpm)
+
+# RPM-halvan av linuxapp-packaging.yml — samma bastion-linuxapp-binär,
+# samma härledda-beroende-teknik (binärens EGNA DT_NEEDED-lista via
+# `readelf -d`), bara uppslaget mot RPM-paket via `rpm -qf` i stället för
+# `dpkg -S`. GTK4/libadwaita/VTE4 är GNOME-native skrivbordskomponenter —
+# byggs i en Fedora-container (inte RHEL UBI9, som bastion-clis .rpm-jobb
+# använder: UBI9s begränsade repos har inga skrivbordspaket).
+#
+# MEDVETET `docker run fedora:40 …` i stället för `container: fedora:40`
+# på jobbnivå: build- OCH smoke-test-stegen behöver var sitt `docker run`
+# (det senare i en HELT FRISK container, se nedan) — ett jobb-nivå-
+# `container:` har ingen egen docker-daemon-åtkomst (ingen docker-in-
+# docker på GitHub-runners utan extra uppsättning), så hela flödet körs
+# som `docker run`-anrop på den bara `ubuntu-24.04`-runnern i stället.
+# Byggskriptet ligger i packaging/build-rpm.sh (inte inline i YAML) för
+# att undvika skör nästlad bash-i-YAML-citering.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: linuxapp-packaging-rpm-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-rpm-linuxapp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Läs version (senaste v[0-9]*-tagg, annars 0.0.0)
+        id: version
+        run: |
+          TAG=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
+          VERSION="${TAG#v}"
+          if [ -z "$VERSION" ]; then VERSION="0.0.0"; fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Bygg release-binär + .rpm-paket i en Fedora-container
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist-out
+          docker run --rm \
+            -v "$PWD:/work" \
+            -e VERSION="$VERSION" \
+            fedora:40 bash /work/LinuxApp/packaging/build-rpm.sh
+          ls -la dist-out/
+
+      # HELT FRISK Fedora-container (aldrig haft -devel-paketen installerade)
+      # — samma "fel sak bevisad annars"-princip som .deb-jobbets smoke-test.
+      - name: Installera och kör paketet i en frisk container
+        # Skyddsnät: samma dnf/apt-hängningsrisk som .deb-jobbet — ett
+        # kort steg-eget tak ger ett snabbt, tydligt fel i stället för att
+        # äta upp hela jobbets 20-minuterstak tyst.
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/dist-out:/dist-out:ro" fedora:40 bash -euo pipefail -c '
+            dnf install -y -q /dist-out/*.rpm
+            # `xorg-x11-server-Xvfb` för displayen; `dbus-x11` för
+            # `dbus-run-session` (annars kraschar GTK — "Cannot spawn a
+            # message bus without a machine-id" i en helt tom container,
+            # CI-fynd); `mesa-libGLES` för `libGLESv2.so.2` (samma
+            # CI-fynd — GTK4s renderare letar efter den även med mjukvaru-
+            # rendering).
+            dnf install -y -q xorg-x11-server-Xvfb dbus-x11 mesa-libGLES
+            Xvfb :99 -screen 0 1280x800x24 >/tmp/xvfb.log 2>&1 &
+            XVFB_PID=$!
+            export DISPLAY=:99
+            sleep 1
+            dbus-run-session -- bastion-linuxapp >/tmp/app.log 2>&1 &
+            APP_PID=$!
+            sleep 5
+            if ! kill -0 "$APP_PID" 2>/dev/null; then
+              echo "::error::bastion-linuxapp dog inom 5s efter start (troligen ett olöst runtime-beroende)"
+              cat /tmp/app.log
+              exit 1
+            fi
+            kill "$APP_PID" 2>/dev/null || true
+            kill "$XVFB_PID" 2>/dev/null || true
+          '
+
+      - name: Ladda upp .rpm-artefakt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: bastion-linuxapp-rpm
+          path: dist-out/*.rpm
+          if-no-files-found: error
