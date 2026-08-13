@@ -1,0 +1,21 @@
+name: Dependabot auto-merge
+
+# Dependabot har ingen egen auto-merge; GitHubs dokumentation pekar ut den här
+# workflowen som vägen. Den mergar inget själv — den slår på GitHubs auto-merge,
+# så rulesetets checkar gäller precis som vanligt.
+
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  arm:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
