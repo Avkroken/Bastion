@@ -8,10 +8,10 @@ name: Android-bygge
 # bara körs när Android/ faktiskt ändras.
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     paths: ["Android/**"]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
     paths: ["Android/**"]
   workflow_dispatch:
 

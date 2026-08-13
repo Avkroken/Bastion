@@ -15,9 +15,9 @@ name: SwiftPM-Linux-bygge
 # distro (`noble` = Ubuntu 24.04) som runnern annars kör på.
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 concurrency:
