@@ -33,7 +33,7 @@ pbkdf2 = { version = "0.13.0", default-features = false, features = ["hmac"] }
 sha2 = "0.11.0"
 aes-gcm = "0.11.0"
 rand = "0.10.2"
-base64 = "0.22"
+base64 = "0.23"
 hmac = "0.13"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 quick-xml = "0.37"
