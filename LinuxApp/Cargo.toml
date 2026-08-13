@@ -36,6 +36,6 @@ rand = "0.10.2"
 base64 = "0.23"
 hmac = "0.13"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
-quick-xml = "0.37"
+quick-xml = "0.41"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 libc = "0.2"
