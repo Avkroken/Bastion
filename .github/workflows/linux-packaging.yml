@@ -14,9 +14,9 @@ name: Linux-paketering (.deb)
 # efter `dpkg-deb --build` — inte bara "det kompilerar".
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 concurrency:

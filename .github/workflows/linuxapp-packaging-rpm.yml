@@ -17,9 +17,9 @@ name: LinuxApp-paketering (.rpm)
 # att undvika skör nästlad bash-i-YAML-citering.
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 concurrency:

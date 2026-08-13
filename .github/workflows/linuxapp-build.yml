@@ -27,9 +27,9 @@ on:
   # merge-gruppen, och kön kan aldrig merga något.
   merge_group:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 concurrency:

@@ -16,9 +16,9 @@ name: LinuxApp-paketering (.deb)
 # libcurl/libxml2).
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 concurrency:

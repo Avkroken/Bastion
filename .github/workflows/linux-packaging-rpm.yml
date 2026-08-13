@@ -10,9 +10,9 @@ name: Linux-paketering (.rpm)
 # Swift-runtimen) är ett separat, större paketeringssteg, se ROADMAP.md.
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 concurrency:
