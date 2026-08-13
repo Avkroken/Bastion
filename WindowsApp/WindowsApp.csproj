@@ -29,7 +29,7 @@
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.8249" />
     <!-- Terminalen renderas med xterm.js i en WebView2 — WinUI 3 har ingen
          inbyggd VTE-motsvarighet (se Assets/xterm/, vendrat lokalt, ingen CDN). -->
-    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2957.106" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4129.50" />
   </ItemGroup>
 
   <ItemGroup>
