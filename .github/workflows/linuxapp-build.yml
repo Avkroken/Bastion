@@ -23,9 +23,6 @@ name: LinuxApp-bygge (Rust/GTK4)
 # också opathfiltrerade) — måste köra på VARJE PR mot main, inte bara de
 # som råkar röra LinuxApp/.
 on:
-  # Krävs för merge queue: utan denna kör inga checkar på
-  # merge-gruppen, och kön kan aldrig merga något.
-  merge_group:
   push:
     branches: [main, dev]
   pull_request:

@@ -4,9 +4,6 @@ name: Xcode-bygge (iOS + macOS + tvOS)
 # eller enhetsinstallation här — det kräver ett Apple Developer-konto, se
 # README "Kontointegration"/"Bygg appen (på en Mac)" för nästa steg dit.
 on:
-  # Krävs för merge queue: utan denna kör inga checkar på
-  # merge-gruppen, och kön kan aldrig merga något.
-  merge_group:
   push:
     branches: [main, dev]
   pull_request:
