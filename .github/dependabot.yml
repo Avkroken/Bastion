@@ -1,6 +1,7 @@
 version: 2
 updates:
   - package-ecosystem: "swift"
+    assignees: ["blixten85"]
     directories:
       - "/"
       - "/LinuxApp"
@@ -27,6 +28,7 @@ updates:
   # App/Gemfile.lock (fastlane) saknade tidigare ekosystem här, så gems
   # uppdaterades aldrig — därav den kvarliggande json-alerten.
   - package-ecosystem: "bundler"
+    assignees: ["blixten85"]
     directory: "/App"
     schedule:
       interval: "weekly"
@@ -39,6 +41,7 @@ updates:
 
   # LinuxApp/Cargo.toml — Rust-appens beroendeträd var helt obevakat.
   - package-ecosystem: "cargo"
+    assignees: ["blixten85"]
     directory: "/LinuxApp"
     schedule:
       interval: "weekly"
@@ -51,6 +54,7 @@ updates:
 
   # Android/*.gradle.kts — helt obevakat.
   - package-ecosystem: "gradle"
+    assignees: ["blixten85"]
     directories:
       - "/Android"
       - "/Android/app"
@@ -65,6 +69,7 @@ updates:
 
   # WindowsApp/*.csproj — helt obevakat.
   - package-ecosystem: "nuget"
+    assignees: ["blixten85"]
     directories:
       - "/WindowsApp"
       - "/WindowsApp/Bastion.Core"
@@ -79,6 +84,7 @@ updates:
         update-types: ["minor", "patch"]
 
   - package-ecosystem: "github-actions"
+    assignees: ["blixten85"]
     directory: "/"
     schedule:
       interval: "weekly"
