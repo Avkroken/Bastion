@@ -501,12 +501,32 @@ impl S3Client {
 /// SAX-liknande "spåra aktuell tagg + en `in_target`-flagga"-mönster som
 /// `S3XMLParser` i Swift, fast med `quick-xml` istället för Foundations
 /// `XMLParser`.
+///
+/// Sedan quick-xml 0.38 levereras entiteter inte längre färdigavkodade i
+/// `Text` utan som separata `GeneralRef`-händelser. Den här löser upp en
+/// sådan referens till sin text: teckenreferenser (`&#38;`, `&#x26;`) via
+/// quick-xml, och de fem fördefinierade namnen själv. Okända namn ger tom
+/// sträng — S3 använder bara de fördefinierade.
+fn ref_text(e: &quick_xml::events::BytesRef) -> String {
+    if let Ok(Some(c)) = e.resolve_char_ref() {
+        return c.to_string();
+    }
+    match e.decode().unwrap_or_default().as_ref() {
+        "amp" => "&",
+        "lt" => "<",
+        "gt" => ">",
+        "apos" => "'",
+        "quot" => "\"",
+        _ => "",
+    }
+    .to_string()
+}
+
 pub fn parse_buckets(data: &[u8]) -> Vec<S3Bucket> {
     use quick_xml::events::Event;
     use quick_xml::reader::Reader;
 
     let mut reader = Reader::from_reader(data);
-    reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut buckets = Vec::new();
     let mut in_bucket = false;
@@ -525,7 +545,15 @@ pub fn parse_buckets(data: &[u8]) -> Vec<S3Bucket> {
                 }
             }
             Ok(Event::Text(e)) if in_bucket => {
-                let text = e.unescape().map(|s| s.into_owned()).unwrap_or_default();
+                let text = e.xml10_content().map(|s| s.into_owned()).unwrap_or_default();
+                match current_tag.as_str() {
+                    "Name" => name = Some(name.unwrap_or_default() + &text),
+                    "CreationDate" => date = Some(date.unwrap_or_default() + &text),
+                    _ => {}
+                }
+            }
+            Ok(Event::GeneralRef(e)) if in_bucket => {
+                let text = ref_text(&e);
                 match current_tag.as_str() {
                     "Name" => name = Some(name.unwrap_or_default() + &text),
                     "CreationDate" => date = Some(date.unwrap_or_default() + &text),
@@ -533,9 +561,13 @@ pub fn parse_buckets(data: &[u8]) -> Vec<S3Bucket> {
                 }
             }
             Ok(Event::End(e)) => {
+                current_tag.clear();
                 if e.local_name().as_ref() == b"Bucket" {
                     if let Some(n) = name.take() {
-                        buckets.push(S3Bucket { name: n, creation_date: date.take() });
+                        buckets.push(S3Bucket {
+                            name: n.trim().to_string(),
+                            creation_date: date.take().map(|d| d.trim().to_string()),
+                        });
                     }
                     in_bucket = false;
                 }
@@ -553,7 +585,6 @@ pub fn parse_objects(data: &[u8]) -> Vec<S3Object> {
     use quick_xml::reader::Reader;
 
     let mut reader = Reader::from_reader(data);
-    reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut objects = Vec::new();
     let mut in_contents = false;
@@ -574,7 +605,16 @@ pub fn parse_objects(data: &[u8]) -> Vec<S3Object> {
                 }
             }
             Ok(Event::Text(e)) if in_contents => {
-                let text = e.unescape().map(|s| s.into_owned()).unwrap_or_default();
+                let text = e.xml10_content().map(|s| s.into_owned()).unwrap_or_default();
+                match current_tag.as_str() {
+                    "Key" => key = Some(key.unwrap_or_default() + &text),
+                    "Size" => size = Some(size.unwrap_or_default() + &text),
+                    "LastModified" => modified = Some(modified.unwrap_or_default() + &text),
+                    _ => {}
+                }
+            }
+            Ok(Event::GeneralRef(e)) if in_contents => {
+                let text = ref_text(&e);
                 match current_tag.as_str() {
                     "Key" => key = Some(key.unwrap_or_default() + &text),
                     "Size" => size = Some(size.unwrap_or_default() + &text),
@@ -583,12 +623,16 @@ pub fn parse_objects(data: &[u8]) -> Vec<S3Object> {
                 }
             }
             Ok(Event::End(e)) => {
+                current_tag.clear();
                 if e.local_name().as_ref() == b"Contents" {
                     if let Some(k) = key.take() {
                         objects.push(S3Object {
-                            key: k,
-                            size: size.take().and_then(|s| s.parse().ok()).unwrap_or(0),
-                            last_modified: modified.take(),
+                            key: k.trim().to_string(),
+                            size: size
+                                .take()
+                                .and_then(|s| s.trim().parse().ok())
+                                .unwrap_or(0),
+                            last_modified: modified.take().map(|m| m.trim().to_string()),
                         });
                     }
                     in_contents = false;
@@ -607,7 +651,6 @@ pub fn parse_error(data: &[u8]) -> (String, String) {
     use quick_xml::reader::Reader;
 
     let mut reader = Reader::from_reader(data);
-    reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut current_tag = String::new();
     let mut code = String::new();
@@ -619,18 +662,29 @@ pub fn parse_error(data: &[u8]) -> (String, String) {
                 current_tag = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
             }
             Ok(Event::Text(e)) => {
-                let text = e.unescape().map(|s| s.into_owned()).unwrap_or_default();
+                let text = e.xml10_content().map(|s| s.into_owned()).unwrap_or_default();
                 match current_tag.as_str() {
                     "Code" => code.push_str(&text),
                     "Message" => message.push_str(&text),
                     _ => {}
                 }
             }
+            Ok(Event::GeneralRef(e)) => {
+                let text = ref_text(&e);
+                match current_tag.as_str() {
+                    "Code" => code.push_str(&text),
+                    "Message" => message.push_str(&text),
+                    _ => {}
+                }
+            }
+            Ok(Event::End(_)) => current_tag.clear(),
             Ok(Event::Eof) | Err(_) => break,
             _ => {}
         }
         buf.clear();
     }
+    let code = code.trim().to_string();
+    let message = message.trim().to_string();
     (if code.is_empty() { "Unknown".to_string() } else { code }, message)
 }
 
@@ -922,6 +976,42 @@ mod tests {
         let (code, message) = parse_error(REAL_ERROR_XML.as_bytes());
         assert_eq!(code, "NoSuchBucket");
         assert_eq!(message, "The specified bucket does not exist.");
+    }
+
+    /// quick-xml 0.38 slutade leverera entiteter färdigavkodade i `Text` och
+    /// rapporterar dem som separata `GeneralRef`-händelser i stället. Utan de
+    /// arm:arna tappas varje `&`, `<` och `>` tyst ur objektnycklar och
+    /// felmeddelanden — bara `&`-tecknet är fullt lagligt i en S3-nyckel.
+    #[test]
+    fn resolves_entities_split_out_of_text_events() {
+        let objects =
+            parse_objects(br#"<R><Contents><Key>a &amp; b/c&#38;d.txt</Key><Size>7</Size></Contents></R>"#);
+        assert_eq!(objects[0].key, "a & b/c&d.txt");
+
+        let (_, message) =
+            parse_error(br#"<Error><Code>X</Code><Message>a &lt; b &amp; c &gt; d</Message></Error>"#);
+        assert_eq!(message, "a < b & c > d");
+    }
+
+    /// Indenterad XML får inte läcka in radbrytningar i värdena. Reader:ns
+    /// `trim_text` går inte att använda längre — den trimmar varje fragment
+    /// för sig, så mellanrummen runt en entitet skulle försvinna. Därför
+    /// trimmas i stället det färdiga värdet.
+    #[test]
+    fn ignores_whitespace_between_elements() {
+        let buckets = parse_buckets(
+            br#"<L>
+  <Buckets>
+    <Bucket>
+      <Name>x</Name>
+      <CreationDate>2020-01-01T00:00:00Z</CreationDate>
+    </Bucket>
+  </Buckets>
+</L>"#,
+        );
+        assert_eq!(buckets.len(), 1);
+        assert_eq!(buckets[0].name, "x");
+        assert_eq!(buckets[0].creation_date.as_deref(), Some("2020-01-01T00:00:00Z"));
     }
 
     // MARK: - Regressionstester för CodeRabbit-fyndet (PR #90) — porterade
