@@ -57,5 +57,5 @@ dependencies {
     testImplementation("org.apache.sshd:sshd-scp:2.19.0")
     testImplementation(kotlin("test"))
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.bouncycastle:bcprov-jdk18on:1.84")
+    testImplementation("org.bouncycastle:bcprov-jdk18on:1.85.2")
 }
