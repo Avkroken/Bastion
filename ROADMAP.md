@@ -386,7 +386,37 @@ ordning nyttan per arbetsinsats är störst):
    inblandad) — bekräftar att detta redan fungerar som den GUI-fria
    reservlösningen användaren efterfrågade.
 
-   **BUGG hittad vid samma verifiering, PLATTFORMSSPECIFIK**: en
+   **BUGG hittad vid samma verifiering — ✅ ROTORSAKSFIXAD 2026-08-15.**
+   Var INTE en Windows-specifik swift-nio-bugg, utan ett latent fel i
+   Bastions egen kod som bara RÅKADE vara osynligt på POSIX. Alla tre
+   kanalöppnarna (`SSHSession.execute()`, `SSHSession.openShell()`,
+   `SFTPClient.openChildChannel()`) hade EN gemensam engångsspärr
+   (`resolveOnce`) för två helt olika saker: "får barn-kanalen skapas" och
+   "vem avslutar anroparen". Pipeline-uppslagningen
+   (`channel.pipeline.handler(type:)`) svarar praktiskt taget omedelbart —
+   `NIOSSHHandler` ligger redan i pipelinen från `channelInitializer` — så
+   den vann ALLTID spärren, långt innan autentiseringen var klar. Därefter
+   kunde varken `fatal` (auth-give-up) eller `closeFuture` avsluta något,
+   och enda kvarvarande utvägen var att NIOSSH felade den föräldralösa
+   barn-promisen när kanalen stängdes. På Linux/macOS gjorde den det, via
+   serverns nedkoppling — därav det avslöjande felmeddelandet
+   `channelFailed("End of file")`, som är SERVERNS EOF och inte vår egen
+   auth-signal. På Windows uteblev den vägen och anroparen väntade för
+   evigt.
+
+   Fixen: två separata spärrar per anropsplats (`startOnce`/`completeOnce`,
+   gemensam `OneShot`-typ), så `fatal`/`closeFuture` kan avsluta anroparen
+   även efter att kanalöppningen startat. Anroparen får nu det TYPADE
+   `SSHError.authenticationFailed` i stället för ett EOF-fel som berodde på
+   att motparten var vänlig nog att koppla ner. Vinner en gren racet efter
+   att barn-kanalen redan skapats stängs den kanalen i stället för att
+   läcka. Låst av `Tests/SSHCoreTests/AuthFailureTerminationTests.swift`
+   (tre tester, ett per kanalöppnare) — verifierat att alla tre FALLERAR på
+   koden före fixen, med exakt `channelFailed("End of file")`, inte bara
+   att de passerar efteråt. Hela sviten grön: 297 tester.
+
+   Ursprunglig observation, bevarad som den skrevs — inklusive gissningen
+   om rotorsak, som visade sig fel: en
    misslyckad autentisering (fel lösenord) mot en riktig SSH-server
    hänger OÄNDLIGT på Windows (`bastion-cli.exe ... ` blockerar för
    alltid, 0% CPU — inte en TCP/nätverksfråga, `Test-NetConnection`
@@ -402,6 +432,12 @@ ordning nyttan per arbetsinsats är störst):
    under Windows. Blockerar `bastion-cli` som en pålitlig Windows-
    fallback tills löst (en trasig autentisering ska INTE kunna hänga
    processen för alltid).
+
+   (Slut på den bevarade texten. Felet låg alltså i Bastions egen
+   spärrlogik, inte i swift-nios Windows-portering — värt att minnas nästa
+   gång något bara går sönder på en plattform: att felmeddelandet på de
+   FUNGERANDE plattformarna var `End of file` betydde att de aldrig heller
+   tog vår avsedda felväg, de räddades av serverns nedkoppling.)
 
    Kvar utöver detta: ingen dedikerad Windows-CI-check för `bastion-cli`
    än (bara macOS/CodeQL bygger rot-paketet idag). `-J`-kommandoradsflagg
