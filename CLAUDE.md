@@ -27,3 +27,24 @@ inte via delad kod:
 - `LinuxApp/` byggs via `cargo build` (kräver `libgtk-4-dev` + `libadwaita-1-dev` +
   `libvte-2.91-gtk4-dev`)
 - OAuth är PKCE-baserat — inga klienthemligheter i koden, bara publika klient-ID:n
+
+## Allowed
+- Committa på dev
+- Modify code
+- Run tests
+- Open PRs
+
+## Forbidden
+- Push directly to main/master
+- Merge PRs
+- Skapa eller ta bort grenar (rulesetet blockerar det)
+- Disable workflows
+- Modify secrets
+- Change GitHub org settings
+
+## Requirements
+- All tests must pass (`swift test` i repo-roten)
+- Keep PRs focused
+- Never include unrelated changes
+- Never commit credentials
+- Never force push
