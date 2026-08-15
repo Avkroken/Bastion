@@ -115,28 +115,27 @@ public actor SFTPClient {
         let bridgeContinuation = streamContinuation!
 
         let resultPromise = channel.eventLoop.makePromise(of: Channel.self)
-        let resolveLock = NIOLock()
-        var resolved = false
-        func resolveOnce(_ body: () -> Void) {
-            let shouldRun: Bool = resolveLock.withLock {
-                if resolved { return false }
-                resolved = true
-                return true
-            }
-            if shouldRun { body() }
-        }
+        // Två spärrar, samma skäl som i `SSHSession.execute()`/`openShell()`:
+        // `startOnce` avgör om barn-kanalen alls får skapas, `completeOnce`
+        // vem som fullbordar `resultPromise`. Pipeline-uppslagningen svarar
+        // omedelbart (handlern ligger redan i pipelinen) och vann tidigare
+        // den enda spärren — därefter kunde varken `closeFuture` eller
+        // `fatalFuture` fela resultatet, och en handskakning som dog efteråt
+        // (avvisad auth) lämnade anroparen hängande i stället för att kasta.
+        let startOnce = OneShot()
+        let completeOnce = OneShot()
 
         channel.closeFuture.whenComplete { _ in
-            resolveOnce { resultPromise.fail(SSHError.channelFailed("anslutningen stängdes")) }
+            completeOnce.run { resultPromise.fail(SSHError.channelFailed("anslutningen stängdes")) }
         }
         session.fatalFuture.whenSuccess { error in
-            resolveOnce { resultPromise.fail(error) }
+            completeOnce.run { resultPromise.fail(error) }
         }
         channel.pipeline.handler(type: NIOSSHHandler.self).whenComplete { result in
-            resolveOnce {
+            startOnce.run {
                 switch result {
                 case .failure(let e):
-                    resultPromise.fail(SSHError.channelFailed(String(describing: e)))
+                    completeOnce.run { resultPromise.fail(SSHError.channelFailed(String(describing: e))) }
                 case .success(let sshHandler):
                     let childPromise = channel.eventLoop.makePromise(of: Channel.self)
                     sshHandler.createChannel(childPromise, channelType: .session) { child, _ in
@@ -145,11 +144,22 @@ public actor SFTPClient {
                             try child.pipeline.syncOperations.addHandler(SFTPBridgeHandler(continuation: bridgeContinuation))
                         }
                     }
-                    childPromise.futureResult.whenFailure { e in
-                        resultPromise.fail(SSHError.channelFailed(String(describing: e)))
-                    }
-                    childPromise.futureResult.whenSuccess { child in
-                        resultPromise.succeed(child)
+                    childPromise.futureResult.whenComplete { childResult in
+                        var handedOver = false
+                        completeOnce.run {
+                            handedOver = true
+                            switch childResult {
+                            case .failure(let e):
+                                resultPromise.fail(SSHError.channelFailed(String(describing: e)))
+                            case .success(let child):
+                                resultPromise.succeed(child)
+                            }
+                        }
+                        // Anroparen fick aldrig kanalen (någon annan gren hann
+                        // fela resultatet) — stäng den i stället för att läcka.
+                        if !handedOver, case .success(let child) = childResult {
+                            child.close(promise: nil)
+                        }
                     }
                 }
             }

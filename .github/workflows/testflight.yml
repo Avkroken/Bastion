@@ -37,6 +37,12 @@ on:
         options: [ios, tvos]
         default: ios
 
+# Jobbet läser bara koden: checkout kör med `persist-credentials: false` och
+# inget steg anropar gh/GITHUB_TOKEN. Uppladdningen till TestFlight går via
+# fastlane och App Store Connect-nycklarna, inte via GitHub-token.
+permissions:
+  contents: read
+
 # Serialisera körningar per plattform — två samtidiga `tvos beta` (eller två
 # `ios beta`) skulle annars kunna hämta SAMMA nästa lediga TestFlight-byggnummer
 # och kollidera vid uppladdning. Olika plattformar (ios vs tvos) har egna

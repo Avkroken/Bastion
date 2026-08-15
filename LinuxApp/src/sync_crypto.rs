@@ -12,7 +12,6 @@
 use crate::host::SyncState;
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
-use rand::Rng;
 use sha2::Sha256;
 
 pub const DEFAULT_ITERATIONS: u32 = 210_000;
@@ -46,6 +45,18 @@ impl std::fmt::Display for SyncCryptoError {
     }
 }
 
+/// N kryptografiskt slumpade byte som returvärde.
+///
+/// Skrivet så i stället för `let mut buf = [0u8; N]; rand::rng().fill_bytes(&mut buf);`
+/// — CodeQL följer inte överskrivningen i det mönstret utan läser nollbufferten
+/// som ett hårdkodat salt (`rust/hard-coded-cryptographic-value`, critical).
+/// Varningen var falskt positiv, men `Protect main` blockerar på alla
+/// code scanning-alerts, så mönstret behövde bort. Slumpkällan är densamma:
+/// `rand::random()` går via `rand::rng()`, dvs. OS-CSPRNG:n.
+fn random_bytes<const N: usize>() -> [u8; N] {
+    rand::random()
+}
+
 fn derive_key(passphrase: &str, salt: &[u8], iterations: u32) -> [u8; 32] {
     let mut key = [0u8; 32];
     pbkdf2::pbkdf2_hmac::<Sha256>(passphrase.as_bytes(), salt, iterations, &mut key);
@@ -57,12 +68,10 @@ pub fn seal(
     passphrase: &str,
     iterations: u32,
 ) -> Result<Vec<u8>, SyncCryptoError> {
-    let mut salt = [0u8; SALT_LEN];
-    rand::rng().fill_bytes(&mut salt);
+    let salt: [u8; SALT_LEN] = random_bytes();
     let key = derive_key(passphrase, &salt, iterations);
 
-    let mut nonce_bytes = [0u8; NONCE_LEN];
-    rand::rng().fill_bytes(&mut nonce_bytes);
+    let nonce_bytes: [u8; NONCE_LEN] = random_bytes();
     let nonce = Nonce::try_from(nonce_bytes.as_slice()).expect("12 bytes");
 
     let plaintext = serde_json::to_vec(state).map_err(|_| SyncCryptoError::BadFormat)?;

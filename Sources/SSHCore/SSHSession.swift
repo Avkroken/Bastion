@@ -3,6 +3,26 @@ import NIOCore
 import NIOPosix
 import NIOSSH
 
+/// Engångsspärr: första anroparen får köra `body`, alla senare no-opar.
+///
+/// Fanns tidigare som tre identiska lokala `resolveOnce`-funktioner i
+/// `execute()`, `openShell()` och `SFTPClient.openChildChannel()`. Bruten ut
+/// när varje anropsplats behövde TVÅ oberoende spärrar (se
+/// `SSHSession.execute()` för varför) — tre kopior gånger två hade blivit sex.
+final class OneShot: @unchecked Sendable {
+    private let lock = NIOLock()
+    private var fired = false
+
+    func run(_ body: () -> Void) {
+        let shouldRun: Bool = lock.withLock {
+            if fired { return false }
+            fired = true
+            return true
+        }
+        if shouldRun { body() }
+    }
+}
+
 /// En SSH-anslutning. Anslut, kör kommandon (strömmad utdata), stäng.
 /// Byggd rakt på SwiftNIO SSH — samma kod på Linux och Apple.
 public final class SSHSession {
@@ -385,31 +405,32 @@ public final class SSHSession {
             // sårbarhetsklass som en cubic-autofix på PR #183 råkade
             // återinföra genom att flytta endChildOp() till just den
             // opskyddade promisen).
-            let resolveLock = NIOLock()
-            var resolved = false
-            func resolveOnce(_ body: () -> Void) {
-                let shouldRun: Bool = resolveLock.withLock {
-                    if resolved { return false }
-                    resolved = true
-                    return true
-                }
-                if shouldRun { body() }
-            }
+            // TVÅ spärrar, inte en. `startOnce` avgör vem som äger
+            // `endChildOp()` och om exec-kanalen alls får skapas (se
+            // resonemanget ovan). Men avslutet av strömmen får INTE hänga på
+            // samma spärr: pipeline-uppslagningen svarar praktiskt taget
+            // omedelbart (NIOSSHHandler ligger redan i pipelinen från
+            // channelInitializer), så den vinner alltid racet — långt innan
+            // autentiseringen ens är klar. Med en enda spärr kunde varken
+            // `fatal` eller `closeFuture` avsluta strömmen därefter, och enda
+            // kvarvarande utvägen var att NIOSSH felade den föräldralösa
+            // barn-promisen. Gör den inte det hänger anroparen för alltid —
+            // exakt det som händer på Windows vid felaktigt lösenord (samma
+            // anrop felar snabbt på Linux/macOS, där serverns EOF råkar fela
+            // promisen åt oss). `continuation.finish` är idempotent, så den
+            // behöver ingen egen spärr — bara friheten att köra ändå.
+            let startOnce = OneShot()
 
             channel.closeFuture.whenComplete { _ in
-                resolveOnce {
-                    self.endChildOp()
-                    continuation.finish(throwing: SSHError.channelFailed("anslutningen stängdes"))
-                }
+                startOnce.run { self.endChildOp() }
+                continuation.finish(throwing: SSHError.channelFailed("anslutningen stängdes"))
             }
             self.fatal.futureResult.whenSuccess { error in
-                resolveOnce {
-                    self.endChildOp()
-                    continuation.finish(throwing: error)
-                }
+                startOnce.run { self.endChildOp() }
+                continuation.finish(throwing: error)
             }
             channel.pipeline.handler(type: NIOSSHHandler.self).whenComplete { result in
-                resolveOnce {
+                startOnce.run {
                     switch result {
                     case .failure(let e):
                         self.endChildOp()
@@ -472,35 +493,32 @@ public final class SSHSession {
         // hållet — det var den regressionen kommentaren i execute() varnar
         // för (PR #183): når vi aldrig fram till att skapa childPromise körs
         // endChildOp() aldrig och close() hänger ut sin timeout.
-        let resolveLock = NIOLock()
-        var resolved = false
-        func resolveOnce(_ body: () -> Void) {
-            let shouldRun: Bool = resolveLock.withLock {
-                if resolved { return false }
-                resolved = true
-                return true
-            }
-            if shouldRun { body() }
-        }
+        // Två spärrar av samma skäl som i `execute()`: `startOnce` äger
+        // `endChildOp()` och rätten att skapa barn-kanalen, `completeOnce`
+        // äger `resultPromise`. Pipeline-uppslagningen vinner alltid den
+        // första (handlern ligger redan i pipelinen), så utan den andra
+        // kunde `fatal`/`closeFuture` aldrig fela resultatet efteråt — och
+        // en handskakning som dör därefter (avvisad auth) lämnade anroparen
+        // hängande. Till skillnad från `execute()`s ström kan ett
+        // `EventLoopPromise` inte fullbordas två gånger utan att NIO fäller
+        // en precondition, så här krävs en riktig spärr, inte idempotens.
+        let startOnce = OneShot()
+        let completeOnce = OneShot()
 
         self.fatal.futureResult.whenSuccess { error in
-            resolveOnce {
-                self.endChildOp()
-                resultPromise.fail(error)
-            }
+            startOnce.run { self.endChildOp() }
+            completeOnce.run { resultPromise.fail(error) }
         }
         channel.closeFuture.whenComplete { _ in
-            resolveOnce {
-                self.endChildOp()
-                resultPromise.fail(SSHError.channelFailed("inte ansluten"))
-            }
+            startOnce.run { self.endChildOp() }
+            completeOnce.run { resultPromise.fail(SSHError.channelFailed("inte ansluten")) }
         }
         channel.pipeline.handler(type: NIOSSHHandler.self).whenComplete { result in
-            resolveOnce {
+            startOnce.run {
                 switch result {
                 case .failure(let e):
                     self.endChildOp()
-                    resultPromise.fail(SSHError.channelFailed(String(describing: e)))
+                    completeOnce.run { resultPromise.fail(SSHError.channelFailed(String(describing: e))) }
                 case .success(let sshHandler):
                     let handler = ShellHandler(term: term, cols: cols, rows: rows, continuation: continuation)
                     let childPromise = channel.eventLoop.makePromise(of: Channel.self)
@@ -511,15 +529,23 @@ public final class SSHSession {
                     sshHandler.createChannel(childPromise, channelType: .session) { child, _ in
                         child.pipeline.addHandler(handler)
                     }
-                    // Redan "vunnet" ovan (resolved == true) — den här
-                    // fullbordar samma, redan reserverade resultat, inte
-                    // en ny tävling.
                     childPromise.futureResult.whenComplete { childResult in
-                        switch childResult {
-                        case .failure(let e):
-                            resultPromise.fail(SSHError.channelFailed(String(describing: e)))
-                        case .success(let child):
-                            resultPromise.succeed(SSHShell(channel: child, output: stream, cols: cols, rows: rows))
+                        var handedOver = false
+                        completeOnce.run {
+                            handedOver = true
+                            switch childResult {
+                            case .failure(let e):
+                                resultPromise.fail(SSHError.channelFailed(String(describing: e)))
+                            case .success(let child):
+                                resultPromise.succeed(SSHShell(channel: child, output: stream, cols: cols, rows: rows))
+                            }
+                        }
+                        // Kom kanalen efter att `fatal`/`closeFuture` redan
+                        // felat resultatet har anroparen aldrig fått den och
+                        // kan alltså inte stänga den. Stäng här i stället för
+                        // att läcka en öppen SSH-kanal.
+                        if !handedOver, case .success(let child) = childResult {
+                            child.close(promise: nil)
                         }
                     }
                 }
