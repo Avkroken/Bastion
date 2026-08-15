@@ -201,9 +201,25 @@ public final class SSHSession {
                 // annars kringgår detta dräneringsinvarianten och kan
                 // riva event loop-gruppen med en promise fortfarande olöst).
                 channel?.close(promise: nil)
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
-                let stillRemaining = drainLock.withLock {
+                // Polla i stället för att bränna en fast sekundsiffra och läsa
+                // räknaren vid ett enda godtyckligt ögonblick. Kanalstängningen
+                // ovan får NIOSSH att fela de föräldralösa promiserna, men hur
+                // lång tid det tar innan deras whenComplete-callbacks kört klart
+                // på event loopen går inte att veta i förväg — en fast sleep
+                // riskerar att läsa räknaren precis innan sista endChildOp().
+                // Samma tak som förut (3s), men vi går vidare så fort det
+                // faktiskt dränerat, vilket är både snabbare och gör att
+                // dräneringen oftare lyckas på riktigt.
+                var stillRemaining = drainLock.withLock {
                     inFlightChildOps.withLockedValue { $0 }
+                }
+                var waitedNanos: UInt64 = 0
+                while stillRemaining > 0 && waitedNanos < 3_000_000_000 {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    waitedNanos += 100_000_000
+                    stillRemaining = drainLock.withLock {
+                        inFlightChildOps.withLockedValue { $0 }
+                    }
                 }
                 // `assertionFailure` no-opar i release-bygge — att returnera
                 // HÄR utan att köra `resumeOnce()` hade då hängt `close()`
