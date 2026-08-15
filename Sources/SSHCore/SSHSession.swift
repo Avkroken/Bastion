@@ -11,6 +11,22 @@ public final class SSHSession {
     private let knownHosts: KnownHosts
     // internal (inte private) — PortForward.swifts SSHSession-extension i
     // samma modul behöver nå dem.
+    /// Delad, processgemensam grupp som ALDRIG stängs ner.
+    ///
+    /// Varje session hade tidigare en egen grupp som revs i `close()`. Att riva
+    /// en grupp som fortfarande har en olöst promise på sig är en fatal error i
+    /// NIO ("leaking promise") — och den promisen behöver inte ens vara vår:
+    /// pipeline-uppslagningen i `openShell()`/`execute()` skapar promises INNE i
+    /// NIOCore (ChannelPipeline.swift:542) som ingen bokföring på vår sida kan
+    /// se eller vänta in. Reproducerat lokalt: 3 fall på 40 körningar av
+    /// TerminalTeardownRaceTests, 0 på 40 efter den här ändringen.
+    ///
+    /// EN tråd, inte `MultiThreadedEventLoopGroup.singleton`: singletonen har en
+    /// event loop per kärna, och koden här förutsätter att allt ligger på samma
+    /// loop — med singletonen fälls `EventLoop.preconditionInEventLoop` i
+    /// pipeline-anropen (bevisat av DynamicPortForwardTests).
+    static let sharedGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+
     let group: MultiThreadedEventLoopGroup
     // Bär ett fatalt fel som inträffar tyst under handshaken (NIOSSH stänger inte
     // alltid anslutningen vid misslyckad auth eller avvisad värdnyckel). När den
@@ -38,7 +54,7 @@ public final class SSHSession {
         self.target = target
         self.auth = auth
         self.knownHosts = knownHosts
-        self.group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        self.group = SSHSession.sharedGroup
         self.fatal = group.next().makePromise(of: Error.self)
     }
 
@@ -143,25 +159,37 @@ public final class SSHSession {
     /// nätverksavbrott utan NIOSSH-timeout) — men teardown tillåts ENDAST om
     /// räknaren faktiskt når noll, även efter timeouten, för att bevara
     /// säkerhetsinvarianten.
-    private func waitForChildOpsToDrain() async {
+    /// Returnerar `true` om alla barn-operationer faktiskt hann bli klara,
+    /// `false` om dräneringen gav upp med operationer kvar. `close()` använder
+    /// svaret för att INTE riva event loop-gruppen i det senare fallet: en
+    /// olöst promise på en grupp som stängs ner utlöser NIOs "leaking
+    /// promise"-fatal error, som dödar hela processen. En läckt grupp (några
+    /// trådar som lever kvar till processen ändå avslutas) är strikt bättre än
+    /// en krasch — och det var precis det utfallet som slog till i CI
+    /// (TerminalTeardownRaceTests, swiftpm-linux 2026-08-15).
+    @discardableResult
+    private func waitForChildOpsToDrain() async -> Bool {
         if drainLock.withLock({ isClosed && inFlightChildOps.withLockedValue({ $0 == 0 }) }) {
-            return
+            return true
         }
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
             var didResume = false
             let resumeLock = NIOLock()
-            func resumeOnce() {
+            func resumeOnce(drained: Bool = true) {
                 let shouldRun: Bool = resumeLock.withLock {
                     if didResume { return false }
                     didResume = true
                     return true
                 }
-                if shouldRun { cont.resume() }
+                if shouldRun { cont.resume(returning: drained) }
             }
 
             let alreadyDrained: Bool = drainLock.withLock {
                 if inFlightChildOps.withLockedValue({ $0 == 0 }) { return true }
-                onDrainedCallbacks.append(resumeOnce)
+                // Sluten wrapper, inte `resumeOnce` direkt: med defaultargumentet
+                // har funktionen som värde typen (Bool) -> Void och matchar inte
+                // onDrainedCallbacks ([() -> Void]).
+                onDrainedCallbacks.append { resumeOnce() }
                 return false
             }
             if alreadyDrained { resumeOnce(); return }
@@ -189,9 +217,25 @@ public final class SSHSession {
                 // annars kringgår detta dräneringsinvarianten och kan
                 // riva event loop-gruppen med en promise fortfarande olöst).
                 channel?.close(promise: nil)
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
-                let stillRemaining = drainLock.withLock {
+                // Polla i stället för att bränna en fast sekundsiffra och läsa
+                // räknaren vid ett enda godtyckligt ögonblick. Kanalstängningen
+                // ovan får NIOSSH att fela de föräldralösa promiserna, men hur
+                // lång tid det tar innan deras whenComplete-callbacks kört klart
+                // på event loopen går inte att veta i förväg — en fast sleep
+                // riskerar att läsa räknaren precis innan sista endChildOp().
+                // Samma tak som förut (3s), men vi går vidare så fort det
+                // faktiskt dränerat, vilket är både snabbare och gör att
+                // dräneringen oftare lyckas på riktigt.
+                var stillRemaining = drainLock.withLock {
                     inFlightChildOps.withLockedValue { $0 }
+                }
+                var waitedNanos: UInt64 = 0
+                while stillRemaining > 0 && waitedNanos < 3_000_000_000 {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    waitedNanos += 100_000_000
+                    stillRemaining = drainLock.withLock {
+                        inFlightChildOps.withLockedValue { $0 }
+                    }
                 }
                 // `assertionFailure` no-opar i release-bygge — att returnera
                 // HÄR utan att köra `resumeOnce()` hade då hängt `close()`
@@ -202,7 +246,7 @@ public final class SSHSession {
                 if stillRemaining > 0 {
                     assertionFailure("waitForChildOpsToDrain: timeout med \(stillRemaining) kvarvarande ops efter aktiv kanalstängning — potentiell hängning")
                 }
-                resumeOnce()
+                resumeOnce(drained: stillRemaining == 0)
             }
         }
     }
@@ -415,10 +459,19 @@ public final class SSHSession {
         // för en naken `try await ...get()`, och låta EN gemensam,
         // låsskyddad flagga avgöra vem som får fullborda resultatet.
         let resultPromise = channel.eventLoop.makePromise(of: SSHShell.self)
-        // Motsvarande endChildOp() till beginChildOp() ovan — resultPromise
-        // fullbordas garanterat EXAKT en gång (resolveOnce nedan), oavsett
-        // vilken väg som vinner, så den här körs också exakt en gång.
-        resultPromise.futureResult.whenComplete { _ in self.endChildOp() }
+        // Motsvarande endChildOp() till beginChildOp() ovan placeras i VARJE
+        // vinnande gren nedan, inte på resultPromise — precis som execute()
+        // redan gör. Bundet till resultPromise räknades operationen som klar
+        // så fort fatal eller closeFuture vann racet, vilket är exakt vad
+        // close() utlöser: resultPromise fullbordas omedelbart, räknaren når
+        // noll, och dräneringen river event loop-gruppen medan childPromise
+        // fortfarande är olöst. Det är den läckan CI såg, och den går att
+        // reproducera lokalt (1 av 25 körningar av TerminalTeardownRaceTests).
+        //
+        // Att FLYTTA räkningen till enbart childPromise vore fel åt andra
+        // hållet — det var den regressionen kommentaren i execute() varnar
+        // för (PR #183): når vi aldrig fram till att skapa childPromise körs
+        // endChildOp() aldrig och close() hänger ut sin timeout.
         let resolveLock = NIOLock()
         var resolved = false
         func resolveOnce(_ body: () -> Void) {
@@ -431,19 +484,30 @@ public final class SSHSession {
         }
 
         self.fatal.futureResult.whenSuccess { error in
-            resolveOnce { resultPromise.fail(error) }
+            resolveOnce {
+                self.endChildOp()
+                resultPromise.fail(error)
+            }
         }
         channel.closeFuture.whenComplete { _ in
-            resolveOnce { resultPromise.fail(SSHError.channelFailed("inte ansluten")) }
+            resolveOnce {
+                self.endChildOp()
+                resultPromise.fail(SSHError.channelFailed("inte ansluten"))
+            }
         }
         channel.pipeline.handler(type: NIOSSHHandler.self).whenComplete { result in
             resolveOnce {
                 switch result {
                 case .failure(let e):
+                    self.endChildOp()
                     resultPromise.fail(SSHError.channelFailed(String(describing: e)))
                 case .success(let sshHandler):
                     let handler = ShellHandler(term: term, cols: cols, rows: rows, continuation: continuation)
                     let childPromise = channel.eventLoop.makePromise(of: Channel.self)
+                    // Först här är operationen faktiskt klar: childPromise är
+                    // den promise som lever på event loop-gruppen och som
+                    // dräneringen måste vänta in.
+                    childPromise.futureResult.whenComplete { _ in self.endChildOp() }
                     sshHandler.createChannel(childPromise, channelType: .session) { child, _ in
                         child.pipeline.addHandler(handler)
                     }
@@ -486,9 +550,12 @@ public final class SSHSession {
         // Väntar in eventuella pågående createChannel-anrop (openShell()s
         // childPromise) INNAN kanalen/event loop-gruppen rivs — den faktiska
         // fixen för CI-racet, se waitForChildOpsToDrain() ovan.
-        await waitForChildOpsToDrain()
+        let drained = await waitForChildOpsToDrain()
         try? await channel?.close().get()
-        try? await group.shutdownGracefully()
+        // Ingen gruppnedstängning: gruppen är NIOs singleton och delas med
+        // alla andra sessioner i processen. Dräneringen ovan behålls ändå —
+        // den ser till att close() inte returnerar medan barn-operationer
+        // fortfarande pågår.
     }
 }
 
