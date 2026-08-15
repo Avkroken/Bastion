@@ -143,25 +143,37 @@ public final class SSHSession {
     /// nätverksavbrott utan NIOSSH-timeout) — men teardown tillåts ENDAST om
     /// räknaren faktiskt når noll, även efter timeouten, för att bevara
     /// säkerhetsinvarianten.
-    private func waitForChildOpsToDrain() async {
+    /// Returnerar `true` om alla barn-operationer faktiskt hann bli klara,
+    /// `false` om dräneringen gav upp med operationer kvar. `close()` använder
+    /// svaret för att INTE riva event loop-gruppen i det senare fallet: en
+    /// olöst promise på en grupp som stängs ner utlöser NIOs "leaking
+    /// promise"-fatal error, som dödar hela processen. En läckt grupp (några
+    /// trådar som lever kvar till processen ändå avslutas) är strikt bättre än
+    /// en krasch — och det var precis det utfallet som slog till i CI
+    /// (TerminalTeardownRaceTests, swiftpm-linux 2026-08-15).
+    @discardableResult
+    private func waitForChildOpsToDrain() async -> Bool {
         if drainLock.withLock({ isClosed && inFlightChildOps.withLockedValue({ $0 == 0 }) }) {
-            return
+            return true
         }
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
             var didResume = false
             let resumeLock = NIOLock()
-            func resumeOnce() {
+            func resumeOnce(drained: Bool = true) {
                 let shouldRun: Bool = resumeLock.withLock {
                     if didResume { return false }
                     didResume = true
                     return true
                 }
-                if shouldRun { cont.resume() }
+                if shouldRun { cont.resume(returning: drained) }
             }
 
             let alreadyDrained: Bool = drainLock.withLock {
                 if inFlightChildOps.withLockedValue({ $0 == 0 }) { return true }
-                onDrainedCallbacks.append(resumeOnce)
+                // Sluten wrapper, inte `resumeOnce` direkt: med defaultargumentet
+                // har funktionen som värde typen (Bool) -> Void och matchar inte
+                // onDrainedCallbacks ([() -> Void]).
+                onDrainedCallbacks.append { resumeOnce() }
                 return false
             }
             if alreadyDrained { resumeOnce(); return }
@@ -202,7 +214,7 @@ public final class SSHSession {
                 if stillRemaining > 0 {
                     assertionFailure("waitForChildOpsToDrain: timeout med \(stillRemaining) kvarvarande ops efter aktiv kanalstängning — potentiell hängning")
                 }
-                resumeOnce()
+                resumeOnce(drained: stillRemaining == 0)
             }
         }
     }
@@ -486,9 +498,15 @@ public final class SSHSession {
         // Väntar in eventuella pågående createChannel-anrop (openShell()s
         // childPromise) INNAN kanalen/event loop-gruppen rivs — den faktiska
         // fixen för CI-racet, se waitForChildOpsToDrain() ovan.
-        await waitForChildOpsToDrain()
+        let drained = await waitForChildOpsToDrain()
         try? await channel?.close().get()
-        try? await group.shutdownGracefully()
+        // Bara om dräneringen faktiskt lyckades. Kvarvarande operationer
+        // betyder att minst en promise fortfarande är olöst på den här
+        // gruppen; att stänga ner den då utlöser NIOs "leaking promise"-fatal
+        // error och dödar processen. Hellre läcka gruppen.
+        if drained {
+            try? await group.shutdownGracefully()
+        }
     }
 }
 
