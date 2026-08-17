@@ -5,6 +5,8 @@ Den repokonfiguration som ska matcha alla blixten85-repon. Verifierat mot
 2026-07-04. Använd den här filen som checklista när ett nytt repo skapas
 eller när du undrar "är X satt här också?".
 
+Branch-rulesetsen nedan är avstämda mot bastions exporterade JSON 2026-08-17.
+
 ## Filer i repot
 
 - `LICENSE` (MIT)
@@ -15,31 +17,91 @@ eller när du undrar "är X satt här också?".
 - `.github/ISSUE_TEMPLATE/config.yml` + `bug_report.yml` + `feature_request.yml`
 - `.github/labeler.yml`
 - `.github/FUNDING.yml` (github-sponsors + PayPal)
-- `.github/renovate.json` (`config:best-practices`, daglig schedule, semantic
-  commits, separata major-releases, auto-rebase, patch-automerge, GHA-gruppering)
-  — **inte i bastion** (använder `.github/dependabot.yml` istället, se rad 71)
+- `.github/dependabot.yml` — ekosystemen varierar med projektet, men
+  strukturen är densamma: veckoschema, `assignees: ["blixten85"]` och en
+  `groups`-post som slår ihop minor + patch. `github-actions` finns i alla
+  repon.
 
 ## Workflows (`.github/workflows/`)
 
-8 standardfiler: `auto-commit.yml`, `auto-label.yml`, `auto-merge.yml`,
-`auto-rebase.yml`, `auto-release.yml`, `ci-autofix.yml`,
-`copilot-review-reminder.yml`, `security-alerts-sync.yml`.
-
-Utöver dessa: projektspecifika CI-workflows (bygger/testar koden) vars
+Två standardfiler finns i alla aktiva repon: `auto-assign.yml` och
+`dependabot-auto-merge.yml`. Utöver dessa projektspecifika CI- och
+deploy-workflows (`ci.yml`, `docker.yml`, `deploy*.yml` m.fl.) vars
 job-namn refereras i branch-rulesetet nedan.
 
-## Branch-ruleset ("Protect main")
+`dependabot-auto-merge.yml` armerar auto-merge på Dependabots PR:er med
+`gh pr merge --auto --merge`. **Inte `--squash` eller `--rebase`** — de
+metoderna är avstängda både på repo-nivå och i rulesetet, så kommandot
+skulle avvisas och auto-merge tyst sluta fungera (så var det i alla repon
+fram till 2026-08-17).
 
-En ruleset med target `branch`, `refs/heads/main`:
+Avvikelse: bastion saknar `auto-assign.yml` och löser tilldelningen med
+`assignees:` i `dependabot.yml` istället.
+
+## Branch-rulesets
+
+Två rulesets, båda med target `branch` och `enforcement: active`. De ska se
+likadana ut i alla repon — det enda som skiljer repon åt är vilka jobb som
+listas under `required_status_checks` (kodanalyserna och de projektspecifika
+CI-jobben).
+
+### "Protect main" (`~DEFAULT_BRANCH`)
+
 - `pull_request`: `required_approving_review_count: 0` (PR krävs, men inga
-  obligatoriska godkännanden), `allowed_merge_methods: [merge, squash, rebase]`
+  obligatoriska godkännanden), `dismiss_stale_reviews_on_push: true`,
+  `required_review_thread_resolution: true`, `require_code_owner_review: false`,
+  `require_last_push_approval: false`,
+  **`allowed_merge_methods: [merge]`** — bara merge-commits, varken squash
+  eller rebase (gäller alla repon)
+- `required_status_checks`: `strict_required_status_checks_policy: true`
+  (grenen måste vara uppdaterad mot main innan merge),
+  `do_not_enforce_on_create: false`. **Repospecifik lista** — för bastion:
+  `xcodegen-and-build`, `swiftpm-macos`, `linuxapp-build` samt `CodeQL`
+  (integration 57789).
+- `code_scanning`: CodeQL med `alerts_threshold: all` och
+  `security_alerts_threshold: all`
 - `non_fast_forward`
 - `deletion` (skydd mot borttagning av main)
-- `required_status_checks`: projektspecifika CI-jobb (t.ex. `swiftpm-macos`,
-  `xcodegen-and-build`, `linuxapp-build` för bastion), `strict_required_status_checks_policy: false`
+- `bypass_actors`: repo-admin (`RepositoryRole` 5), `bypass_mode: always`
+
+**Copilot-beroende regler ska inte ingå.** Det finns inget
+Copilot-abonnemang på kontot, så följande två regler hör inte hemma i
+rulesetet och ska tas bort där de fortfarande sitter kvar. De gör dock
+olika saker, och bara den ena blockerar:
+
+- `code_quality` (`severity: all`) — *"Require code quality results"*.
+  **Detta är gaten.** En code quality-analys måste ha genomförts på PR:en
+  innan den kan mergas. Analysen körs av Copilot, så när jobbet havererar
+  blir den aldrig gjord och PR:en fastnar i väntan på något som inte
+  kommer.
+- `copilot_code_review` (`review_on_push`, `review_draft_pull_requests`)
+  — *"Automatically request Copilot code review"*. **Blockerar inte.**
+  Regeln är villkorad ("if the author has access to Copilot code review
+  and their premium requests quota has not reached the limit") och
+  begär bara en review; utan access händer ingenting. Den är däremot
+  vad som genererar den röda `github-advanced-security`-checken.
+
+Felet det handlar om: `CAPIError: 400 The requested model is not
+supported` (`COPILOT_AGENT_MODEL: sweagent-capi:claude-opus-4.6`),
+reproducerbart på flera commits i bastion 2026-08-17, PR #324. CodeQL
+påverkas **inte** — det är gratis för publika repon och ligger kvar som
+både `code_scanning`-regel och required check.
+
+Rulesets går bara att ändra i UI:t (Settings → Rules → Rulesets →
+Protect main), per repo. Statusen 2026-08-17: båda reglerna är
+urkryssade i samtliga repon.
+
+### "Dev" (`~ALL`)
+
+Täcker alla grenar, inklusive main:
+
+- `creation`, `deletion`, `non_fast_forward`
+- `bypass_actors` (`always`): repo-admin (`RepositoryRole` 5) och Dependabot
+  (`Integration` 29110) — bypassen är det som gör att Dependabot kan skapa
+  och ta bort sina PR-grenar trots `creation`/`deletion`.
 
 Ingen tag-ruleset finns någonstans i org:et — release-taggar (`auto-release.yml`)
-träffar aldrig branch-rulesetet eftersom det bara gäller `refs/heads/main`.
+träffar aldrig rulesetsen eftersom båda har target `branch`.
 "Release-immunitet" är alltså inget konfigurerat koncept, bara en konsekvens
 av att taggar och grenar är olika saker.
 
@@ -57,7 +119,8 @@ av att taggar och grenar är olika saker.
 | Always suggest updating pull request branches | **på** | alla repon (bastion saknade detta, fixat 2026-07-04) |
 | Allow auto-merge | på | alla repon |
 | Automatically delete head branches | på | alla repon |
-| Allow squash/merge/rebase merge | alla tre på | alla repon |
+| Allow merge commits | på | alla repon |
+| Allow squash merging / Allow rebase merging | **av** | alla repon (ändrat 2026-08-17). Repo-nivån speglar rulesetet: det som är påslaget här är exakt `allowed_merge_methods` i `Protect main`. |
 
 ## Security & analysis
 
@@ -68,17 +131,22 @@ av att taggar och grenar är olika saker.
 | Secret scanning push protection | på |
 | Secret scanning validity checks | av |
 | Secret scanning non-provider patterns | av |
-| Dependabot version updates (`.github/dependabot.yml`) | **av i övriga repon, på i bastion** — Renovate används i övriga repon (se `renovate.json`); bastion migrerade till Dependabot 2026-07-14 (`.github/dependabot.yml`), medveten avvikelse. |
-| Code scanning / CodeQL | **av i övriga repon, på i bastion** (`.github/workflows/codeql.yml`, tillagt 2026-07-04) — gratis för publika repon, motiverat av injektionskänsliga ytor (Docker-kommandobyggare, SSH-nyckelparser). Inte utrullat på övriga repon än, så bastion avviker medvetet här tills vidare. |
+| Dependabot version updates (`.github/dependabot.yml`) | **på i alla repon** — Dependabot är standarden. Renovate är utfasat och används inte längre någonstans (bastion migrerade 2026-07-14, övriga repon senare). |
+| Code scanning / CodeQL | **på i bastion, av i övriga repon** — bastion har ingen `codeql.yml`; CodeQL körs via GitHubs *default setup* och syns i rulesetet som den required check som kommer från integration 57789. Motiverat av injektionskänsliga ytor (Docker-kommandobyggare, SSH-nyckelparser). Inte utrullat på övriga repon än. |
 
-## Renovate (GitHub App)
+## Dependabot
 
-Ska vara **installerad och den auto-genererade "Configure Renovate"-PR:n
-mergad** (inte lämnad öppen) — det är mönstret i alla andra repon.
+Standardlösningen för beroendeuppdateringar i alla repon:
 
-**Undantag: bastion** använder inte Renovate (migrerade till Dependabot
-2026-07-14, se rad 71 och `.github/dependabot.yml`). Renovate-appen behöver
-inte vara installerad för bastion.
+- `.github/dependabot.yml` med ekosystemen som repot faktiskt använder
+- `.github/workflows/dependabot-auto-merge.yml` som armerar auto-merge med
+  `gh pr merge --auto --merge`
+
+Renovate-appen ska **inte** vara installerad, och inget repo har
+`renovate.json` kvar. Undantag: `bastion-certificates` (fastlane
+match-repo, sju filer, inga workflows och inga beroenden) har varken
+Dependabot-konfiguration eller workflows — det finns inget att uppdatera
+där.
 
 ## Inte verifierat / inte en del av guldstandarden
 
