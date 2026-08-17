@@ -66,16 +66,26 @@ CI-jobben).
 
 **Copilot-beroende regler ska inte ingå.** Det finns inget
 Copilot-abonnemang på kontot, så följande två regler hör inte hemma i
-rulesetet och ska tas bort där de fortfarande sitter kvar:
+rulesetet och ska tas bort där de fortfarande sitter kvar. De gör dock
+olika saker, och bara den ena blockerar:
 
-- `code_quality` (`severity: all`)
+- `code_quality` (`severity: all`) — *"Require code quality results"*.
+  **Detta är gaten.** En code quality-analys måste ha genomförts på PR:en
+  innan den kan mergas. Analysen körs av Copilot, så när jobbet havererar
+  blir den aldrig gjord och PR:en fastnar i väntan på något som inte
+  kommer.
 - `copilot_code_review` (`review_on_push`, `review_draft_pull_requests`)
+  — *"Automatically request Copilot code review"*. **Blockerar inte.**
+  Regeln är villkorad ("if the author has access to Copilot code review
+  and their premium requests quota has not reached the limit") och
+  begär bara en review; utan access händer ingenting. Den är däremot
+  vad som genererar den röda `github-advanced-security`-checken.
 
-Båda drivs av Copilot och ger checken `github-advanced-security`, som i
-bastion föll på `CAPIError: 400 The requested model is not supported`
-(2026-08-17, PR #324). CodeQL påverkas **inte** — det är gratis för
-publika repon och ligger kvar som både `code_scanning`-regel och required
-check.
+Felet det handlar om: `CAPIError: 400 The requested model is not
+supported` (`COPILOT_AGENT_MODEL: sweagent-capi:claude-opus-4.6`),
+reproducerbart på flera commits i bastion 2026-08-17, PR #324. CodeQL
+påverkas **inte** — det är gratis för publika repon och ligger kvar som
+både `code_scanning`-regel och required check.
 
 Rulesets går bara att ändra i UI:t (Settings → Rules → Rulesets →
 Protect main), per repo. Statusen 2026-08-17: reglerna finns kvar i
