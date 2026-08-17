@@ -88,8 +88,8 @@ påverkas **inte** — det är gratis för publika repon och ligger kvar som
 både `code_scanning`-regel och required check.
 
 Rulesets går bara att ändra i UI:t (Settings → Rules → Rulesets →
-Protect main), per repo. Statusen 2026-08-17: reglerna finns kvar i
-bastions export och är inte borttagna någonstans än.
+Protect main), per repo. Statusen 2026-08-17: båda reglerna är
+urkryssade i samtliga repon.
 
 ### "Dev" (`~ALL`)
 
