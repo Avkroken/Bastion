@@ -2992,9 +2992,19 @@ Inget nytt att bygga, bara verifiera/lansera:
   (rot-fil + underkatalog med egen fil) laddas upp och läses tillbaka,
   bevisar både rekursionen och att innehållet överlever hela resan — inte
   bara ett plant enfilsfall. Byggd och körd under Xvfb utan krasch.
-  **Kvar**: flerval för komprimering, förhandsvisning (t.ex. bilder),
-  syntax highlighting (se separat post nedan).
-- Inbyggd editor med syntax highlighting
+  **Kvar**: flerval för komprimering, förhandsvisning (t.ex. bilder).
+- Inbyggd editor med syntax highlighting — ✅ (2026-08-17) LinuxApp.
+  `open_sftp_file_editor` bygger på GtkSourceView i stället för GtkTextView:
+  språket gissas ur filnamnet (`LanguageManager::guess_language`, klarar
+  både ändelser och ändelselösa kända namn som `Dockerfile`), färgschemat
+  följer appens ljusa/mörka läge, och radnummer + parentesmatchning +
+  auto-indrag följer med på köpet. Alla språk VISION.md räknar upp (YAML,
+  JSON, Compose, Bash, Python, Go, Rust, JavaScript, Markdown) ingår i
+  GtkSourceViews egna definitioner — inget eget lexer-arbete. Nytt
+  byggberoende: `libgtksourceview-5-dev` (Fedora: `gtksourceview5-devel`),
+  tillagt i CI, .deb- och .rpm-paketeringen. `.deb`-Depends härleds
+  automatiskt ur binärens DT_NEEDED och behövde därför ingen ändring.
+  App/-sidan (iOS/macOS) har ingen motsvarighet än.
 - Plugin-system (Proxmox, TrueNAS, Unraid, Cloudflare, GitHub, Kubernetes)
 - **Agent Forwarding**: ✅ agent-PROTOKOLLKLIENTEN klar (2026-07-07,
   `SSHAgentClient.swift`) — lista identiteter + begära signaturer från en

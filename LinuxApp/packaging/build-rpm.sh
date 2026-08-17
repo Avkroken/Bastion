@@ -7,7 +7,7 @@
 # biblioteksfamilj), och bygger .rpm-paketet.
 set -euo pipefail
 
-dnf install -y -q gtk4-devel libadwaita-devel vte291-gtk4-devel \
+dnf install -y -q gtk4-devel libadwaita-devel vte291-gtk4-devel gtksourceview5-devel \
   pkgconf-pkg-config rpm-build binutils gcc curl
 
 # Fedora 40:s dnf-paketerade `rust`/`cargo` (1.86) är för gammalt för
