@@ -60,12 +60,26 @@ CI-jobben).
   (integration 57789).
 - `code_scanning`: CodeQL med `alerts_threshold: all` och
   `security_alerts_threshold: all`
-- `code_quality`: `severity: all`
-- `copilot_code_review`: `review_on_push: true`,
-  `review_draft_pull_requests: true`
 - `non_fast_forward`
 - `deletion` (skydd mot borttagning av main)
 - `bypass_actors`: repo-admin (`RepositoryRole` 5), `bypass_mode: always`
+
+**Copilot-beroende regler ska inte ingå.** Det finns inget
+Copilot-abonnemang på kontot, så följande två regler hör inte hemma i
+rulesetet och ska tas bort där de fortfarande sitter kvar:
+
+- `code_quality` (`severity: all`)
+- `copilot_code_review` (`review_on_push`, `review_draft_pull_requests`)
+
+Båda drivs av Copilot och ger checken `github-advanced-security`, som i
+bastion föll på `CAPIError: 400 The requested model is not supported`
+(2026-08-17, PR #324). CodeQL påverkas **inte** — det är gratis för
+publika repon och ligger kvar som både `code_scanning`-regel och required
+check.
+
+Rulesets går bara att ändra i UI:t (Settings → Rules → Rulesets →
+Protect main), per repo. Statusen 2026-08-17: reglerna finns kvar i
+bastions export och är inte borttagna någonstans än.
 
 ### "Dev" (`~ALL`)
 
