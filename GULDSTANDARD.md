@@ -17,19 +17,26 @@ Branch-rulesetsen nedan är avstämda mot bastions exporterade JSON 2026-08-17.
 - `.github/ISSUE_TEMPLATE/config.yml` + `bug_report.yml` + `feature_request.yml`
 - `.github/labeler.yml`
 - `.github/FUNDING.yml` (github-sponsors + PayPal)
-- `.github/renovate.json` (`config:best-practices`, daglig schedule, semantic
-  commits, separata major-releases, auto-rebase, patch-automerge, GHA-gruppering)
-  — **inte i bastion** (använder `.github/dependabot.yml` istället, se
-  *Security & analysis* nedan)
+- `.github/dependabot.yml` — ekosystemen varierar med projektet, men
+  strukturen är densamma: veckoschema, `assignees: ["blixten85"]` och en
+  `groups`-post som slår ihop minor + patch. `github-actions` finns i alla
+  repon.
 
 ## Workflows (`.github/workflows/`)
 
-8 standardfiler: `auto-commit.yml`, `auto-label.yml`, `auto-merge.yml`,
-`auto-rebase.yml`, `auto-release.yml`, `ci-autofix.yml`,
-`copilot-review-reminder.yml`, `security-alerts-sync.yml`.
-
-Utöver dessa: projektspecifika CI-workflows (bygger/testar koden) vars
+Två standardfiler finns i alla aktiva repon: `auto-assign.yml` och
+`dependabot-auto-merge.yml`. Utöver dessa projektspecifika CI- och
+deploy-workflows (`ci.yml`, `docker.yml`, `deploy*.yml` m.fl.) vars
 job-namn refereras i branch-rulesetet nedan.
+
+`dependabot-auto-merge.yml` armerar auto-merge på Dependabots PR:er med
+`gh pr merge --auto --merge`. **Inte `--squash` eller `--rebase`** — de
+metoderna är avstängda både på repo-nivå och i rulesetet, så kommandot
+skulle avvisas och auto-merge tyst sluta fungera (så var det i alla repon
+fram till 2026-08-17).
+
+Avvikelse: bastion saknar `auto-assign.yml` och löser tilldelningen med
+`assignees:` i `dependabot.yml` istället.
 
 ## Branch-rulesets
 
@@ -100,17 +107,22 @@ av att taggar och grenar är olika saker.
 | Secret scanning push protection | på |
 | Secret scanning validity checks | av |
 | Secret scanning non-provider patterns | av |
-| Dependabot version updates (`.github/dependabot.yml`) | **av i övriga repon, på i bastion** — Renovate används i övriga repon (se `renovate.json`); bastion migrerade till Dependabot 2026-07-14 (`.github/dependabot.yml`), medveten avvikelse. |
-| Code scanning / CodeQL | **av i övriga repon, på i bastion** (`.github/workflows/codeql.yml`, tillagt 2026-07-04) — gratis för publika repon, motiverat av injektionskänsliga ytor (Docker-kommandobyggare, SSH-nyckelparser). Inte utrullat på övriga repon än, så bastion avviker medvetet här tills vidare. |
+| Dependabot version updates (`.github/dependabot.yml`) | **på i alla repon** — Dependabot är standarden. Renovate är utfasat och används inte längre någonstans (bastion migrerade 2026-07-14, övriga repon senare). |
+| Code scanning / CodeQL | **på i bastion, av i övriga repon** — bastion har ingen `codeql.yml`; CodeQL körs via GitHubs *default setup* och syns i rulesetet som den required check som kommer från integration 57789. Motiverat av injektionskänsliga ytor (Docker-kommandobyggare, SSH-nyckelparser). Inte utrullat på övriga repon än. |
 
-## Renovate (GitHub App)
+## Dependabot
 
-Ska vara **installerad och den auto-genererade "Configure Renovate"-PR:n
-mergad** (inte lämnad öppen) — det är mönstret i alla andra repon.
+Standardlösningen för beroendeuppdateringar i alla repon:
 
-**Undantag: bastion** använder inte Renovate (migrerade till Dependabot
-2026-07-14, se *Security & analysis* och `.github/dependabot.yml`). Renovate-appen behöver
-inte vara installerad för bastion.
+- `.github/dependabot.yml` med ekosystemen som repot faktiskt använder
+- `.github/workflows/dependabot-auto-merge.yml` som armerar auto-merge med
+  `gh pr merge --auto --merge`
+
+Renovate-appen ska **inte** vara installerad, och inget repo har
+`renovate.json` kvar. Undantag: `bastion-certificates` (fastlane
+match-repo, sju filer, inga workflows och inga beroenden) har varken
+Dependabot-konfiguration eller workflows — det finns inget att uppdatera
+där.
 
 ## Inte verifierat / inte en del av guldstandarden
 
