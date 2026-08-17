@@ -5,6 +5,8 @@ Den repokonfiguration som ska matcha alla blixten85-repon. Verifierat mot
 2026-07-04. Använd den här filen som checklista när ett nytt repo skapas
 eller när du undrar "är X satt här också?".
 
+Branch-rulesetsen nedan är avstämda mot bastions exporterade JSON 2026-08-17.
+
 ## Filer i repot
 
 - `LICENSE` (MIT)
@@ -17,7 +19,8 @@ eller när du undrar "är X satt här också?".
 - `.github/FUNDING.yml` (github-sponsors + PayPal)
 - `.github/renovate.json` (`config:best-practices`, daglig schedule, semantic
   commits, separata major-releases, auto-rebase, patch-automerge, GHA-gruppering)
-  — **inte i bastion** (använder `.github/dependabot.yml` istället, se rad 71)
+  — **inte i bastion** (använder `.github/dependabot.yml` istället, se
+  *Security & analysis* nedan)
 
 ## Workflows (`.github/workflows/`)
 
@@ -28,18 +31,46 @@ eller när du undrar "är X satt här också?".
 Utöver dessa: projektspecifika CI-workflows (bygger/testar koden) vars
 job-namn refereras i branch-rulesetet nedan.
 
-## Branch-ruleset ("Protect main")
+## Branch-rulesets
 
-En ruleset med target `branch`, `refs/heads/main`:
+Två rulesets, båda med target `branch` och `enforcement: active`. De ska se
+likadana ut i alla repon — det enda som skiljer repon åt är vilka jobb som
+listas under `required_status_checks` (kodanalyserna och de projektspecifika
+CI-jobben).
+
+### "Protect main" (`~DEFAULT_BRANCH`)
+
 - `pull_request`: `required_approving_review_count: 0` (PR krävs, men inga
-  obligatoriska godkännanden), `allowed_merge_methods: [merge, squash, rebase]`
+  obligatoriska godkännanden), `dismiss_stale_reviews_on_push: true`,
+  `required_review_thread_resolution: true`, `require_code_owner_review: false`,
+  `require_last_push_approval: false`,
+  **`allowed_merge_methods: [merge]`** — bara merge-commits, varken squash
+  eller rebase (gäller alla repon)
+- `required_status_checks`: `strict_required_status_checks_policy: true`
+  (grenen måste vara uppdaterad mot main innan merge),
+  `do_not_enforce_on_create: false`. **Repospecifik lista** — för bastion:
+  `xcodegen-and-build`, `swiftpm-macos`, `linuxapp-build` samt `CodeQL`
+  (integration 57789).
+- `code_scanning`: CodeQL med `alerts_threshold: all` och
+  `security_alerts_threshold: all`
+- `code_quality`: `severity: all`
+- `copilot_code_review`: `review_on_push: true`,
+  `review_draft_pull_requests: true`
 - `non_fast_forward`
 - `deletion` (skydd mot borttagning av main)
-- `required_status_checks`: projektspecifika CI-jobb (t.ex. `swiftpm-macos`,
-  `xcodegen-and-build`, `linuxapp-build` för bastion), `strict_required_status_checks_policy: false`
+- `bypass_actors`: repo-admin (`RepositoryRole` 5), `bypass_mode: always`
+
+### "Dev" (`~ALL`)
+
+Täcker alla grenar, inklusive main:
+
+- `creation`, `deletion`, `non_fast_forward`
+- `bypass_actors` (`always`): repo-admin (`RepositoryRole` 5) och Dependabot
+  (`Integration` 29110) — bypassen är det som gör att Dependabot kan skapa
+  och ta bort sina PR-grenar trots `creation`/`deletion`.
 
 Ingen tag-ruleset finns någonstans i org:et — release-taggar (`auto-release.yml`)
-träffar aldrig branch-rulesetet eftersom det bara gäller `refs/heads/main`.
+träffar aldrig rulesetsen eftersom båda har target `branch`.
 "Release-immunitet" är alltså inget konfigurerat koncept, bara en konsekvens
 av att taggar och grenar är olika saker.
 
@@ -57,7 +88,8 @@ av att taggar och grenar är olika saker.
 | Always suggest updating pull request branches | **på** | alla repon (bastion saknade detta, fixat 2026-07-04) |
 | Allow auto-merge | på | alla repon |
 | Automatically delete head branches | på | alla repon |
-| Allow squash/merge/rebase merge | alla tre på | alla repon |
+| Allow merge commits | på | alla repon |
+| Allow squash merging / Allow rebase merging | **av** | alla repon (ändrat 2026-08-17). Repo-nivån speglar rulesetet: det som är påslaget här är exakt `allowed_merge_methods` i `Protect main`. |
 
 ## Security & analysis
 
@@ -77,7 +109,7 @@ Ska vara **installerad och den auto-genererade "Configure Renovate"-PR:n
 mergad** (inte lämnad öppen) — det är mönstret i alla andra repon.
 
 **Undantag: bastion** använder inte Renovate (migrerade till Dependabot
-2026-07-14, se rad 71 och `.github/dependabot.yml`). Renovate-appen behöver
+2026-07-14, se *Security & analysis* och `.github/dependabot.yml`). Renovate-appen behöver
 inte vara installerad för bastion.
 
 ## Inte verifierat / inte en del av guldstandarden
