@@ -1,0 +1,43 @@
+name: OSV-Scanner
+
+# Sårbarhetsskanning av beroenden mot OSV-databasen. Kompletterar CodeQL:
+# CodeQL läser vår egen kod, osv-scanner läser beroendeträdet. Fynden landar
+# som code scanning-alerts i Security-fliken, samma flöde som CodeQL:s.
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  schedule:
+    # Måndag 06:40 CEST. Nya advisories dyker upp mot oförändrade
+    # beroenden, så en schemalagd körning behövs — push och PR räcker inte.
+    # Tiderna är spridda mellan repona för att inte köa upp alla samtidigt.
+    - cron: '40 4 * * 1'
+
+permissions: {}
+
+jobs:
+  # På PR: differentiell skanning som bara rapporterar sårbarheter PR:en
+  # faktiskt inför. Kvarvarande fynd i main gör alltså inte varje PR röd.
+  scan-pr:
+    if: github.event_name == 'pull_request'
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+  # På main och enligt schema: hela beroendeträdet. fail-on-vuln är av —
+  # ett fynd ska synas som alert i Security-fliken, inte färga main röd.
+  scan:
+    if: github.event_name != 'pull_request'
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    with:
+      fail-on-vuln: false
