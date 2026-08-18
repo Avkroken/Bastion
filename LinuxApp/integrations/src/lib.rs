@@ -30,10 +30,13 @@
 //! - [`kubernetes`]: RFC 1123-etiketter, alltså bara gemener, siffror och
 //!   bindestreck — det API-servern faktiskt accepterar
 //! - [`proxmox`]: heltal från 100, eftersom allt adresseras med VMID
+//! - [`truenas`]: korta gemena ord (`cifs`, `nfs`), middlewares egna
+//!   tjänste-id:n
 //!
 //! Att pressa in dem i en gemensam regel hade gjort den till den
-//! lösaste av de tre, alltså sämst som injektionsskydd.
+//! lösaste av de fyra, alltså sämst som injektionsskydd.
 
 pub mod docker;
 pub mod kubernetes;
 pub mod proxmox;
+pub mod truenas;

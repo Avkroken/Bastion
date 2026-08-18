@@ -11,7 +11,7 @@ mod bookmarks;
 // Integrationerna kommer från det fristående paketet `integrations/`.
 // Anropsställena skriver fortfarande `docker::…`, `kubernetes::…` och
 // `proxmox::…` — bara varifrån de kommer har ändrats.
-use bastion_integrations::{docker, kubernetes, proxmox};
+use bastion_integrations::{docker, kubernetes, proxmox, truenas};
 mod command_library;
 mod dashboard;
 mod external_binary_fetcher;
@@ -1102,6 +1102,34 @@ fn refresh_list(
                 }
             }
         ));
+        let truenas_action = gtk::gio::SimpleAction::new("truenas", None);
+        truenas_action.connect_activate(clone!(
+            #[strong]
+            store,
+            #[strong]
+            area,
+            #[strong(rename_to = host_id)]
+            h.id,
+            move |_, _| {
+                let host = store
+                    .borrow()
+                    .all()
+                    .iter()
+                    .find(|x| x.id == host_id)
+                    .map(|h| (*h).clone());
+                if let Some(host) = host {
+                    with_resolved_jump(&area, &store, host, clone!(
+                        #[strong]
+                        area,
+                        move |host, jump| {
+                            require_password(&area, host, move |area, host, password| {
+                                open_truenas_view(area, host, password, jump.clone())
+                            });
+                        }
+                    ));
+                }
+            }
+        ));
         let commands_action = gtk::gio::SimpleAction::new("commands", None);
         commands_action.connect_activate(clone!(
             #[strong]
@@ -1244,6 +1272,7 @@ fn refresh_list(
         action_group.add_action(&docker_action);
         action_group.add_action(&kubernetes_action);
         action_group.add_action(&proxmox_action);
+        action_group.add_action(&truenas_action);
         action_group.add_action(&commands_action);
         action_group.add_action(&sftp_action);
         action_group.add_action(&forward_action);
@@ -1756,6 +1785,7 @@ fn gio_menu_for(toggles: &settings::FeatureToggles, mac_address: &Option<String>
         menu.append(Some("Docker"), Some("host.docker"));
         menu.append(Some("Kubernetes"), Some("host.kubernetes"));
         menu.append(Some("Proxmox"), Some("host.proxmox"));
+        menu.append(Some("TrueNAS"), Some("host.truenas"));
     }
     if toggles.show_command_library {
         menu.append(Some("Kommandon"), Some("host.commands"));
@@ -6051,6 +6081,314 @@ fn open_proxmox_view(
     });
 
     load_visible();
+}
+
+/// TrueNAS-vy: pooler, tjänster och larm via `midclt`.
+///
+/// Fjärde integrationen, och fjärde gången `refresh_integration_list`
+/// räckte utan ändring. Det som skiljer TrueNAS från de tre andra —
+/// JSON i stället för kolumner, och åtgärder vars argument måste vara
+/// citerad JSON — rymdes helt i modulen och radstängningen.
+fn open_truenas_view(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    jump: Option<host::Host>,
+) {
+    let pools_list = docker_category_list();
+    let services_list = docker_category_list();
+    let alerts_list = docker_category_list();
+
+    let stack = adw::ViewStack::new();
+    let category = adw::ViewSwitcher::builder()
+        .policy(adw::ViewSwitcherPolicy::Wide)
+        .build();
+    category.set_stack(Some(&stack));
+    stack.add_titled(&docker_category_scroller(&pools_list), Some("pools"), "Pooler");
+    stack.add_titled(&docker_category_scroller(&services_list), Some("services"), "Tjänster");
+    stack.add_titled(&docker_category_scroller(&alerts_list), Some("alerts"), "Larm");
+
+    let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
+    refresh_button.set_tooltip_text(Some("Uppdatera"));
+
+    let toolbar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .build();
+    toolbar.append(
+        &gtk::Label::builder()
+            .label(format!("TrueNAS: {}", host.alias))
+            .hexpand(true)
+            .halign(gtk::Align::Start)
+            .build(),
+    );
+    toolbar.append(&category);
+    toolbar.append(&refresh_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&toolbar);
+    content.append(&stack);
+
+    let page = area.tab_view.append(&content);
+    page.set_title(&format!("TrueNAS: {}", host.alias));
+    area.tab_view.set_selected_page(&page);
+    area.update_placeholder();
+
+    let load_visible = {
+        let area = area.clone();
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let stack = stack.clone();
+        let pools_list = pools_list.clone();
+        let services_list = services_list.clone();
+        let alerts_list = alerts_list.clone();
+        move || {
+            let name = stack.visible_child_name().unwrap_or_else(|| "pools".into());
+            let (list, category) = match name.as_str() {
+                "services" => (&services_list, TrueNasCategory::Services),
+                "alerts" => (&alerts_list, TrueNasCategory::Alerts),
+                _ => (&pools_list, TrueNasCategory::Pools),
+            };
+            refresh_truenas_category(&area, host.clone(), password.clone(), list, jump.clone(), category);
+        }
+    };
+
+    refresh_button.connect_clicked({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+    stack.connect_visible_child_name_notify({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+
+    load_visible();
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum TrueNasCategory {
+    Pools,
+    Services,
+    Alerts,
+}
+
+fn refresh_truenas_category(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    list: &gtk::ListBox,
+    jump: Option<host::Host>,
+    category: TrueNasCategory,
+) {
+    let command = Ok(match category {
+        TrueNasCategory::Pools => truenas::pools_command(),
+        TrueNasCategory::Services => truenas::services_command(),
+        TrueNasCategory::Alerts => truenas::alerts_command(),
+    });
+    let empty = (
+        match category {
+            TrueNasCategory::Pools => "Inga pooler",
+            TrueNasCategory::Services => "Inga tjänster",
+            TrueNasCategory::Alerts => "Inga larm",
+        },
+        Some("Tomt svar — kontrollera att värden är en TrueNAS och att midclt finns"),
+    );
+
+    refresh_integration_list(
+        host.clone(),
+        password.clone(),
+        list,
+        jump.clone(),
+        command,
+        empty,
+        clone!(
+            #[strong]
+            area,
+            #[strong]
+            host,
+            #[strong]
+            password,
+            #[strong]
+            jump,
+            move |output: &str, list: &gtk::ListBox| {
+                match category {
+                    TrueNasCategory::Pools => {
+                        for pool in truenas::parse_pools(output) {
+                            let mut subtitle = pool.status.clone();
+                            if pool.needs_attention() {
+                                // ONLINE men ohälsosam är det fall som
+                                // annars ser lugnt ut — säg vad som gäller.
+                                subtitle.push_str(if pool.healthy {
+                                    " · ⚠"
+                                } else {
+                                    " · ⚠ inte frisk (resilver, läsfel eller checksummefel)"
+                                });
+                            }
+                            list.append(
+                                &adw::ActionRow::builder().title(&pool.name).subtitle(subtitle).build(),
+                            );
+                        }
+                    }
+                    TrueNasCategory::Alerts => {
+                        for alert in truenas::parse_alerts(output) {
+                            let mut subtitle = alert.level.clone();
+                            if alert.dismissed {
+                                subtitle.push_str(" · avfärdat");
+                            }
+                            let row = adw::ActionRow::builder()
+                                .title(&alert.formatted)
+                                .subtitle(subtitle)
+                                .build();
+                            if alert.is_critical() && !alert.dismissed {
+                                row.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
+                            }
+                            list.append(&row);
+                        }
+                    }
+                    TrueNasCategory::Services => {
+                        for service in truenas::parse_services(output) {
+                            list.append(&build_truenas_service_row(
+                                &area, &host, &password, list, &jump, service,
+                            ));
+                        }
+                    }
+                }
+            }
+        ),
+    );
+}
+
+/// En tjänsterad, med start/stopp/omstart.
+///
+/// Bara tjänster har åtgärder. Pooler och larm är läsning: att avfärda
+/// ett larm eller exportera en pool härifrån vore driftbeslut som hör
+/// hemma i TrueNAS eget gränssnitt, där konsekvenserna förklaras.
+fn build_truenas_service_row(
+    area: &Rc<SessionArea>,
+    host: &host::Host,
+    password: &Option<String>,
+    list: &gtk::ListBox,
+    jump: &Option<host::Host>,
+    service: truenas::Service,
+) -> adw::ActionRow {
+    let mut subtitle = service.state.clone();
+    if service.is_running_but_not_enabled() {
+        subtitle.push_str(" · ⚠ startar inte vid omstart");
+    } else if !service.enabled {
+        subtitle.push_str(" · avstängd vid uppstart");
+    }
+    let row = adw::ActionRow::builder().title(&service.id).subtitle(subtitle).build();
+
+    let run_then_reload = {
+        let area = area.clone();
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let list = list.clone();
+        move |command: Result<String, String>| {
+            let Ok(command) = command else {
+                show_message_dialog(&area, "TrueNAS", "ogiltigt tjänste-id — kommandot byggdes aldrig");
+                return;
+            };
+            let rx = ssh::run_command(host.clone(), password.clone(), command, jump.clone());
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                host,
+                #[strong]
+                password,
+                #[strong]
+                jump,
+                #[weak]
+                list,
+                async move {
+                    match rx.recv().await {
+                        Ok(Ok(_)) => refresh_truenas_category(
+                            &area, host, password, &list, jump, TrueNasCategory::Services,
+                        ),
+                        Ok(Err(e)) => show_message_dialog(&area, "TrueNAS", &e),
+                        Err(_) => show_message_dialog(&area, "TrueNAS", "SSH-anslutningen avbröts oväntat"),
+                    }
+                }
+            ));
+        }
+    };
+
+    let id = service.id.clone();
+    if service.is_running() {
+        let restart = gtk::Button::from_icon_name("view-refresh-symbolic");
+        restart.set_tooltip_text(Some("Starta om"));
+        restart.set_valign(gtk::Align::Center);
+        restart.add_css_class("flat");
+        restart.connect_clicked({
+            let run_then_reload = run_then_reload.clone();
+            let id = id.clone();
+            move |_| run_then_reload(truenas::restart_service_command(&id))
+        });
+        row.add_suffix(&restart);
+
+        // Att stoppa en delningstjänst kopplar ner alla klienter — det
+        // ska bekräftas, till skillnad från en omstart som återställer.
+        let stop = gtk::Button::from_icon_name("media-playback-stop-symbolic");
+        stop.set_tooltip_text(Some("Stoppa"));
+        stop.set_valign(gtk::Align::Center);
+        stop.add_css_class("flat");
+        stop.connect_clicked(clone!(
+            #[strong]
+            area,
+            #[strong]
+            run_then_reload,
+            #[strong]
+            id,
+            move |_| {
+                let dialog = adw::AlertDialog::new(
+                    Some("Stoppa tjänsten"),
+                    Some(&format!(
+                        "Stoppa {id}?\n\nAlla klienter som använder tjänsten kopplas ner. \
+                         En omstart återställer i stället anslutningarna."
+                    )),
+                );
+                dialog.add_response("cancel", "Avbryt");
+                dialog.add_response("stop", "Stoppa");
+                dialog.set_response_appearance("stop", adw::ResponseAppearance::Destructive);
+                dialog.set_default_response(Some("cancel"));
+                dialog.connect_response(
+                    None,
+                    clone!(
+                        #[strong]
+                        run_then_reload,
+                        #[strong]
+                        id,
+                        move |_, response| {
+                            if response == "stop" {
+                                run_then_reload(truenas::stop_service_command(&id));
+                            }
+                        }
+                    ),
+                );
+                dialog.present(Some(&area.overlay));
+            }
+        ));
+        row.add_suffix(&stop);
+    } else {
+        let start = gtk::Button::from_icon_name("media-playback-start-symbolic");
+        start.set_tooltip_text(Some("Starta"));
+        start.set_valign(gtk::Align::Center);
+        start.add_css_class("flat");
+        start.connect_clicked({
+            let run_then_reload = run_then_reload.clone();
+            let id = id.clone();
+            move |_| run_then_reload(truenas::start_service_command(&id))
+        });
+        row.add_suffix(&start);
+    }
+
+    row
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
