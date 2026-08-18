@@ -637,6 +637,51 @@ pub const RSA_DISABLED_PREFIX: &str = "RSA-nycklar är tillfälligt inaktiverade
 
 /// Felet som varje RSA-väg returnerar. Formuleras på ett ställe så att
 /// nyckelfil, certifikat och ssh-agent säger exakt samma sak.
+/// Vad agent-autentiseringen faktiskt stötte på, när ingen nyckel gick
+/// igenom.
+///
+/// Ren funktion och egen typ av ett skäl: den gamla koden avgjorde det
+/// här i en villkorskedja mitt i en async-loop, där det varken gick att
+/// testa eller att utöka utan att läsa hela loopen. Nu är beslutet en
+/// tabell.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AgentAttempt {
+    /// Nycklar som faktiskt provades mot servern.
+    pub considered: usize,
+    /// RSA-nycklar som hoppades över (RUSTSEC-2023-0071).
+    pub skipped_rsa: usize,
+    /// Säkerhetsnycklar (FIDO2/YubiKey, `sk-ssh-ed25519` och
+    /// `sk-ecdsa-sha2-nistp256`) bland de provade.
+    pub security_keys: usize,
+}
+
+/// Felmeddelandet när ingen identitet i agenten dög.
+///
+/// Tre olika situationer som ser likadana ut för användaren men kräver
+/// helt olika saker:
+///
+/// 1. Bara RSA fanns — stödet är avstängt, byt nyckeltyp.
+/// 2. En säkerhetsnyckel provades — den kräver en FYSISK BERÖRING, och
+///    utan den timeoutar signeringen. Det ser ut som att servern nekade,
+///    men ingen har nekat något: token väntade på ett finger.
+/// 3. Vanliga nycklar provades och servern sa nej — det är ett riktigt
+///    auth-fel.
+///
+/// Fall 2 är det som annars är omöjligt att gissa sig till. En YubiKey
+/// blinkar tyst i en USB-port, ofta bakom datorn.
+pub fn agent_failure_message(attempt: AgentAttempt) -> String {
+    if attempt.considered == 0 && attempt.skipped_rsa > 0 {
+        return rsa_disabled_error();
+    }
+    if attempt.security_keys > 0 {
+        let plural = if attempt.security_keys == 1 { "en säkerhetsnyckel" } else { "säkerhetsnycklar" };
+        return format!(
+            "servern avvisade autentiseringen. Agenten hade {plural} (FIDO2/YubiKey),              och en sådan måste RÖRAS VID för att signera — sitter den i en port du              inte ser kan den ha väntat på ett finger tills försöket gav upp.              Kontrollera att den blinkar och försök igen."
+        );
+    }
+    "servern avvisade autentiseringen".to_string()
+}
+
 fn rsa_disabled_error() -> String {
     format!(
         "{RSA_DISABLED_PREFIX}. Stödet är avstängt tills RUSTSEC-2023-0071 \
@@ -693,6 +738,7 @@ async fn authenticate(
             // det intetsägande "servern avvisade autentiseringen".
             let mut skipped_rsa = 0usize;
             let mut considered = 0usize;
+            let mut security_keys = 0usize;
             for identity in identities {
                 // `request_identities` ger nu `AgentIdentity` (nyckel +
                 // kommentar, eller ett certifikat). Bara rena publika
@@ -708,6 +754,17 @@ async fn authenticate(
                     continue;
                 }
                 considered += 1;
+                // `sk-`-algoritmerna är FIDO2/säkerhetsnycklar. russh
+                // stöder dem (`SkEd25519`, `SkEcdsaSha2NistP256`), och de
+                // går genom agenten precis som andra nycklar — men de
+                // kräver en fysisk beröring, vilket ingen annan nyckeltyp
+                // gör. Räknas för att felmeddelandet ska kunna säga det.
+                if matches!(
+                    key.algorithm(),
+                    russh::keys::Algorithm::SkEd25519 | russh::keys::Algorithm::SkEcdsaSha2NistP256
+                ) {
+                    security_keys += 1;
+                }
                 let result = session
                     .authenticate_publickey_with(&host.user, key, None, &mut agent)
                     .await;
@@ -716,8 +773,12 @@ async fn authenticate(
                     break;
                 }
             }
-            if !succeeded && considered == 0 && skipped_rsa > 0 {
-                return Err(rsa_disabled_error());
+            if !succeeded {
+                return Err(agent_failure_message(AgentAttempt {
+                    considered,
+                    skipped_rsa,
+                    security_keys,
+                }));
             }
             succeeded
         }
@@ -818,6 +879,60 @@ mod tests {
     use super::*;
     use crate::host::Host;
     use std::time::Duration;
+
+    /// Tre situationer som ser likadana ut för användaren men kräver
+    /// helt olika saker. Den mellersta är den som annars är omöjlig att
+    /// gissa sig till: en YubiKey blinkar tyst i en port bakom datorn.
+    #[test]
+    fn agent_failure_tells_the_three_situations_apart() {
+        // Bara RSA fanns — inget provades.
+        let only_rsa = agent_failure_message(AgentAttempt {
+            considered: 0,
+            skipped_rsa: 2,
+            security_keys: 0,
+        });
+        assert!(only_rsa.starts_with(RSA_DISABLED_PREFIX), "{only_rsa}");
+
+        // En säkerhetsnyckel provades — kan ha väntat på en beröring.
+        let sk = agent_failure_message(AgentAttempt {
+            considered: 1,
+            skipped_rsa: 0,
+            security_keys: 1,
+        });
+        assert!(sk.contains("RÖRAS VID"), "{sk}");
+        assert!(sk.contains("en säkerhetsnyckel"), "singular när det är en: {sk}");
+
+        let many = agent_failure_message(AgentAttempt {
+            considered: 3,
+            skipped_rsa: 0,
+            security_keys: 2,
+        });
+        assert!(many.contains("säkerhetsnycklar"), "plural när det är flera: {many}");
+
+        // Vanliga nycklar, servern sa nej. Inget mer att tillägga.
+        let plain = agent_failure_message(AgentAttempt {
+            considered: 2,
+            skipped_rsa: 0,
+            security_keys: 0,
+        });
+        assert_eq!(plain, "servern avvisade autentiseringen");
+        assert!(!plain.contains(RSA_DISABLED_PREFIX));
+    }
+
+    /// RSA-fallet gäller bara när INGET annat provades. Fanns det en
+    /// användbar nyckel också är det servern som nekat, inte
+    /// RSA-avstängningen — och då hade RSA-texten pekat användaren åt
+    /// fel håll.
+    #[test]
+    fn rsa_message_only_when_nothing_else_was_tried() {
+        let mixed = agent_failure_message(AgentAttempt {
+            considered: 1,
+            skipped_rsa: 3,
+            security_keys: 0,
+        });
+        assert!(!mixed.starts_with(RSA_DISABLED_PREFIX), "{mixed}");
+        assert_eq!(mixed, "servern avvisade autentiseringen");
+    }
 
     /// `main.rs` känner igen RSA-felet på `RSA_DISABLED_PREFIX` för att
     /// kunna visa dialogen med den klickbara länken. Formuleras meddelandet
