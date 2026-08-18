@@ -6856,6 +6856,8 @@ fn build_sftp_entry_row(
                     &list,
                     &path_label,
                 );
+            } else if sftp::looks_like_image(&entry.name) {
+                open_sftp_image_preview(&area, ctx.handle.clone(), full_path, entry.size);
             } else {
                 open_sftp_file_editor(&area, ctx.handle.clone(), full_path);
             }
@@ -7426,6 +7428,77 @@ fn prompt_permissions(
     ));
 
     win.present();
+}
+
+/// Visar en bildfil i stället för att öppna den i textredigeraren.
+/// VISION.md listar förhandsvisning under SFTP-filhanteraren; utan den
+/// hamnade en PNG i en textbuffert som binärskräp.
+///
+/// Storleken kontrolleras INNAN nedladdningen — `handle.read` läser hela
+/// filen till minne, och katalogen kan innehålla flergigabytesfiler.
+fn open_sftp_image_preview(area: &Rc<SessionArea>, handle: sftp::SftpHandle, path: String, size: u64) {
+    let status = gtk::Label::builder()
+        .label("Hämtar …")
+        .margin_top(24)
+        .margin_bottom(24)
+        .wrap(true)
+        .build();
+    let picture = gtk::Picture::builder()
+        .can_shrink(true)
+        .vexpand(true)
+        .hexpand(true)
+        .visible(false)
+        .build();
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&status);
+    content.append(&picture);
+
+    let win = dialog_window(
+        &session_window(area),
+        &format!("Förhandsvisning: {path}"),
+        DialogSize::Viewer,
+        &content,
+    );
+    win.present();
+
+    if size > sftp::PREVIEW_MAX_BYTES {
+        status.set_label(&format!(
+            "Filen är {:.1} MB — för stor för förhandsvisning (gränsen är {} MB).\n\
+             Ladda ner den i stället.",
+            size as f64 / (1024.0 * 1024.0),
+            sftp::PREVIEW_MAX_BYTES / (1024 * 1024)
+        ));
+        return;
+    }
+
+    glib::spawn_future_local(clone!(
+        #[strong]
+        handle,
+        #[strong]
+        path,
+        #[weak]
+        status,
+        #[weak]
+        picture,
+        async move {
+            match handle.read(path).await {
+                Ok(bytes) => {
+                    // GDK avgör själv formatet ur innehållet. Att det
+                    // misslyckas är helt normalt — filnamnet gissade bara
+                    // att det VAR en bild — så felet visas, inget kraschar.
+                    match gtk::gdk::Texture::from_bytes(&glib::Bytes::from_owned(bytes)) {
+                        Ok(texture) => {
+                            picture.set_paintable(Some(&texture));
+                            picture.set_visible(true);
+                            status.set_visible(false);
+                        }
+                        Err(e) => status.set_label(&format!("Kunde inte tolka filen som en bild: {e}")),
+                    }
+                }
+                Err(e) => status.set_label(&format!("Kunde inte hämta filen: {e}")),
+            }
+        }
+    ));
 }
 
 /// Läser filen och visar den redigerbar om innehållet är giltig UTF-8 —
