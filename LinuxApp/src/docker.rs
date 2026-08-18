@@ -172,6 +172,123 @@ pub fn pull_image_command(reference: &str) -> Result<String, String> {
     Ok(format!("docker pull {} 2>&1", validate_image(reference)?))
 }
 
+/// Ett Compose-projekt på värden.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComposeProject {
+    pub name: String,
+    /// Docker Composes egen sammanfattning, t.ex. `running(3)` eller
+    /// `exited(2)`. Lämnas som den är — den bär både tillstånd och antal,
+    /// och att plocka isär den vore att gissa om ett format som inte är
+    /// dokumenterat som stabilt.
+    pub status: String,
+    /// Sökvägen till projektets compose-fil(er). Kommaseparerad när
+    /// projektet är byggt av flera filer (`-f a.yml -f b.yml`).
+    pub config_files: String,
+}
+
+impl ComposeProject {
+    pub fn is_running(&self) -> bool {
+        self.status.starts_with("running")
+    }
+}
+
+/// Citerar en sökväg för ett POSIX-shell.
+///
+/// Compose-filernas sökvägar är godtyckliga och kan innehålla mellanslag
+/// — de går alltså INTE genom [`validate`], som skulle avvisa dem. Inom
+/// enkla citattecken är varje tecken utom `'` självt literalt i POSIX sh,
+/// så regeln blir: avvisa sökvägar som innehåller `'`, citera resten.
+///
+/// Det är en starkare garanti än en teckenlista, eftersom den inte
+/// behöver räkna upp vad som är farligt — bara vad som bryter citatet.
+fn quote_path(path: &str) -> Result<String, String> {
+    if path.contains('\'') {
+        return Err(format!("sökvägen innehåller citattecken och går inte att citera säkert: {path:?}"));
+    }
+    if path.is_empty() {
+        return Err("tom sökväg".to_string());
+    }
+    Ok(format!("'{path}'"))
+}
+
+/// Bygger `docker compose -f … <verb>` för ett projekt.
+///
+/// `-f` med projektets egna filer, inte `-p` med namnet: `-p` ensamt
+/// hittar inga tjänster utan en compose-fil i arbetskatalogen, och vi vet
+/// inte var på värden man råkar stå. Filerna kommer från `docker compose
+/// ls`, alltså från Docker självt.
+fn compose_command(config_files: &str, verb: &str) -> Result<String, String> {
+    let mut args = String::new();
+    for file in config_files.split(',') {
+        let file = file.trim();
+        if file.is_empty() {
+            continue;
+        }
+        args.push_str(&format!("-f {} ", quote_path(file)?));
+    }
+    if args.is_empty() {
+        return Err("projektet saknar compose-filer".to_string());
+    }
+    Ok(format!("docker compose {args}{verb}"))
+}
+
+pub fn compose_ls_command() -> String {
+    // `--all` tar med stoppade projekt. Ett projekt man vill starta är
+    // per definition stoppat, så utan flaggan syns inte det man söker.
+    "docker compose ls --all --format json 2>/dev/null".to_string()
+}
+
+pub fn compose_up_command(config_files: &str) -> Result<String, String> {
+    compose_command(config_files, "up -d 2>&1")
+}
+
+pub fn compose_down_command(config_files: &str) -> Result<String, String> {
+    compose_command(config_files, "down 2>&1")
+}
+
+pub fn compose_restart_command(config_files: &str) -> Result<String, String> {
+    compose_command(config_files, "restart 2>&1")
+}
+
+pub fn compose_logs_command(config_files: &str, tail: i64) -> Result<String, String> {
+    let n = tail.max(1);
+    compose_command(config_files, &format!("logs --tail {n} 2>&1"))
+}
+
+/// `docker compose ls --format json` ger en JSON-array. Fälten heter
+/// `Name`, `Status` och `ConfigFiles` med versal begynnelsebokstav.
+///
+/// Trasig eller tom utdata ger en tom lista i stället för ett fel: en
+/// värd utan Docker Compose svarar ingenting alls efter `2>/dev/null`,
+/// och det är inte ett fel som förtjänar en röd rad — det betyder bara
+/// att det inte finns några projekt.
+pub fn parse_compose_projects(output: &str) -> Vec<ComposeProject> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(output.trim()) else {
+        return Vec::new();
+    };
+    let Some(array) = value.as_array() else {
+        return Vec::new();
+    };
+    array
+        .iter()
+        .filter_map(|item| {
+            let name = item.get("Name")?.as_str()?.to_string();
+            if name.is_empty() {
+                return None;
+            }
+            Some(ComposeProject {
+                name,
+                status: item.get("Status").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                config_files: item
+                    .get("ConfigFiles")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            })
+        })
+        .collect()
+}
+
 /// Delar en rad på `|` och kräver minst så många fält som utdataformatet
 /// lovar. Gemensam för alla fyra listningarna: en rad som inte ser ut som
 /// data (tomrad, felutskrift som slunkit förbi `2>/dev/null`) ska hoppas
@@ -383,6 +500,81 @@ mod tests {
             };
             assert!(n.is_builtin(), "{name} skapas av Docker och går inte att ta bort");
         }
+    }
+
+    /// Compose-filernas sökvägar är godtyckliga och kan innehålla
+    /// mellanslag — de kan alltså INTE gå genom `validate`, som skulle
+    /// avvisa dem. Citeringen är regeln i stället.
+    #[test]
+    fn compose_paths_with_spaces_survive_but_quote_injection_does_not() {
+        let cmd = compose_up_command("/srv/mina projekt/docker-compose.yml").unwrap();
+        assert_eq!(cmd, "docker compose -f '/srv/mina projekt/docker-compose.yml' up -d 2>&1");
+
+        // Enkelt citattecken är det ENDA som bryter citeringen, och det
+        // avvisas därför — allt annat är literalt inom '...'.
+        for bad in [
+            "/srv/x'; rm -rf / #",
+            "/srv/'$(whoami)'",
+        ] {
+            assert!(compose_up_command(bad).is_err(), "{bad:?} skulle avvisats");
+            assert!(compose_down_command(bad).is_err());
+        }
+
+        // Tecken som vore farliga OCITERADE ska passera, för de är det
+        // inte inom citattecken — annars vore regeln onödigt sträng.
+        let cmd = compose_up_command("/srv/a$b;c/docker-compose.yml").unwrap();
+        assert!(cmd.contains("'/srv/a$b;c/docker-compose.yml'"));
+    }
+
+    #[test]
+    fn a_compose_project_built_from_several_files_gets_one_f_per_file() {
+        let cmd = compose_restart_command("/srv/a.yml,/srv/b.yml").unwrap();
+        assert_eq!(cmd, "docker compose -f '/srv/a.yml' -f '/srv/b.yml' restart 2>&1");
+    }
+
+    #[test]
+    fn a_project_without_compose_files_is_an_error_not_a_bare_command() {
+        // Utan `-f` hade kommandot körts mot vad som råkar ligga i
+        // arbetskatalogen på värden — alltså fel projekt, tyst.
+        assert!(compose_up_command("").is_err());
+        assert!(compose_up_command(" , ").is_err());
+    }
+
+    #[test]
+    fn compose_projects_parse_from_dockers_own_json() {
+        let out = r#"[
+            {"Name":"webb","Status":"running(3)","ConfigFiles":"/srv/webb/docker-compose.yml"},
+            {"Name":"backup","Status":"exited(1)","ConfigFiles":"/srv/backup/compose.yml"}
+        ]"#;
+        let projects = parse_compose_projects(out);
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects[0].name, "webb");
+        assert!(projects[0].is_running());
+        assert_eq!(projects[1].name, "backup");
+        assert!(!projects[1].is_running(), "exited ska inte räknas som igång");
+    }
+
+    /// En värd utan Docker Compose svarar ingenting alls efter
+    /// `2>/dev/null`. Det är inte ett fel — det betyder att det inte
+    /// finns några projekt, och ska ge en tom lista, inte en krasch.
+    #[test]
+    fn missing_or_broken_compose_output_yields_an_empty_list() {
+        assert!(parse_compose_projects("").is_empty());
+        assert!(parse_compose_projects("   ").is_empty());
+        assert!(parse_compose_projects("inte json alls").is_empty());
+        assert!(parse_compose_projects("{}").is_empty(), "objekt är inte en array");
+        assert!(parse_compose_projects("[]").is_empty());
+        assert!(
+            parse_compose_projects(r#"[{"Status":"running(1)"}]"#).is_empty(),
+            "en post utan namn är inte ett projekt"
+        );
+    }
+
+    #[test]
+    fn compose_ls_includes_stopped_projects() {
+        // Ett projekt man vill STARTA är per definition stoppat — utan
+        // --all syns aldrig det man söker.
+        assert!(compose_ls_command().contains("--all"));
     }
 
     #[test]

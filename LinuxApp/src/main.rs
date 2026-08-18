@@ -5315,6 +5315,8 @@ fn open_docker_view(
     stack.add_titled(&docker_category_scroller(&images_list), Some("images"), "Images");
     stack.add_titled(&docker_category_scroller(&volumes_list), Some("volumes"), "Volymer");
     stack.add_titled(&docker_category_scroller(&networks_list), Some("networks"), "Nätverk");
+    let compose_list = docker_category_list();
+    stack.add_titled(&docker_category_scroller(&compose_list), Some("compose"), "Compose");
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.append(&toolbar);
@@ -5339,6 +5341,7 @@ fn open_docker_view(
         let images_list = images_list.clone();
         let volumes_list = volumes_list.clone();
         let networks_list = networks_list.clone();
+        let compose_list = compose_list.clone();
         move || {
             let name = stack.visible_child_name().unwrap_or_else(|| "containers".into());
             match name.as_str() {
@@ -5353,6 +5356,10 @@ fn open_docker_view(
                 "networks" => refresh_docker_category(
                     &area, host.clone(), password.clone(), &networks_list, jump.clone(),
                     DockerCategory::Networks,
+                ),
+                "compose" => refresh_docker_category(
+                    &area, host.clone(), password.clone(), &compose_list, jump.clone(),
+                    DockerCategory::Compose,
                 ),
                 _ => refresh_docker_list(&area, host.clone(), password.clone(), &list, jump.clone()),
             }
@@ -5379,6 +5386,10 @@ enum DockerCategory {
     Images,
     Volumes,
     Networks,
+    /// Compose skiljer sig från de andra tre: posterna går att STARTA och
+    /// STOPPA, inte bara tas bort. Raderna byggs därför av
+    /// `build_compose_row` i stället för `build_docker_resource_row`.
+    Compose,
 }
 
 /// Hämtar och ritar en av de tre resurslistorna.
@@ -5399,6 +5410,7 @@ fn refresh_docker_category(
         DockerCategory::Images => docker::images_command(),
         DockerCategory::Volumes => docker::volumes_command(),
         DockerCategory::Networks => docker::networks_command(),
+        DockerCategory::Compose => docker::compose_ls_command(),
     };
     let rx = ssh::run_command(host.clone(), password.clone(), command, jump.clone());
     glib::spawn_future_local(clone!(
@@ -5438,9 +5450,18 @@ fn refresh_docker_category(
                             DockerCategory::Images => "Inga images",
                             DockerCategory::Volumes => "Inga volymer",
                             DockerCategory::Networks => "Inga nätverk",
+                            DockerCategory::Compose => "Inga Compose-projekt",
                         })
                         .build(),
                 );
+                return;
+            }
+            if category == DockerCategory::Compose {
+                for project in docker::parse_compose_projects(&output) {
+                    list.append(&build_compose_row(
+                        &area, &host, &password, &list, &jump, project,
+                    ));
+                }
                 return;
             }
             for (title, subtitle, removable) in rows {
@@ -5547,6 +5568,10 @@ fn build_docker_resource_row(
                         format!("Ta bort volymen {title}? All data i den försvinner.")
                     }
                     DockerCategory::Networks => format!("Ta bort nätverket {title}?"),
+                    // Compose ritas av `build_compose_row` och kommer
+                    // aldrig hit. Ett projekt "tas" inte heller bort — det
+                    // stoppas med `down`, vilket är en annan sak.
+                    DockerCategory::Compose => unreachable!("Compose har egen radbyggare"),
                 };
                 let dialog = adw::AlertDialog::new(Some("Ta bort"), Some(&body));
                 dialog.add_response("cancel", "Avbryt");
@@ -5568,6 +5593,7 @@ fn build_docker_resource_row(
                                 DockerCategory::Images => docker::remove_image_command(&reference),
                                 DockerCategory::Volumes => docker::remove_volume_command(&reference),
                                 DockerCategory::Networks => docker::remove_network_command(&reference),
+                                DockerCategory::Compose => unreachable!("Compose har egen radbyggare"),
                             });
                         }
                     ),
@@ -5576,6 +5602,173 @@ fn build_docker_resource_row(
             }
         ));
         row.add_suffix(&remove);
+    }
+
+    row
+}
+
+/// En rad för ett Compose-projekt.
+///
+/// Egen byggare i stället för `build_docker_resource_row`, för ett
+/// projekt är inte en resurs som tas bort: det STARTAS och STOPPAS. Ett
+/// `down` river dessutom containrarna, vilket är ett driftbeslut och
+/// därför bekräftas — till skillnad från `up` och `restart`, som är
+/// återställande.
+fn build_compose_row(
+    area: &Rc<SessionArea>,
+    host: &host::Host,
+    password: &Option<String>,
+    list: &gtk::ListBox,
+    jump: &Option<host::Host>,
+    project: docker::ComposeProject,
+) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
+        .title(&project.name)
+        .subtitle(&project.status)
+        .build();
+
+    let run_then_reload = {
+        let area = area.clone();
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let list = list.clone();
+        move |command: Result<String, String>| {
+            let command = match command {
+                Ok(command) => command,
+                Err(e) => {
+                    // Felet är begripligt (t.ex. citattecken i sökvägen)
+                    // och förtjänar att synas ordagrant.
+                    show_message_dialog(&area, "Compose", &e);
+                    return;
+                }
+            };
+            let rx = ssh::run_command(host.clone(), password.clone(), command, jump.clone());
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                host,
+                #[strong]
+                password,
+                #[strong]
+                jump,
+                #[weak]
+                list,
+                async move {
+                    match rx.recv().await {
+                        Ok(Ok(_)) => refresh_docker_category(
+                            &area, host, password, &list, jump, DockerCategory::Compose,
+                        ),
+                        Ok(Err(e)) => show_message_dialog(&area, "Compose", &e),
+                        Err(_) => show_message_dialog(
+                            &area,
+                            "Compose",
+                            "SSH-anslutningen avbröts oväntat",
+                        ),
+                    }
+                }
+            ));
+        }
+    };
+
+    let files = project.config_files.clone();
+
+    let logs = gtk::Button::from_icon_name("text-x-generic-symbolic");
+    logs.set_tooltip_text(Some("Visa loggar"));
+    logs.set_valign(gtk::Align::Center);
+    logs.add_css_class("flat");
+    logs.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        host,
+        #[strong]
+        password,
+        #[strong]
+        jump,
+        #[strong]
+        files,
+        #[strong(rename_to = name)]
+        project.name,
+        move |_| {
+            let Ok(command) = docker::compose_logs_command(&files, 200) else {
+                show_message_dialog(&area, "Compose", "projektet saknar compose-filer");
+                return;
+            };
+            show_command_output(&area, &host, &password, &jump, &format!("Compose: {name}"), command);
+        }
+    ));
+    row.add_suffix(&logs);
+
+    // `up` och `restart` är återställande och bekräftas inte. `down`
+    // river containrarna och gör det.
+    if project.is_running() {
+        let restart = gtk::Button::from_icon_name("view-refresh-symbolic");
+        restart.set_tooltip_text(Some("Starta om projektet"));
+        restart.set_valign(gtk::Align::Center);
+        restart.add_css_class("flat");
+        restart.connect_clicked({
+            let run_then_reload = run_then_reload.clone();
+            let files = files.clone();
+            move |_| run_then_reload(docker::compose_restart_command(&files))
+        });
+        row.add_suffix(&restart);
+
+        let down = gtk::Button::from_icon_name("media-playback-stop-symbolic");
+        down.set_tooltip_text(Some("Stoppa projektet (down)"));
+        down.set_valign(gtk::Align::Center);
+        down.add_css_class("flat");
+        down.connect_clicked(clone!(
+            #[strong]
+            area,
+            #[strong]
+            run_then_reload,
+            #[strong]
+            files,
+            #[strong(rename_to = name)]
+            project.name,
+            move |_| {
+                let dialog = adw::AlertDialog::new(
+                    Some("Stoppa projektet"),
+                    Some(&format!(
+                        "Kör `docker compose down` för {name}? Containrarna rivs — \
+                         namngivna volymer rörs inte."
+                    )),
+                );
+                dialog.add_response("cancel", "Avbryt");
+                dialog.add_response("down", "Stoppa");
+                dialog.set_response_appearance("down", adw::ResponseAppearance::Destructive);
+                dialog.set_default_response(Some("cancel"));
+                dialog.connect_response(
+                    None,
+                    clone!(
+                        #[strong]
+                        run_then_reload,
+                        #[strong]
+                        files,
+                        move |_, response| {
+                            if response == "down" {
+                                run_then_reload(docker::compose_down_command(&files));
+                            }
+                        }
+                    ),
+                );
+                dialog.present(Some(&area.overlay));
+            }
+        ));
+        row.add_suffix(&down);
+    } else {
+        let up = gtk::Button::from_icon_name("media-playback-start-symbolic");
+        up.set_tooltip_text(Some("Starta projektet (up -d)"));
+        up.set_valign(gtk::Align::Center);
+        up.add_css_class("flat");
+        up.connect_clicked({
+            let run_then_reload = run_then_reload.clone();
+            let files = files.clone();
+            move |_| run_then_reload(docker::compose_up_command(&files))
+        });
+        row.add_suffix(&up);
     }
 
     row
@@ -5618,6 +5811,14 @@ fn docker_category_rows(
                 let removable = if n.is_builtin() { None } else { Some(n.name.clone()) };
                 (n.name, subtitle, removable)
             })
+            .collect(),
+        // Compose ritas av `build_compose_row`, men den här funktionen
+        // avgör fortfarande om listan är TOM — och den frågan måste
+        // besvaras för alla kategorier, annars visas "Inga Compose-projekt"
+        // ovanför projekt som finns.
+        DockerCategory::Compose => docker::parse_compose_projects(output)
+            .into_iter()
+            .map(|p| (p.name, p.status, None))
             .collect(),
     }
 }
@@ -6650,6 +6851,30 @@ fn show_docker_logs(
     let Ok(cmd) = docker::logs_command(&container.id, 200) else {
         return;
     };
+    show_command_output(
+        area,
+        host,
+        password,
+        jump,
+        &format!("Loggar: {}", container.name),
+        cmd,
+    );
+}
+
+/// Kör ett kommando på värden och visar utdatan i ett skrollbart fönster.
+///
+/// Bröts ut ur `show_docker_logs` när Compose behövde exakt samma sak för
+/// `docker compose logs`. Två kopior av "kör, vänta, skriv i en buffert"
+/// hade drivit isär vid första ändringen av felhanteringen — och felen är
+/// just det som skiljer en användbar loggvy från en tom ruta.
+fn show_command_output(
+    area: &Rc<SessionArea>,
+    host: &host::Host,
+    password: &Option<String>,
+    jump: &Option<host::Host>,
+    title: &str,
+    command: String,
+) {
     let text_view = gtk::TextView::builder()
         .editable(false)
         .monospace(true)
@@ -6658,15 +6883,10 @@ fn show_docker_logs(
         .child(&text_view)
         .vexpand(true)
         .build();
-    let win = dialog_window(
-        &session_window(area),
-        &format!("Loggar: {}", container.name),
-        DialogSize::Viewer,
-        &scrolled,
-    );
+    let win = dialog_window(&session_window(area), title, DialogSize::Viewer, &scrolled);
     win.present();
 
-    let rx = ssh::run_command(host.clone(), password.clone(), cmd, jump.clone());
+    let rx = ssh::run_command(host.clone(), password.clone(), command, jump.clone());
     glib::spawn_future_local(clone!(
         #[weak]
         text_view,
@@ -8416,9 +8636,27 @@ mod docker_category_tests {
 
     /// Tom utdata ska ge noll rader, inte en tom post. Vyn skiljer sedan
     /// "inget finns" från "det gick fel" på just den skillnaden.
+    /// Compose ritas av `build_compose_row`, men `docker_category_rows`
+    /// avgör fortfarande om listan är tom. Missas den frågan visas
+    /// "Inga Compose-projekt" ovanför projekt som faktiskt finns.
+    #[test]
+    fn compose_rows_are_counted_so_the_empty_state_is_not_shown_over_real_projects() {
+        let out = r#"[{"Name":"webb","Status":"running(3)","ConfigFiles":"/srv/c.yml"}]"#;
+        let rows = docker_category_rows(out, DockerCategory::Compose);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "webb");
+        assert_eq!(rows[0].1, "running(3)");
+        assert!(rows[0].2.is_none(), "ett projekt tas inte bort — det stoppas");
+    }
+
     #[test]
     fn empty_output_yields_no_rows_for_any_category() {
-        for category in [DockerCategory::Images, DockerCategory::Volumes, DockerCategory::Networks] {
+        for category in [
+            DockerCategory::Images,
+            DockerCategory::Volumes,
+            DockerCategory::Networks,
+            DockerCategory::Compose,
+        ] {
             assert!(docker_category_rows("", category).is_empty(), "{category:?}");
             assert!(docker_category_rows("\n\n", category).is_empty(), "{category:?}");
         }
