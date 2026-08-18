@@ -2909,6 +2909,29 @@ fn show_connect_error(area: &Rc<SessionArea>, message: &str) {
     show_message_dialog(area, "Kunde inte ansluta", message);
 }
 
+/// Förklarar att RSA är avstängt och länkar vidare. Egen funktion i stället
+/// för `show_message_dialog` eftersom den här behöver markup — poängen är
+/// just att länken går att klicka på, inte att läsa upp en URL ur en
+/// terminalrad. `body-use-markup` gör `<a href>` klickbar i AdwAlertDialog.
+fn show_rsa_disabled_dialog(area: &Rc<SessionArea>) {
+    let dialog = adw::AlertDialog::new(Some("RSA-nycklar är inaktiverade"), None);
+    dialog.set_body_use_markup(true);
+    dialog.set_body(&format!(
+        "Anslutningen avbröts eftersom värden är konfigurerad med en \
+         RSA-nyckel.\n\n\
+         RSA är tillfälligt avstängt i Linux-appen på grund av \
+         RUSTSEC-2023-0071 (Marvin-attacken), en sårbarhet i crate:n \
+         <tt>rsa</tt> som saknar rättad version. Stödet slås på igen så \
+         snart den finns.\n\n\
+         Använd en Ed25519-nyckel under tiden.\n\n\
+         <a href=\"{url}\">Läs mer om varför</a>",
+        url = ssh::RSA_DISABLED_DOC_URL
+    ));
+    dialog.add_response("ok", "OK");
+    dialog.set_default_response(Some("ok"));
+    dialog.present(Some(&area.overlay));
+}
+
 /// Samma modala dialog som `show_connect_error`, fast med valfri titel —
 /// återanvänd av t.ex. Wake-on-LAN-resultat (inte ett anslutningsfel, men
 /// samma "kort meddelande, en OK-knapp"-behov).
@@ -3310,6 +3333,12 @@ fn start_session(
                         terminal.feed(
                             format!("\r\n\x1b[31m[bastion] fel: {msg}\x1b[0m\r\n").as_bytes(),
                         );
+                        // RSA-stoppet är något användaren behöver agera på,
+                        // inte ett vanligt anslutningsfel — därför en dialog
+                        // med klickbar länk ovanpå den röda terminalraden.
+                        if msg.starts_with(ssh::RSA_DISABLED_PREFIX) {
+                            show_rsa_disabled_dialog(&area);
+                        }
                     }
                     SshEvent::Connected => {}
                     SshEvent::Closed => {
