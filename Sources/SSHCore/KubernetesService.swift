@@ -224,4 +224,50 @@ public enum KubernetesService {
             fields(line, 2)?.first
         }
     }
+
+    // MARK: - Körning över SSH
+
+    public static func pods(
+        over session: SSHSession, namespace: KubernetesNamespace = .all
+    ) async throws -> [KubernetesPod] {
+        parsePods(try await session.run(try podsCommand(namespace)), namespace: namespace)
+    }
+
+    public static func deployments(
+        over session: SSHSession, namespace: KubernetesNamespace = .all
+    ) async throws -> [KubernetesDeployment] {
+        parseDeployments(try await session.run(try deploymentsCommand(namespace)), namespace: namespace)
+    }
+
+    public static func nodes(over session: SSHSession) async throws -> [KubernetesNode] {
+        parseNodes(try await session.run(nodesCommand()))
+    }
+
+    public static func namespaces(over session: SSHSession) async throws -> [String] {
+        parseNamespaces(try await session.run("kubectl get namespaces --no-headers 2>/dev/null"))
+    }
+
+    public static func podLogs(
+        namespace: String, pod: String, tail: Int = 200, over session: SSHSession
+    ) async throws -> String {
+        try await session.run(try podLogsCommand(namespace: namespace, pod: pod, tail: tail))
+    }
+
+    public static func describePod(
+        namespace: String, pod: String, over session: SSHSession
+    ) async throws -> String {
+        try await session.run(try describePodCommand(namespace: namespace, pod: pod))
+    }
+
+    public static func deletePod(
+        namespace: String, pod: String, over session: SSHSession
+    ) async throws {
+        _ = try await session.run(try deletePodCommand(namespace: namespace, pod: pod))
+    }
+
+    public static func restartDeployment(
+        namespace: String, deployment: String, over session: SSHSession
+    ) async throws {
+        _ = try await session.run(try restartDeploymentCommand(namespace: namespace, deployment: deployment))
+    }
 }

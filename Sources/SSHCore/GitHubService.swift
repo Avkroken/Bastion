@@ -125,4 +125,22 @@ public enum GitHubService {
     public static func isAuthenticated(_ output: String) -> Bool {
         output.contains("Logged in to")
     }
+
+    // MARK: - Körning över SSH
+
+    public static func runs(
+        repoPath: String, limit: Int = 20, over session: SSHSession
+    ) async throws -> [GitHubRun] {
+        parseRuns(try await session.run(try runsCommand(repoPath: repoPath, limit: limit)))
+    }
+
+    public static func pullRequests(
+        repoPath: String, limit: Int = 20, over session: SSHSession
+    ) async throws -> [GitHubPullRequest] {
+        parsePullRequests(try await session.run(try pullRequestsCommand(repoPath: repoPath, limit: limit)))
+    }
+
+    public static func authStatus(over session: SSHSession) async throws -> Bool {
+        isAuthenticated(try await session.run(authStatusCommand()))
+    }
 }

@@ -137,4 +137,17 @@ public enum UnraidService {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
     }
+
+    // MARK: - Körning över SSH
+
+    /// Array och diskar kommer ur SAMMA svar — två anrop hade varit två
+    /// round-trips för samma data.
+    public static func status(over session: SSHSession) async throws -> (UnraidArrayStatus?, [UnraidDisk]) {
+        let output = try await session.run(statusCommand())
+        return (parseStatus(output), parseDisks(output))
+    }
+
+    public static func shares(over session: SSHSession) async throws -> [String] {
+        parseShares(try await session.run(sharesCommand()))
+    }
 }
