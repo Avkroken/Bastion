@@ -39,6 +39,15 @@ pub fn extract_zip_command(archive_name: &str, directory: &str) -> String {
     format!("cd {} && unzip -o -q {}", shell_quote(directory), shell_quote(&format!("./{archive_name}")))
 }
 
+/// Namn på arkivet när flera MARKERADE filer packas ihop, till skillnad från
+/// mappknappen som döper arkivet efter mappen. Tidsstämplat av två skäl:
+/// markeringen kan vara godtyckligt lång (ett namn byggt av den blir
+/// oläsbart eller för långt för filsystemet), och ett fast namn hade tyst
+/// skrivit över ett tidigare arkiv i samma katalog.
+pub fn multi_selection_archive_name(timestamp: &str) -> String {
+    format!("arkiv-{timestamp}.tar.gz")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,5 +97,35 @@ mod tests {
     #[test]
     fn extract_zip_command_matches_reference_implementation() {
         assert_eq!(extract_zip_command("out.zip", "/home/x"), "cd '/home/x' && unzip -o -q './out.zip'");
+    }
+
+    #[test]
+    fn multi_selection_archive_name_is_timestamped() {
+        let a = multi_selection_archive_name("20260818-081500");
+        assert_eq!(a, "arkiv-20260818-081500.tar.gz");
+    }
+
+    /// Två markeringar i samma katalog vid olika tidpunkter får inte ge
+    /// samma filnamn — då skriver den andra tyst över den första.
+    #[test]
+    fn two_archives_at_different_times_do_not_collide() {
+        assert_ne!(
+            multi_selection_archive_name("20260818-081500"),
+            multi_selection_archive_name("20260818-081501")
+        );
+    }
+
+    /// Markerade filer ska packas med sina egna namn — inte som hela
+    /// katalogen (`.`), vilket är vad mappknappen gör.
+    #[test]
+    fn selected_files_are_packed_by_name_not_as_the_whole_directory() {
+        let cmd = create_tar_gz_command(
+            &["a.txt".to_string(), "b c.txt".to_string()],
+            "arkiv-x.tar.gz",
+            "/srv/data",
+        );
+        assert!(cmd.contains("'a.txt'"), "fick: {cmd}");
+        assert!(cmd.contains("'b c.txt'"), "mellanslag måste citeras, fick: {cmd}");
+        assert!(!cmd.contains(" -- '.'"), "ska inte packa hela katalogen, fick: {cmd}");
     }
 }
