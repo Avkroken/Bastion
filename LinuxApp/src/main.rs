@@ -22,6 +22,7 @@ mod kubernetes;
 mod oauth;
 mod palette_actions;
 mod port_forward;
+mod proxmox;
 mod s3;
 mod serial;
 mod settings;
@@ -1059,6 +1060,34 @@ fn refresh_list(
                 }
             }
         ));
+        let proxmox_action = gtk::gio::SimpleAction::new("proxmox", None);
+        proxmox_action.connect_activate(clone!(
+            #[strong]
+            store,
+            #[strong]
+            area,
+            #[strong(rename_to = host_id)]
+            h.id,
+            move |_, _| {
+                let host = store
+                    .borrow()
+                    .all()
+                    .iter()
+                    .find(|x| x.id == host_id)
+                    .map(|h| (*h).clone());
+                if let Some(host) = host {
+                    with_resolved_jump(&area, &store, host, clone!(
+                        #[strong]
+                        area,
+                        move |host, jump| {
+                            require_password(&area, host, move |area, host, password| {
+                                open_proxmox_view(area, host, password, jump.clone())
+                            });
+                        }
+                    ));
+                }
+            }
+        ));
         let commands_action = gtk::gio::SimpleAction::new("commands", None);
         commands_action.connect_activate(clone!(
             #[strong]
@@ -1200,6 +1229,7 @@ fn refresh_list(
         action_group.add_action(&dashboard_action);
         action_group.add_action(&docker_action);
         action_group.add_action(&kubernetes_action);
+        action_group.add_action(&proxmox_action);
         action_group.add_action(&commands_action);
         action_group.add_action(&sftp_action);
         action_group.add_action(&forward_action);
@@ -1710,6 +1740,7 @@ fn gio_menu_for(toggles: &settings::FeatureToggles, mac_address: &Option<String>
     if toggles.show_docker {
         menu.append(Some("Docker"), Some("host.docker"));
         menu.append(Some("Kubernetes"), Some("host.kubernetes"));
+        menu.append(Some("Proxmox"), Some("host.proxmox"));
     }
     if toggles.show_command_library {
         menu.append(Some("Kommandon"), Some("host.commands"));
@@ -5690,6 +5721,327 @@ fn build_kubernetes_row(
             move |_| run_then_reload(kubernetes::restart_deployment_command(&ns, &name))
         });
         row.add_suffix(&restart);
+    }
+
+    row
+}
+
+/// Proxmox VE-vy: virtuella maskiner, LXC-containrar och lagring.
+///
+/// Tredje integrationen, och byggd som ett PROV på om
+/// `refresh_integration_list` håller. Utfallet: skelettet räckte
+/// oförändrat. Det som skiljer Proxmox från de två andra — tre olika
+/// verktyg i stället för ett, VMID som identifierare i stället för namn,
+/// en gästtyp som avgör vilket kommando som gäller — rymdes helt i
+/// kommandobyggandet och radstängningen.
+///
+/// Ingen namnrymdsväljare, till skillnad från Kubernetes: en Proxmox-nod
+/// har inget motsvarande begrepp. Att skelettet inte kräver en är just
+/// varför den parametern ligger hos anroparen och inte i skelettet.
+fn open_proxmox_view(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    jump: Option<host::Host>,
+) {
+    let vms_list = docker_category_list();
+    let containers_list = docker_category_list();
+    let storage_list = docker_category_list();
+
+    let stack = adw::ViewStack::new();
+    let category = adw::ViewSwitcher::builder()
+        .policy(adw::ViewSwitcherPolicy::Wide)
+        .build();
+    category.set_stack(Some(&stack));
+    stack.add_titled(&docker_category_scroller(&vms_list), Some("vms"), "Virtuella maskiner");
+    stack.add_titled(&docker_category_scroller(&containers_list), Some("containers"), "Containrar");
+    stack.add_titled(&docker_category_scroller(&storage_list), Some("storage"), "Lagring");
+
+    let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
+    refresh_button.set_tooltip_text(Some("Uppdatera"));
+
+    let toolbar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .build();
+    toolbar.append(
+        &gtk::Label::builder()
+            .label(format!("Proxmox: {}", host.alias))
+            .hexpand(true)
+            .halign(gtk::Align::Start)
+            .build(),
+    );
+    toolbar.append(&category);
+    toolbar.append(&refresh_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&toolbar);
+    content.append(&stack);
+
+    let page = area.tab_view.append(&content);
+    page.set_title(&format!("Proxmox: {}", host.alias));
+    area.tab_view.set_selected_page(&page);
+    area.update_placeholder();
+
+    let load_visible = {
+        let area = area.clone();
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let stack = stack.clone();
+        let vms_list = vms_list.clone();
+        let containers_list = containers_list.clone();
+        let storage_list = storage_list.clone();
+        move || {
+            let name = stack.visible_child_name().unwrap_or_else(|| "vms".into());
+            let (list, category) = match name.as_str() {
+                "containers" => (&containers_list, ProxmoxCategory::Containers),
+                "storage" => (&storage_list, ProxmoxCategory::Storage),
+                _ => (&vms_list, ProxmoxCategory::Vms),
+            };
+            refresh_proxmox_category(&area, host.clone(), password.clone(), list, jump.clone(), category);
+        }
+    };
+
+    refresh_button.connect_clicked({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+    stack.connect_visible_child_name_notify({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+
+    load_visible();
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ProxmoxCategory {
+    Vms,
+    Containers,
+    Storage,
+}
+
+fn refresh_proxmox_category(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    list: &gtk::ListBox,
+    jump: Option<host::Host>,
+    category: ProxmoxCategory,
+) {
+    let command = Ok(match category {
+        ProxmoxCategory::Vms => proxmox::vms_command(),
+        ProxmoxCategory::Containers => proxmox::containers_command(),
+        ProxmoxCategory::Storage => proxmox::storage_command(),
+    });
+    let empty = (
+        match category {
+            ProxmoxCategory::Vms => "Inga virtuella maskiner",
+            ProxmoxCategory::Containers => "Inga containrar",
+            ProxmoxCategory::Storage => "Ingen lagring",
+        },
+        Some("Tomt svar — kontrollera att värden är en Proxmox VE-nod och att du har behörighet"),
+    );
+
+    refresh_integration_list(
+        host.clone(),
+        password.clone(),
+        list,
+        jump.clone(),
+        command,
+        empty,
+        clone!(
+            #[strong]
+            area,
+            #[strong]
+            host,
+            #[strong]
+            password,
+            #[strong]
+            jump,
+            move |output: &str, list: &gtk::ListBox| {
+                if category == ProxmoxCategory::Storage {
+                    for s in proxmox::parse_storage(output) {
+                        let mut subtitle = format!("{} · {} använt", s.kind, s.used_percent);
+                        if !s.is_active() {
+                            subtitle.push_str(" · ⚠ inaktiv");
+                        }
+                        list.append(
+                            &adw::ActionRow::builder().title(&s.name).subtitle(subtitle).build(),
+                        );
+                    }
+                    return;
+                }
+                let guests = match category {
+                    ProxmoxCategory::Vms => proxmox::parse_vms(output),
+                    _ => proxmox::parse_containers(output),
+                };
+                for guest in guests {
+                    list.append(&build_proxmox_guest_row(
+                        &area, &host, &password, list, &jump, category, guest,
+                    ));
+                }
+            }
+        ),
+    );
+}
+
+/// En rad för en VM eller container.
+///
+/// Att ren och hård avstängning är SKILDA knappar är hela poängen:
+/// `shutdown` går via gästens OS, `stop` drar ur strömmen. En enda knapp
+/// hade tvingat fram ett val användaren inte fick göra.
+fn build_proxmox_guest_row(
+    area: &Rc<SessionArea>,
+    host: &host::Host,
+    password: &Option<String>,
+    list: &gtk::ListBox,
+    jump: &Option<host::Host>,
+    category: ProxmoxCategory,
+    guest: proxmox::Guest,
+) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
+        .title(format!("{} ({})", guest.name, guest.vmid))
+        .subtitle(&guest.status)
+        .build();
+
+    let run_then_reload = {
+        let area = area.clone();
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let list = list.clone();
+        move |command: Result<String, String>| {
+            let Ok(command) = command else {
+                show_message_dialog(&area, "Proxmox", "ogiltigt VMID — kommandot byggdes aldrig");
+                return;
+            };
+            let rx = ssh::run_command(host.clone(), password.clone(), command, jump.clone());
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                host,
+                #[strong]
+                password,
+                #[strong]
+                jump,
+                #[weak]
+                list,
+                async move {
+                    match rx.recv().await {
+                        Ok(Ok(_)) => refresh_proxmox_category(
+                            &area, host, password, &list, jump, category,
+                        ),
+                        Ok(Err(e)) => show_message_dialog(&area, "Proxmox", &e),
+                        Err(_) => show_message_dialog(&area, "Proxmox", "SSH-anslutningen avbröts oväntat"),
+                    }
+                }
+            ));
+        }
+    };
+
+    let kind = guest.kind;
+    let vmid = guest.vmid.clone();
+
+    let config = gtk::Button::from_icon_name("dialog-information-symbolic");
+    config.set_tooltip_text(Some("Visa konfiguration"));
+    config.set_valign(gtk::Align::Center);
+    config.add_css_class("flat");
+    config.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        host,
+        #[strong]
+        password,
+        #[strong]
+        jump,
+        #[strong]
+        vmid,
+        #[strong(rename_to = title)]
+        guest.name,
+        move |_| {
+            let Ok(command) = proxmox::status_command(kind, &vmid) else {
+                show_message_dialog(&area, "Proxmox", "ogiltigt VMID");
+                return;
+            };
+            show_command_output(&area, &host, &password, &jump, &format!("config {title}"), command);
+        }
+    ));
+    row.add_suffix(&config);
+
+    if guest.is_running() {
+        let shutdown = gtk::Button::from_icon_name("system-shutdown-symbolic");
+        shutdown.set_tooltip_text(Some("Stäng av (via gästens OS)"));
+        shutdown.set_valign(gtk::Align::Center);
+        shutdown.add_css_class("flat");
+        shutdown.connect_clicked({
+            let run_then_reload = run_then_reload.clone();
+            let vmid = vmid.clone();
+            move |_| run_then_reload(proxmox::shutdown_command(kind, &vmid))
+        });
+        row.add_suffix(&shutdown);
+
+        let stop = gtk::Button::from_icon_name("media-playback-stop-symbolic");
+        stop.set_tooltip_text(Some("Tvinga av (drar ur strömmen)"));
+        stop.set_valign(gtk::Align::Center);
+        stop.add_css_class("flat");
+        stop.connect_clicked(clone!(
+            #[strong]
+            area,
+            #[strong]
+            run_then_reload,
+            #[strong]
+            vmid,
+            #[strong(rename_to = name)]
+            guest.name,
+            move |_| {
+                let dialog = adw::AlertDialog::new(
+                    Some("Tvinga av"),
+                    Some(&format!(
+                        "Stoppa {name} ({vmid}) hårt?\n\nDet motsvarar att dra ur strömmen — \
+                         gästens OS får ingen chans att avsluta, och filsystemet kan ta skada. \
+                         Använd Stäng av i stället om gästen svarar."
+                    )),
+                );
+                dialog.add_response("cancel", "Avbryt");
+                dialog.add_response("stop", "Tvinga av");
+                dialog.set_response_appearance("stop", adw::ResponseAppearance::Destructive);
+                dialog.set_default_response(Some("cancel"));
+                dialog.connect_response(
+                    None,
+                    clone!(
+                        #[strong]
+                        run_then_reload,
+                        #[strong]
+                        vmid,
+                        move |_, response| {
+                            if response == "stop" {
+                                run_then_reload(proxmox::stop_command(kind, &vmid));
+                            }
+                        }
+                    ),
+                );
+                dialog.present(Some(&area.overlay));
+            }
+        ));
+        row.add_suffix(&stop);
+    } else {
+        let start = gtk::Button::from_icon_name("media-playback-start-symbolic");
+        start.set_tooltip_text(Some("Starta"));
+        start.set_valign(gtk::Align::Center);
+        start.add_css_class("flat");
+        start.connect_clicked({
+            let run_then_reload = run_then_reload.clone();
+            let vmid = vmid.clone();
+            move |_| run_then_reload(proxmox::start_command(kind, &vmid))
+        });
+        row.add_suffix(&start);
     }
 
     row
