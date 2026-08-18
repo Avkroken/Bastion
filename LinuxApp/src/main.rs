@@ -6575,6 +6575,8 @@ fn open_sftp_view(
     up_button.set_tooltip_text(Some("Upp en nivå"));
     let mkdir_button = gtk::Button::from_icon_name("folder-new-symbolic");
     mkdir_button.set_tooltip_text(Some("Ny mapp"));
+    let symlink_button = gtk::Button::from_icon_name("emblem-symbolic-link");
+    symlink_button.set_tooltip_text(Some("Ny symbolisk länk"));
     let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
 
     let toolbar = gtk::Box::builder()
@@ -6587,6 +6589,7 @@ fn open_sftp_view(
     toolbar.append(&up_button);
     toolbar.append(&path_label);
     toolbar.append(&mkdir_button);
+    toolbar.append(&symlink_button);
     toolbar.append(&refresh_button);
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -6642,6 +6645,26 @@ fn open_sftp_view(
         #[weak]
         path_label,
         move |_| prompt_new_folder_name(
+            &area,
+            ctx.clone(),
+            current_path.clone(),
+            &list,
+            &path_label
+        )
+    ));
+
+    symlink_button.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        ctx,
+        #[strong]
+        current_path,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        move |_| prompt_new_symlink(
             &area,
             ctx.clone(),
             current_path.clone(),
@@ -6770,13 +6793,7 @@ fn refresh_sftp_list(
     ));
 }
 
-fn joined_path(base: &str, name: &str) -> String {
-    if base == "." {
-        name.to_string()
-    } else {
-        format!("{base}/{name}")
-    }
-}
+use crate::sftp::joined_path;
 
 
 fn build_sftp_entry_row(
@@ -6788,20 +6805,27 @@ fn build_sftp_entry_row(
     list: &gtk::ListBox,
     path_label: &gtk::Label,
 ) -> adw::ActionRow {
-    let subtitle = if entry.is_dir {
-        "Mapp".to_string()
-    } else {
-        format!("{} bytes", entry.size)
+    // En symbolisk länk beskrivs av vad den PEKAR PÅ, inte av sin egen
+    // storlek — en länk är några tiotal byte oavsett vad som ligger i
+    // andra änden, så "41 bytes" hade varit sant och samtidigt
+    // vilseledande. Pilen är samma konvention som `ls -l`.
+    let subtitle = match (&entry.link_target, entry.is_dir) {
+        (Some(target), true) => format!("→ {target} (mapp)"),
+        (Some(target), false) => format!("→ {target}"),
+        (None, true) => "Mapp".to_string(),
+        (None, false) => format!("{} bytes", entry.size),
     };
     let row = adw::ActionRow::builder()
         .title(&entry.name)
         .subtitle(subtitle)
         .activatable(true)
         .build();
-    let icon = gtk::Image::from_icon_name(if entry.is_dir {
-        "folder-symbolic"
-    } else {
-        "text-x-generic-symbolic"
+    let icon = gtk::Image::from_icon_name(match (&entry.link_target, entry.is_dir) {
+        // Egen ikon för länkar, så att de går att skilja från det de
+        // pekar på utan att läsa underrubriken.
+        (Some(_), _) => "emblem-symbolic-link",
+        (None, true) => "folder-symbolic",
+        (None, false) => "text-x-generic-symbolic",
     });
     row.add_prefix(&icon);
 
@@ -7099,6 +7123,100 @@ fn prompt_new_folder_name(
                 path_label,
                 async move {
                     if let Err(e) = ctx.handle.mkdir(full_path).await {
+                        list.append(&error_row(&e));
+                        return;
+                    }
+                    let path = current_path.borrow().clone();
+                    refresh_sftp_list(&area, ctx.clone(), current_path, path, &list, &path_label);
+                }
+            ));
+        }
+    ));
+
+    win.present();
+}
+
+/// Skapar en symbolisk länk i den katalog vyn står i.
+///
+/// Två fält, och ordningen är medveten: namnet på länken först, målet
+/// sedan — samma ordning som `ln -s` skriver ut den och som raden sedan
+/// visas i vyn ("namn → mål"). Att SFTP-protokollet internt skickar dem
+/// tvärtom mot OpenSSH är en detalj som stannar i `sftp::symlink`.
+fn prompt_new_symlink(
+    area: &Rc<SessionArea>,
+    ctx: SftpContext,
+    current_path: Rc<RefCell<String>>,
+    list: &gtk::ListBox,
+    path_label: &gtk::Label,
+) {
+    let name_row = adw::EntryRow::builder().title("Länkens namn").build();
+    let target_row = adw::EntryRow::builder().title("Pekar på (sökväg)").build();
+    let group = adw::PreferencesGroup::builder()
+        // Relativa mål är det vanliga och det som överlever att katalogen
+        // flyttas — värt att säga, eftersom fältet annars inbjuder till
+        // att klistra in en absolut sökväg.
+        .description("Målet får vara relativt katalogen du står i, eller absolut. Det behöver inte finnas än.")
+        .build();
+    group.add(&name_row);
+    group.add(&target_row);
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+
+    let create_button = gtk::Button::with_label("Skapa");
+    create_button.add_css_class("suggested-action");
+    let cancel_button = gtk::Button::with_label("Avbryt");
+    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    header.pack_start(&cancel_button);
+    header.pack_end(&create_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&page);
+
+    let win = dialog_window(&session_window(area), "Ny symbolisk länk", DialogSize::Form, &content);
+
+    cancel_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        move |_| win.close()
+    ));
+    create_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        #[strong]
+        area,
+        #[strong]
+        ctx,
+        #[strong]
+        current_path,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        move |_| {
+            let name = name_row.text().trim().to_string();
+            let target = target_row.text().trim().to_string();
+            // Båda krävs. Ett tomt mål hade gett en länk som pekar på
+            // ingenting alls, vilket är något annat än en trasig länk.
+            if name.is_empty() || target.is_empty() {
+                return;
+            }
+            win.close();
+            let base = current_path.borrow().clone();
+            let link_path = joined_path(&base, &name);
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                ctx,
+                #[strong]
+                current_path,
+                #[weak]
+                list,
+                #[weak]
+                path_label,
+                async move {
+                    if let Err(e) = ctx.handle.symlink(link_path, target).await {
                         list.append(&error_row(&e));
                         return;
                     }
