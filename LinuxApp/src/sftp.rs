@@ -483,7 +483,7 @@ mod tests {
     #[ignore = "kräver en riktig localhost-sshd + en nyckel förberedd i authorized_keys, se ROADMAP.md"]
     fn symlinks_round_trip_against_a_real_sftp_server() {
         let key_path = std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
-        let user = std::env::var("USER").expect("USER måste vara satt");
+        let user = crate::test_support::test_user();
         let port: i64 = std::env::var("BASTION_TEST_SSH_PORT")
             .ok()
             .and_then(|p| p.parse().ok())
