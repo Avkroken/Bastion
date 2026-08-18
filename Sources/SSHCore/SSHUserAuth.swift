@@ -69,6 +69,24 @@ final class SSHUserAuth: NIOSSHClientUserAuthenticationDelegate {
                 offer: .privateKey(.init(privateKey: priv)))
             nextChallengePromise.succeed(offer)
 
+        case .secureEnclave(let stored):
+            #if canImport(Darwin)
+            guard availableMethods.contains(.publicKey),
+                  let priv = try? SecureEnclaveKey.privateKey(from: stored) else {
+                giveUp(nextChallengePromise)
+                return
+            }
+            let offer = NIOSSHUserAuthenticationOffer(
+                username: username, serviceName: "",
+                offer: .privateKey(.init(privateKey: priv)))
+            nextChallengePromise.succeed(offer)
+            #else
+            // Ingen Secure Enclave utanför Apple. Att tyst falla tillbaka
+            // på något annat vore värre än att ge upp: användaren valde
+            // hårdvarubunden nyckel av ett skäl.
+            giveUp(nextChallengePromise)
+            #endif
+
         case .certificate(let seed, let certificateLine):
             // Signerar med den RÅA privata nyckeln (samma som .ed25519Seed),
             // men erbjuder CERTIFIKATET som publik nyckel istället för den

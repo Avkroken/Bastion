@@ -46,6 +46,15 @@ public enum SSHAuth: Sendable {
     /// `-cert.pub`-fil) som "publik nyckel" istället för den bara nyckeln —
     /// servern validerar CA-signaturen + giltighet (se `SSHUserAuth.swift`).
     case certificate(seed: Data, certificateLine: String)
+    /// Nyckel i Secure Enclave. `stored` är den ogenomskinliga
+    /// representationen från `SecureEnclaveKey.generate()` — INTE den
+    /// privata nyckeln, som aldrig lämnar kretsen och inte går att
+    /// serialisera. Se `SecureEnclaveKey`.
+    ///
+    /// Bara meningsfull på Apple-plattformar; på Linux finns ingen krets
+    /// att läsa den med, och auth misslyckas med ett tydligt fel i
+    /// stället för att låtsas.
+    case secureEnclave(stored: Data)
 }
 
 /// En bit utdata från fjärrkommandot.
