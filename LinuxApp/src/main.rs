@@ -7499,7 +7499,37 @@ fn open_sftp_image_preview(area: &Rc<SessionArea>, handle: sftp::SftpHandle, pat
 /// annars en tydlig platshållartext (samma "spara MÅSTE vara avstängt för
 /// binärt innehåll"-lärdom som Swiftsidans `EditingFile.isBinary`).
 fn open_sftp_file_editor(area: &Rc<SessionArea>, handle: sftp::SftpHandle, path: String) {
-    let text_view = gtk::TextView::builder().monospace(true).build();
+    // GtkSourceView i stället för GtkTextView: samma widget-kontrakt (den
+    // ÄRVER TextView, så buffert-API:t nedan är oförändrat) men med
+    // syntax highlighting, radnummer och parentesmatchning. VISION.md
+    // "Editor" listar YAML, JSON, Docker Compose, Bash, Python, Go, Rust,
+    // JavaScript och Markdown — samtliga ingår i GtkSourceViews egna
+    // språkdefinitioner, så inget eget lexer-arbete behövs.
+    // `as _` — traiten behövs för metoderna nedan men får inte dra in sitt
+    // namn i scope: gtk-preluden har egna `set_language`/`set_style_scheme`
+    // på andra typer, och en namngiven import gör anropen tvetydiga.
+    use sourceview5::prelude::BufferExt as _;
+
+    let buffer = sourceview5::Buffer::new(None);
+    // Språket gissas från filnamnet. `guess_language` klarar både ändelser
+    // och kända filnamn utan ändelse (Dockerfile, Makefile), vilket är
+    // precis vad en fjärrkatalog är full av. Ingen träff = ingen
+    // highlighting, aldrig fel highlighting.
+    let language = sourceview5::LanguageManager::default().guess_language(Some(&path), None);
+    buffer.set_language(language.as_ref());
+    // Följer appens ljusa/mörka läge i stället för att låsa ett tema —
+    // annars blir editorn ljus i en mörk app (eller tvärtom).
+    let scheme_name = if adw::StyleManager::default().is_dark() { "Adwaita-dark" } else { "Adwaita" };
+    if let Some(scheme) = sourceview5::StyleSchemeManager::default().scheme(scheme_name) {
+        buffer.set_style_scheme(Some(&scheme));
+    }
+    let text_view = sourceview5::View::builder()
+        .buffer(&buffer)
+        .monospace(true)
+        .show_line_numbers(true)
+        .highlight_current_line(true)
+        .auto_indent(true)
+        .build();
     let scrolled = gtk::ScrolledWindow::builder()
         .child(&text_view)
         .vexpand(true)

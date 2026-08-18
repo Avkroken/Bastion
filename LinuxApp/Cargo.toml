@@ -45,3 +45,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 quick-xml = "0.41"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 libc = "0.2"
+# Syntax highlighting i SFTP-editorn. Inga versionsfeatures (`v5_10`,
+# `v5_12` …) — de kräver ett nyare GtkSourceView än den äldsta distro vi
+# paketerar för kan ha, och inget vi använder behöver dem. Basnivån räcker.
+sourceview5 = { version = "0.11", default-features = false }
