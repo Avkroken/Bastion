@@ -58,6 +58,16 @@ CI-jobben).
   `do_not_enforce_on_create: false`. **Repospecifik lista** — för bastion:
   `xcodegen-and-build`, `swiftpm-macos`, `linuxapp-build` samt `CodeQL`
   (integration 57789).
+
+  **Varje required check är bunden till en app, inte bara till ett namn.**
+  Varje rad har ett `integration_id` vid sidan av `context`, och kravet
+  uppfylls bara av en check som postats av *den* appen. Pekar raden på fel
+  app blir PR:en permanent blockerad medan checken syns grön i PR-vyn —
+  det finns ingenting i gränssnittet som förklarar varför. Klarsprak satt
+  fast på exakt det 2026-08-17: `CodeQL` med `integration_id: 15368` i
+  stället för 57789. Fixen är att ta bort raden och lägga till den på nytt
+  genom att välja checken ur förslagslistan, så bindningen blir rätt.
+  Jämför gärna `integration_id` mellan repon vid nästa avstämning.
 - `code_scanning`: CodeQL med `alerts_threshold: all` och
   `security_alerts_threshold: all`
 - `non_fast_forward`
@@ -104,6 +114,18 @@ Ingen tag-ruleset finns någonstans i org:et — release-taggar (`auto-release.y
 träffar aldrig rulesetsen eftersom båda har target `branch`.
 "Release-immunitet" är alltså inget konfigurerat koncept, bara en konsekvens
 av att taggar och grenar är olika saker.
+
+## Vilka repon guldstandarden gäller
+
+Sju repon: `bastion`, `klarsprak`, `docker-idempotent-update`,
+`routines-relay`, `politiker-webapp`, `product-describer`, `pastebinit`.
+
+**`bastion-certificates` står medvetet utanför.** Det är ett privat
+fastlane match-repo — sju filer, inga workflows, inga beroenden och ingen
+kod. Varken `AGENTS.md`, `dependabot.yml`, osv-scanner eller CI hör hemma
+där, och avsaknaden är alltså inte en lucka att täppa till vid nästa
+inventering. Skulle repot någon gång få kod eller beroenden är det den
+här raden som ska omprövas först.
 
 ## Repo-inställningar (Settings → General)
 
