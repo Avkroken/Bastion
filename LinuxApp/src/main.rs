@@ -8,9 +8,12 @@ use vte::prelude::*;
 mod archive;
 mod bitwarden;
 mod bookmarks;
+// Integrationerna kommer från det fristående paketet `integrations/`.
+// Anropsställena skriver fortfarande `docker::…`, `kubernetes::…` och
+// `proxmox::…` — bara varifrån de kommer har ändrats.
+use bastion_integrations::{docker, kubernetes, proxmox};
 mod command_library;
 mod dashboard;
-mod docker;
 mod external_binary_fetcher;
 mod fsutil;
 mod fuzzy;
@@ -18,12 +21,10 @@ mod host;
 mod host_grouping;
 mod key_deploy;
 mod known_hosts;
-mod kubernetes;
 mod oauth;
 mod palette_actions;
 mod pkcs11;
 mod port_forward;
-mod proxmox;
 mod s3;
 mod serial;
 mod settings;

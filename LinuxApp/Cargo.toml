@@ -16,7 +16,15 @@ edition = "2024"
 # testsviten på den nya siffran så den förblir verifierad.
 rust-version = "1.92"
 
+# Integrationerna (Docker/Kubernetes/Proxmox) ligger i ett EGET paket,
+# vilket VISION efterfrågar som "alla plugins separata paket". Gränsen är
+# inte kosmetisk: paketet har noll beroenden, så ingenting där kan nå
+# GTK, russh eller filsystemet ens av misstag.
+[workspace]
+members = ["integrations"]
+
 [dependencies]
+bastion-integrations = { path = "integrations" }
 gtk = { version = "0.11", package = "gtk4", features = ["v4_12"] }
 adw = { version = "0.9", package = "libadwaita", features = ["v1_5"] }
 # RSA-stödet är AVSTÄNGT, inte bara oanvänt: `rsa`-crate:n dras in av

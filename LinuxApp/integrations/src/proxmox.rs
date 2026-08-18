@@ -1,5 +1,5 @@
 //! Proxmox VE-integration via `qm`, `pct` och `pvesm` över SSH. Tredje
-//! integrationen bredvid [`crate::docker`] och [`crate::kubernetes`], och
+//! integrationen bredvid [`docker`](crate::docker) och [`kubernetes`](crate::kubernetes), och
 //! avsiktligt byggd genom samma skelett (`refresh_integration_list`) —
 //! den är lika mycket ett prov på om abstraktionen håller som en
 //! funktion i sig.

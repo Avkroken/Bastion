@@ -61,10 +61,15 @@ jobs:
         run: rustc --version && cargo --version
 
       - name: cargo build
-        run: cargo build --verbose
+        run: cargo build --workspace --verbose
 
+      # --workspace, inte bara `cargo test`. Integrationerna
+      # (Docker/Kubernetes/Proxmox) ligger i ett eget paket sedan de bröts
+      # ut, och utan flaggan kör kommandot BARA rotpaketet — 39 tester
+      # hade tyst slutat köras utan att något blev rött. Uppmätt: 288 mot
+      # 327 passerade.
       - name: cargo test
-        run: cargo test --verbose
+        run: cargo test --workspace --verbose
 
   # Bygger med EXAKT den toolchain `rust-version` i Cargo.toml utlovar, så
   # siffran inte tyst blir fel. Den sätts nämligen inte av vår egen kod
@@ -116,4 +121,4 @@ jobs:
         run: rustc --version && cargo --version
 
       - name: cargo build på MSRV
-        run: cargo build --verbose
+        run: cargo build --workspace --verbose
