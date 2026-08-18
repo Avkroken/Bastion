@@ -72,9 +72,30 @@ jobs:
           echo "Alla nedladdningsförsök misslyckades." >&2
           exit 1
 
+      # -skipPackagePluginValidation MÅSTE vara med på varje `xcodebuild
+      # build`. SwiftTerm v1.19.0 införde build-pluginet
+      # `SwiftTermBuildInfoPlugin` (v1.18.0 hade det inte), och Xcode
+      # vägrar köra ett ovaliderat build-plugin utan att först fråga om
+      # förtroende — en fråga som inte går att svara på i CI. Utan flaggan
+      # blir felet:
+      #
+      #   Validate plug-in "SwiftTermBuildInfoPlugin" in package "swiftterm"
+      #   ** BUILD FAILED **   (exit 65)
+      #
+      # Varför det slog till plötsligt: App/project.yml deklarerar
+      # SwiftTerm som `from: "1.14.0"`, alltså vilken 1.x som helst, och
+      # inget Package.resolved är committat — xcodegen genererar projektet
+      # färskt varje körning, så SwiftPM tar nyaste taggen varje gång. En
+      # uppströmsrelease kan därför bryta CI utan att något i repot
+      # ändrats, vilket är precis vad som hände 2026-08-18: main var grön
+      # 14:38 och samma commit hade failat 18:05.
+      #
+      # Flaggan hoppar bara över FÖRTROENDEFRÅGAN, inte pluginet — det
+      # körs som vanligt.
       - name: Bygg iOS (simulator, osignerat)
         run: |
           xcodebuild build \
+            -skipPackagePluginValidation \
             -project App/Bastion.xcodeproj \
             -scheme Bastion \
             -destination 'generic/platform=iOS Simulator' \
@@ -83,6 +104,7 @@ jobs:
       - name: Bygg macOS (osignerat)
         run: |
           xcodebuild build \
+            -skipPackagePluginValidation \
             -project App/Bastion.xcodeproj \
             -scheme Bastion-macOS \
             -destination 'platform=macOS' \
@@ -91,6 +113,7 @@ jobs:
       - name: Bygg tvOS (simulator, osignerat)
         run: |
           xcodebuild build \
+            -skipPackagePluginValidation \
             -project App/Bastion.xcodeproj \
             -scheme Bastion-tvOS \
             -destination 'generic/platform=tvOS Simulator' \
@@ -185,6 +208,7 @@ jobs:
         run: |
           set -euo pipefail
           xcodebuild build \
+            -skipPackagePluginValidation \
             -project App/Bastion.xcodeproj \
             -scheme Bastion \
             -destination "id=$SIM_UDID" \

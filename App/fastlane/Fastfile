@@ -61,6 +61,12 @@ platform :ios do
       project: "Bastion.xcodeproj",
       scheme: "Bastion",
       export_method: "app-store",
+      # Samma skäl som i .github/workflows/xcode.yml: SwiftTerm v1.19.0
+      # införde ett build-plugin, och Xcode vägrar köra ett ovaliderat
+      # sådant utan en förtroendefråga som inte går att besvara i CI.
+      # build_app anropar xcodebuild under huven, så flaggan måste med här
+      # också — annars faller TestFlight-bygget på exakt samma sätt.
+      xcargs: "-skipPackagePluginValidation",
     )
 
     upload_to_testflight(
@@ -143,6 +149,8 @@ platform :tvos do
       # Utan denna kan build_app falla tillbaka på fel destination/SDK för
       # ett tvOS-schema (cubic/devin-fynd, andra granskningsrundan).
       destination: "generic/platform=tvOS",
+      # Se :ios-lanen ovan om varför.
+      xcargs: "-skipPackagePluginValidation",
     )
 
 
