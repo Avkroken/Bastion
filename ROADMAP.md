@@ -3033,7 +3033,28 @@ Inget nytt att bygga, bara verifiera/lansera:
   fel visar GDK ett fel i dialogen — ingen återgång till editorn, eftersom
   binärt innehåll i en textbuffert är sämre än ett tydligt felmeddelande.
 - Inbyggd editor med syntax highlighting
-- Plugin-system (Proxmox, TrueNAS, Unraid, Cloudflare, GitHub, Kubernetes)
+- **Plugin-system** (Proxmox, TrueNAS, Unraid, Cloudflare, GitHub,
+  Kubernetes): ✅ KLART 2026-08-18 — alla sju integrationerna finns i
+  `LinuxApp/integrations` som eget paket (VISION:s "alla plugins separata
+  paket"), med portering till `Sources/SSHCore/*Service.swift`.
+
+  Abstraktionen extraherades EFTER två integrationer och prövades med en
+  tredje: `refresh_integration_list` behövde inte ändras för Proxmox —
+  352 rader tillagda, 0 borttagna. Radbyggarna slogs medvetet INTE ihop
+  (126 mot 187 rader, olika begrepp: ta bort en volym mot ersätta en
+  podd).
+
+  Varje integration äger sin egen valideringsregel, och de skiljer sig
+  på riktigt: Docker tillåter versaler och punkter, Kubernetes bara RFC
+  1123-etiketter, Proxmox bara heltal från 100, TrueNAS behöver `/` för
+  datasetsökvägar. Ett test per modul visar skillnaden så ingen slår
+  ihop dem.
+
+  Inte verifierat: ingen integration är körd mot sin riktiga tjänst —
+  ingen dockerd, inget kluster, ingen Proxmox-nod, ingen TrueNAS finns i
+  utvecklingsmiljön. Kommandobyggare och parsning är testade mot
+  dokumenterade utdataformat, inklusive kantfall (`Ready,Scheduling
+  Disabled`, `<none>`-taggade images, `pct list` med tom `Lock`-kolumn).
 - **Agent Forwarding**: ✅ agent-PROTOKOLLKLIENTEN klar (2026-07-07,
   `SSHAgentClient.swift`) — lista identiteter + begära signaturer från en
   KÖRANDE, LOKAL `ssh-agent` över `$SSH_AUTH_SOCK` (Unix-socket via NIO:s
@@ -3073,9 +3094,38 @@ Inget nytt att bygga, bara verifiera/lansera:
   separat Unix-socket-rundtur via `SSHAgentClient`) — det finns ingen väg
   att koppla in det utan att patcha swift-nio-ssh självt. PKCS11, YubiKey,
   Passkeys drabbas av samma begränsning (alla kräver en extern/asynkron
-  signerare). `secureEnclaveP256Key`-fallet visar att biblioteket
-  KONCEPTUELLT stödjer "nyckelmaterialet lämnar aldrig sin källa" — bara
-  hårdkodat till just Apples Secure Enclave-API, inte generellt.
+  signerare).
+
+  **Tre rättelser 2026-08-18, alla kontrollerade mot källan — den här
+  posten var för svepande och stoppade arbete som gick att göra:**
+
+  1. **Secure Enclave är INTE blockerat.** Posten ovan beskrev
+     `.secureEnclaveP256` som "konceptuellt stöd, hårdkodat" — men
+     `NIOSSHPrivateKey(secureEnclaveP256Key:)` är en PUBLIK initierare
+     (swift-nio-ssh 0.15.0, `NIOSSHPrivateKey.swift` rad 56, bakom
+     `#if canImport(Darwin)`). Den går alltså att anropa utifrån.
+     Implementerat i `Sources/SSHCore/SecureEnclaveKey.swift` +
+     `SSHAuth.secureEnclave`.
+  2. **YubiKey och FIDO2 fungerar redan på Linux.** Begränsningen gäller
+     NIOSSH, inte russh: `russh 0.62.6` listar `SkEd25519` och
+     `SkEcdsaSha2NistP256` bland stödda algoritmer (`keys/key.rs` rad
+     112–124), och `ssh::authenticate`s agent-väg släpper igenom varje
+     icke-RSA-nyckel. Ingen ny kod behövdes — det som saknades var
+     diagnostiken när token inte rördes vid, nu åtgärdad.
+  3. **Agent forwarding var också en NIOSSH-begränsning, inte en
+     generell.** Byggd på Linux med russh (se "Klart").
+
+  Vad som FORTFARANDE är blockerat, och det är verifierat och inte ärvt:
+  PKCS11, externa smartkort och passkeys på Apple-sidan.
+  `NIOSSHUserAuthenticationOffer.Offer.privateKey` tar bara en
+  `NIOSSHPrivateKey`, och det finns ingen protokollbaserad signerare
+  någonstans i biblioteket (`grep "public protocol"` ger fem protokoll,
+  inget för signering). Enda vägen är en fork av swift-nio-ssh.
+
+  **Läxan värd att ta med:** en blockering som skrivs ner utan att
+  avgränsas växer. Den här posten hindrade tre saker som inte var
+  blockerade, i över en månad. Skriv vilket BIBLIOTEK och vilken
+  PLATTFORM begränsningen gäller, inte bara vilken funktion.
 - **OpenSSH-certifikatautentisering** (nytt, 2026-07-05) — stöd för
   `ssh-keygen`-signerade/externt utfärdade SSH-certifikat som en egen
   `HostAuth`-variant, inte bara rå nyckel. De stora molnleverantörerna har
