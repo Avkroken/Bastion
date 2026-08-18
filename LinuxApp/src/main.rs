@@ -11,7 +11,7 @@ mod bookmarks;
 // Integrationerna kommer från det fristående paketet `integrations/`.
 // Anropsställena skriver fortfarande `docker::…`, `kubernetes::…` och
 // `proxmox::…` — bara varifrån de kommer har ändrats.
-use bastion_integrations::{cloudflare, docker, kubernetes, proxmox, truenas, unraid};
+use bastion_integrations::{cloudflare, docker, github, kubernetes, proxmox, truenas, unraid};
 mod command_library;
 mod dashboard;
 mod external_binary_fetcher;
@@ -1186,6 +1186,34 @@ fn refresh_list(
                 }
             }
         ));
+        let github_action = gtk::gio::SimpleAction::new("github", None);
+        github_action.connect_activate(clone!(
+            #[strong]
+            store,
+            #[strong]
+            area,
+            #[strong(rename_to = host_id)]
+            h.id,
+            move |_, _| {
+                let host = store
+                    .borrow()
+                    .all()
+                    .iter()
+                    .find(|x| x.id == host_id)
+                    .map(|h| (*h).clone());
+                if let Some(host) = host {
+                    with_resolved_jump(&area, &store, host, clone!(
+                        #[strong]
+                        area,
+                        move |host, jump| {
+                            require_password(&area, host, move |area, host, password| {
+                                open_github_view(area, host, password, jump.clone())
+                            });
+                        }
+                    ));
+                }
+            }
+        ));
         let commands_action = gtk::gio::SimpleAction::new("commands", None);
         commands_action.connect_activate(clone!(
             #[strong]
@@ -1331,6 +1359,7 @@ fn refresh_list(
         action_group.add_action(&truenas_action);
         action_group.add_action(&unraid_action);
         action_group.add_action(&cloudflare_action);
+        action_group.add_action(&github_action);
         action_group.add_action(&commands_action);
         action_group.add_action(&sftp_action);
         action_group.add_action(&forward_action);
@@ -1846,6 +1875,7 @@ fn gio_menu_for(toggles: &settings::FeatureToggles, mac_address: &Option<String>
         menu.append(Some("TrueNAS"), Some("host.truenas"));
         menu.append(Some("Unraid"), Some("host.unraid"));
         menu.append(Some("Cloudflare Tunnel"), Some("host.cloudflare"));
+        menu.append(Some("GitHub"), Some("host.github"));
     }
     if toggles.show_command_library {
         menu.append(Some("Kommandon"), Some("host.commands"));
@@ -6395,6 +6425,219 @@ fn open_cloudflare_view(
     });
 
     load_visible();
+}
+
+/// GitHub-vy för ett utcheckat repo på värden, via `gh`.
+///
+/// Sjunde integrationen, och den som prövar skelettet hårdast: den
+/// behöver något inget av de sex andra behövt — en SÖKVÄG, som
+/// användaren måste skriva in. Skelettet räckte ändå oförändrat, för
+/// samma skäl som med Kubernetes namnrymd: extra sammanhang byggs in i
+/// kommandot av anroparen, inte av skelettet.
+///
+/// Frågan vyn svarar på är "vad händer med koden på DEN HÄR servern" —
+/// en byggserver eller deploy-värd har utcheckade repon och ett
+/// inloggat `gh`. Det är körningar och PR:er för det repot, inte för
+/// allt man äger på GitHub.
+fn open_github_view(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    jump: Option<host::Host>,
+) {
+    let runs_list = docker_category_list();
+    let prs_list = docker_category_list();
+    let auth_list = docker_category_list();
+
+    let stack = adw::ViewStack::new();
+    let category = adw::ViewSwitcher::builder()
+        .policy(adw::ViewSwitcherPolicy::Wide)
+        .build();
+    category.set_stack(Some(&stack));
+    stack.add_titled(&docker_category_scroller(&runs_list), Some("runs"), "Körningar");
+    stack.add_titled(&docker_category_scroller(&prs_list), Some("prs"), "Pull requests");
+    stack.add_titled(&docker_category_scroller(&auth_list), Some("auth"), "Inloggning");
+
+    // Sökvägen till repot PÅ VÄRDEN. `gh` läser repot ur katalogen det
+    // körs i, så utan den svarar kommandot om vad som råkar ligga i
+    // hemkatalogen — sällan det man menar.
+    let repo_entry = gtk::Entry::builder()
+        .placeholder_text("Sökväg till repo på värden, t.ex. /srv/bastion")
+        .width_chars(30)
+        .valign(gtk::Align::Center)
+        .build();
+
+    let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
+    refresh_button.set_tooltip_text(Some("Uppdatera"));
+
+    let toolbar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .build();
+    toolbar.append(
+        &gtk::Label::builder()
+            .label(format!("GitHub: {}", host.alias))
+            .halign(gtk::Align::Start)
+            .build(),
+    );
+    toolbar.append(&repo_entry);
+    toolbar.append(
+        &gtk::Box::builder().hexpand(true).build(),
+    );
+    toolbar.append(&category);
+    toolbar.append(&refresh_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&toolbar);
+    content.append(&stack);
+
+    let page = area.tab_view.append(&content);
+    page.set_title(&format!("GitHub: {}", host.alias));
+    area.tab_view.set_selected_page(&page);
+    area.update_placeholder();
+
+    let load_visible = {
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let stack = stack.clone();
+        let repo_entry = repo_entry.clone();
+        let runs_list = runs_list.clone();
+        let prs_list = prs_list.clone();
+        let auth_list = auth_list.clone();
+        move || {
+            let name = stack.visible_child_name().unwrap_or_else(|| "runs".into());
+            let (list, category) = match name.as_str() {
+                "prs" => (&prs_list, GithubCategory::PullRequests),
+                "auth" => (&auth_list, GithubCategory::Auth),
+                _ => (&runs_list, GithubCategory::Runs),
+            };
+            refresh_github_category(
+                host.clone(),
+                password.clone(),
+                list,
+                jump.clone(),
+                category,
+                repo_entry.text().to_string(),
+            );
+        }
+    };
+
+    refresh_button.connect_clicked({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+    stack.connect_visible_child_name_notify({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+    // Enter i fältet laddar om — samma sak som att trycka på knappen.
+    repo_entry.connect_activate({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+
+    load_visible();
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum GithubCategory {
+    Runs,
+    PullRequests,
+    Auth,
+}
+
+fn refresh_github_category(
+    host: host::Host,
+    password: Option<String>,
+    list: &gtk::ListBox,
+    jump: Option<host::Host>,
+    category: GithubCategory,
+    repo_path: String,
+) {
+    let command = match category {
+        // Inloggningen är repo-oberoende: `gh auth status` svarar likadant
+        // oavsett var man står, och den frågan går att ställa innan man
+        // vet vilket repo man vill titta på.
+        GithubCategory::Auth => Ok(github::auth_status_command()),
+        GithubCategory::Runs => github::runs_command(&repo_path, 20),
+        GithubCategory::PullRequests => github::pull_requests_command(&repo_path, 20),
+    };
+    let empty = (
+        match category {
+            GithubCategory::Runs => "Inga körningar",
+            GithubCategory::PullRequests => "Inga pull requests",
+            GithubCategory::Auth => "Inget svar",
+        },
+        Some("Tomt svar — kontrollera sökvägen, att gh finns på värden och att det är inloggat"),
+    );
+
+    refresh_integration_list(
+        host,
+        password,
+        list,
+        jump,
+        command,
+        empty,
+        move |output: &str, list: &gtk::ListBox| match category {
+            GithubCategory::Runs => {
+                for run in github::parse_runs(output) {
+                    let subtitle = if run.is_running() {
+                        format!("{} · pågår · {}", run.branch, run.status)
+                    } else {
+                        format!("{} · {}", run.branch, run.conclusion)
+                    };
+                    let row = adw::ActionRow::builder().title(&run.name).subtitle(subtitle).build();
+                    // Ikonen skiljer på tre lägen, inte två: pågående är
+                    // varken grönt eller rött, och att måla den som det
+                    // ena hade varit fel halva tiden.
+                    let icon = if run.is_running() {
+                        "content-loading-symbolic"
+                    } else if run.failed() {
+                        "dialog-error-symbolic"
+                    } else {
+                        "object-select-symbolic"
+                    };
+                    row.add_prefix(&gtk::Image::from_icon_name(icon));
+                    list.append(&row);
+                }
+            }
+            GithubCategory::PullRequests => {
+                for pr in github::parse_pull_requests(output) {
+                    // Orsaken står kvar i raden: BLOCKED (checkar inte
+                    // klara) och DIRTY (konflikt) kräver helt olika
+                    // åtgärder, och "kan inte mergas" hade dolt vilken.
+                    let mut subtitle = pr.mergeable.clone();
+                    if pr.is_draft {
+                        subtitle.push_str(" · utkast");
+                    }
+                    if pr.is_ready() {
+                        subtitle.push_str(" · redo att mergas");
+                    }
+                    list.append(
+                        &adw::ActionRow::builder()
+                            .title(format!("#{} {}", pr.number, pr.title))
+                            .subtitle(subtitle)
+                            .build(),
+                    );
+                }
+            }
+            GithubCategory::Auth => {
+                let authenticated = github::is_authenticated(output);
+                let row = adw::ActionRow::builder()
+                    .title(if authenticated { "Inloggad" } else { "Inte inloggad" })
+                    .subtitle(output.trim().lines().next().unwrap_or("inget svar"))
+                    .build();
+                if !authenticated {
+                    row.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
+                }
+                list.append(&row);
+            }
+        },
+    );
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

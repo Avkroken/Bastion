@@ -42,6 +42,7 @@
 
 pub mod cloudflare;
 pub mod docker;
+pub mod github;
 pub mod kubernetes;
 pub mod proxmox;
 pub mod truenas;
