@@ -51,7 +51,7 @@ jobs:
       - name: Installera GTK4/libadwaita/vte4-headers
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
+          sudo apt-get install -y -qq libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev pkg-config
 
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4  # stable
         with:
@@ -95,7 +95,7 @@ jobs:
       - name: Installera GTK4/libadwaita/vte4-headers
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev pkg-config
+          sudo apt-get install -y -qq libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev pkg-config
 
       - name: Läs MSRV ur Cargo.toml
         id: msrv

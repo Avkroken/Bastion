@@ -25,19 +25,20 @@ inte via delad kod:
   command-line tools, se `Android/local.properties` som inte committas)
 - `WindowsApp/` byggs via `dotnet build` (WinUI 3, kräver Windows App SDK)
 - `LinuxApp/` byggs via `cargo build` (kräver `libgtk-4-dev` + `libadwaita-1-dev` +
-  `libvte-2.91-gtk4-dev`)
+  `libvte-2.91-gtk4-dev` + `libgtksourceview-5-dev`)
 - OAuth är PKCE-baserat — inga klienthemligheter i koden, bara publika klient-ID:n
 
 ## Allowed
 - Committa på dev
+- Skapa arbetsgrenar för PR:er (`claude/*`)
 - Modify code
 - Run tests
 - Open PRs
 
 ## Forbidden
 - Push directly to main/master
-- Merge PRs
-- Skapa eller ta bort grenar (rulesetet blockerar det)
+- Merge PRs på eget initiativ (be uttryckligen så är det okej)
+- Ta bort grenar
 - Disable workflows
 - Modify secrets
 - Change GitHub org settings

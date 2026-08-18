@@ -454,6 +454,6 @@ mod tests {
     }
 
     fn whoami_user() -> String {
-        std::env::var("USER").unwrap_or_else(|_| "test".into())
+        crate::test_support::test_user()
     }
 }

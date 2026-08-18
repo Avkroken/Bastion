@@ -177,7 +177,7 @@ och historik): Linux är Rust + GTK4 (gtk4-rs) + russh, Windows är C#/.NET +
 WinUI 3 + SSH.NET.
 
 **Linux** (kräver `libgtk-4-dev`, `libadwaita-1-dev`, `libvte-2.91-gtk4-dev`,
-`pkg-config`):
+`libgtksourceview-5-dev`, `pkg-config`):
 
 ```sh
 cd LinuxApp

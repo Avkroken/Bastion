@@ -50,7 +50,7 @@ delvis andra, av konkreta skäl:
 | Linux-terminal (VT100/ANSI-tolk, bestående PTY-shell) | ✅ 42 fristående parser-tester gröna (`LinuxApp/Tests/`), körd (Xvfb) — riktig tangentbordsinmatning (2026-08-02, `KeyEventBridge.swift`, se "Klart"), ingen interaktiv GUI-verifiering än; inget musstöd (ingen rå gest-position-API i SwiftCrossUI) |
 | Linux-Docker-hantering (`DockerView`) | ✅ lista/start/stopp/omstart/logg/shell — motsvarar `App/DockerView.swift` |
 | Portvidarebefordran (`PortForwardView`) | ✅ lokal/fjärr/dynamisk — LinuxApp (byggd+körd, Xvfb; interaktiv klick-genom-menyn ej gjord) OCH App/ (2026-07-08, Xcode-only) |
-| ProxyJump (`ssh -J`) | ✅ `SSHSession.connect(via:)`, `bastion-cli` läser `ProxyJump` ur ssh-config automatiskt — ✅ (2026-08-04) LinuxApp Rust (`ssh::connect_via_jump`), testat mot två oberoende riktiga `sshd`-instanser, ingen egen UI-väljare i LinuxApps host-dialog än (se "Klart") |
+| ProxyJump (`ssh -J`) | ✅ `SSHSession.connect(via:)`, `bastion-cli` läser `ProxyJump` ur ssh-config automatiskt — ✅ (2026-08-04) LinuxApp Rust (`ssh::connect_via_jump`), testat mot två oberoende riktiga `sshd`-instanser — ✅ (2026-08-17) UI-väljare i LinuxApps host-dialog (`jump_row`, urval via `HostStore::jump_host_candidates` som delar regler med `resolve_jump`). Innan dess gick fältet bara att sätta via synk från App/ eller genom att handredigera `hosts.json` |
 | WireGuard-profiler | ✅ parsning/serialisering + lagring — LinuxApp OCH App/-UI (2026-07-08, Xcode-only) |
 | OpenSSH-certifikat | ✅ parsning + CA-signaturverifiering + `SSHUserAuth`/`HostAuth`-wiring (`.certificateFile`) — testad mot RIKTIGA `ssh-keygen -s`-certifikat, App/-UI (Xcode-only) — ✅ (2026-08-05) LinuxApp Rust (`ssh::authenticate`, `russh::keys::load_openssh_certificate`), permanent CI-test mot en RIKTIG `sshd` med `TrustedUserCAKeys` (går längre än Swift-sidans engångsverifiering, se "Klart") |
 | ssh-agent-protokollklient | ✅ `SSHAgentClient.swift`, testad mot en RIKTIG `ssh-agent` — 🚫 kanal-forwarding till fjärrserver BLOCKERAD (se ROADMAP) |
@@ -76,9 +76,9 @@ månad för en SSH-klient, och inte småpengar.
 **Tre av fyra Pro-funktioner är redan gratis i bastion**: synk mellan
 enheter (mappbaserad transport + AES-256-GCM-kryptering + OAuth-konton),
 snippets/kommandobibliotek, och portvidarebefordran (som Termius ändå har
-i sin gratisnivå). Det som återstår på deras Pro-lista är log-bookmarks.
-Det är alltså inte funktionslistan som är den stora luckan — det är
-formen.
+i sin gratisnivå). Log-bookmarks, det sista som återstod, är klart sedan
+2026-08-18 — **hela deras Pro-lista finns nu gratis i bastion**. Det är
+alltså inte funktionslistan som är den stora luckan — det är formen.
 
 **Termius desktoplayout att lära av** (deras redesign, "Termius X", och
 Workspaces-lanseringen):
@@ -113,7 +113,8 @@ ordning nyttan per arbetsinsats är störst):
    är ett valv med kategoriväljare (`LinuxApp/src/vault.rs`), två
    dialogfönster borta och kända värdar har fått sin första UI. Se
    "Klart".
-4. **Log-bookmarks** — det enda som återstår av Termius Pro-lista.
+4. **Log-bookmarks.** ✅ KLART 2026-08-18 — `LinuxApp/src/bookmarks.rs`
+   kopplad in i UI:t med `Ctrl+Shift+D`/`Ctrl+Shift+B`. Se "Klart".
 
 ## Nästa steg (i ordning)
 
@@ -448,6 +449,34 @@ ordning nyttan per arbetsinsats är störst):
    — se "Uppskjutet med avsikt"-beslutet nedan.)
 
 ## Klart
+
+- **Log-bokmärken i sessionsloggen** (2026-08-18, `LinuxApp/src/bookmarks.rs`
+  + `LinuxApp/src/main.rs`) — steg 4 under "Riktmärke: Termius", och det
+  sista av deras Pro-lista som bastion inte redan hade gratis.
+  - **Modulen fanns men var aldrig inkopplad.** `bookmarks.rs` låg i
+    trädet med logik och tester, men `mod bookmarks;` saknades i
+    `main.rs` — filen har alltså aldrig kompilerats, och funktionen
+    fanns inte i appen. Två påståenden i dess doc-kommentar stämde
+    heller inte: att skrollbufferten "höjdes till 100 000" (den var
+    kvar på VTE:s förval 512) och att glidningen "upptäckts genom att
+    köra appen" med exakta radnummer. Båda rättade — buffertstorleken
+    sätts nu på riktigt i `new_themed_terminal`, och kommentaren
+    härleder glidningen ur VTE:s definition i stället för att åberopa
+    en mätning som inte gjorts.
+  - **Positionen är översta synliga raden, inte markörens.** Att hoppa
+    tillbaka ska återställa vyn så som den såg ut, och den frågan har
+    ett entydigt svar oavsett var markören råkade stå.
+  - **Glidning erkänns i stället för att döljas.** Har bufferten svämmat
+    över pekar bokmärkena fel; dialogen visar då en `adw::Banner` som
+    säger det rent ut (`positions_may_have_drifted`).
+  - **Toast i stället för dialog vid "bokmärke satt".** En modal ruta
+    hade avbrutit precis den körning man tittade på när man tryckte.
+    `SessionArea` fick ett `adw::ToastOverlay` mellan överlägget och
+    flikvyn.
+  - **De sparas inte till disk** — ett bokmärke pekar in i en
+    skrollbuffert som dör med sessionen, och att spara det som
+    överlever det den pekar på vore att lova något som inte går att
+    infria.
 
 - **Valvet — allt sparat i en och samma sidopanel** (2026-08-10, ny
   `LinuxApp/src/vault.rs` + `LinuxApp/src/known_hosts.rs` +
@@ -2992,8 +3021,17 @@ Inget nytt att bygga, bara verifiera/lansera:
   (rot-fil + underkatalog med egen fil) laddas upp och läses tillbaka,
   bevisar både rekursionen och att innehållet överlever hela resan — inte
   bara ett plant enfilsfall. Byggd och körd under Xvfb utan krasch.
-  **Kvar**: flerval för komprimering, förhandsvisning (t.ex. bilder),
-  syntax highlighting (se separat post nedan).
+  **Kvar**: flerval för komprimering, syntax highlighting (se separat post
+  nedan). Förhandsvisning av bilder ✅ (2026-08-17, LinuxApp): en fil vars
+  namn ser ut som en bild öppnas i en `GtkPicture`-dialog i stället för i
+  textredigeraren, där en PNG tidigare hamnade som binärskräp i en
+  textbuffert. Valet är ändelsebaserat med flit — att sniffa innehållet
+  kräver just den nedladdning vi vill undvika innan vyn valts. Storleken
+  kontrolleras FÖRE hämtningen (`read` läser hela filen till minne, och en
+  fjärrkatalog kan innehålla flergigabytesfiler); över
+  `sftp::PREVIEW_MAX_BYTES` visas en förklaring i stället. Gissar ändelsen
+  fel visar GDK ett fel i dialogen — ingen återgång till editorn, eftersom
+  binärt innehåll i en textbuffert är sämre än ett tydligt felmeddelande.
 - Inbyggd editor med syntax highlighting
 - Plugin-system (Proxmox, TrueNAS, Unraid, Cloudflare, GitHub, Kubernetes)
 - **Agent Forwarding**: ✅ agent-PROTOKOLLKLIENTEN klar (2026-07-07,

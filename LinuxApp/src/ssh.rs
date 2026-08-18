@@ -31,7 +31,7 @@ use russh::client::Msg;
 use russh::client::{self, Handle};
 use russh::keys::agent::client::AgentClient;
 use russh::keys::ssh_key::PublicKey;
-use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKeyBase64, load_secret_key};
+use russh::keys::{PrivateKeyWithHashAlg, PublicKeyBase64, load_secret_key};
 use russh::{Channel, ChannelMsg};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -553,6 +553,25 @@ async fn run(
     Ok(())
 }
 
+/// Sida som förklarar varför RSA är avstängt. Visas som klickbar länk i
+/// dialogen (`main.rs`) och i klartext i terminalens felrad.
+pub const RSA_DISABLED_DOC_URL: &str =
+    "https://github.com/blixten85/bastion/blob/main/docs/RSA-INAKTIVERAT.md";
+
+/// Inledningen på felmeddelandet. `main.rs` känner igen felet på den här
+/// strängen och byter ut terminalraden mot en dialog med klickbar länk.
+pub const RSA_DISABLED_PREFIX: &str = "RSA-nycklar är tillfälligt inaktiverade";
+
+/// Felet som varje RSA-väg returnerar. Formuleras på ett ställe så att
+/// nyckelfil, certifikat och ssh-agent säger exakt samma sak.
+fn rsa_disabled_error() -> String {
+    format!(
+        "{RSA_DISABLED_PREFIX}. Stödet är avstängt tills RUSTSEC-2023-0071 \
+         (Marvin-attacken) i crate:n rsa har en rättad version. Använd en \
+         Ed25519-nyckel under tiden. Läs mer: {RSA_DISABLED_DOC_URL}"
+    )
+}
+
 async fn authenticate(
     session: &mut Handle<ClientHandler>,
     host: &Host,
@@ -563,17 +582,16 @@ async fn authenticate(
             let key = load_secret_key(path, None).map_err(|e| {
                 format!("kunde inte läsa nyckelfilen {path}: {e} (lösenfraser stöds inte än)")
             })?;
-            // `PrivateKeyWithHashAlg`: russh 0.62 kräver ett uttryckligt
-            // hash-val för RSA-nycklar (ssh-rsa/rsa-sha2-256/-512).
-            // `best_supported_rsa_hash` frågar servern vad den klarar;
-            // för Ed25519/ECDSA ignoreras värdet helt.
-            let hash_alg = session
-                .best_supported_rsa_hash()
-                .await
-                .map_err(|e| format!("kunde inte förhandla hash-algoritm: {e}"))?
-                .flatten();
+            if key.algorithm().is_rsa() {
+                return Err(rsa_disabled_error());
+            }
+            // Hash-valet gällde bara RSA (ssh-rsa/rsa-sha2-256/-512). Så
+            // länge RSA är avstängt är `None` det enda korrekta värdet —
+            // för Ed25519/ECDSA ignorerades det ändå. Den tidigare
+            // `best_supported_rsa_hash`-förhandlingen finns inte att
+            // anropa utan russh:s `rsa`-feature.
             session
-                .authenticate_publickey(&host.user, PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg))
+                .authenticate_publickey(&host.user, PrivateKeyWithHashAlg::new(Arc::new(key), None))
                 .await
                 .map_err(|e| format!("publik nyckel-autentisering misslyckades: {e}"))?
                 .success()
@@ -597,6 +615,11 @@ async fn authenticate(
             // `authenticate_publickey_with`, som lånar agenten i stället
             // för att flytta in och tillbaka den — loopen blir enklare.
             let mut succeeded = false;
+            // Räknar RSA-identiteter som hoppas över, så att en agent som
+            // BARA har RSA-nycklar får förklaringen nedan i stället för
+            // det intetsägande "servern avvisade autentiseringen".
+            let mut skipped_rsa = 0usize;
+            let mut considered = 0usize;
             for identity in identities {
                 // `request_identities` ger nu `AgentIdentity` (nyckel +
                 // kommentar, eller ett certifikat). Bara rena publika
@@ -605,14 +628,23 @@ async fn authenticate(
                 let russh::keys::agent::AgentIdentity::PublicKey { key, .. } = identity else {
                     continue;
                 };
-                let hash_alg = if key.algorithm().is_rsa() { Some(HashAlg::Sha256) } else { None };
+                // RSA hoppas över helt så länge RUSTSEC-2023-0071 är
+                // olöst — tidigare valdes `HashAlg::Sha256` här.
+                if key.algorithm().is_rsa() {
+                    skipped_rsa += 1;
+                    continue;
+                }
+                considered += 1;
                 let result = session
-                    .authenticate_publickey_with(&host.user, key, hash_alg, &mut agent)
+                    .authenticate_publickey_with(&host.user, key, None, &mut agent)
                     .await;
                 if matches!(result, Ok(ref r) if r.success()) {
                     succeeded = true;
                     break;
                 }
+            }
+            if !succeeded && considered == 0 && skipped_rsa > 0 {
+                return Err(rsa_disabled_error());
             }
             succeeded
         }
@@ -628,6 +660,11 @@ async fn authenticate(
             let key = load_secret_key(key_path, None).map_err(|e| {
                 format!("kunde inte läsa nyckelfilen {key_path}: {e} (lösenfraser stöds inte än)")
             })?;
+            // Certifikatet signeras av CA:n, men själva autentiseringen
+            // signeras med användarnyckeln — är den RSA gäller samma stopp.
+            if key.algorithm().is_rsa() {
+                return Err(rsa_disabled_error());
+            }
             let cert = russh::keys::load_openssh_certificate(cert_path)
                 .map_err(|e| format!("kunde inte läsa certifikatfilen {cert_path}: {e}"))?;
             session
@@ -709,6 +746,23 @@ mod tests {
     use crate::host::Host;
     use std::time::Duration;
 
+    /// `main.rs` känner igen RSA-felet på `RSA_DISABLED_PREFIX` för att
+    /// kunna visa dialogen med den klickbara länken. Formuleras meddelandet
+    /// om utan att prefixet står först försvinner dialogen tyst och
+    /// användaren får bara en röd terminalrad — det här testet fångar det.
+    #[test]
+    fn rsa_disabled_error_matches_the_prefix_main_rs_dispatches_on() {
+        let msg = rsa_disabled_error();
+        assert!(
+            msg.starts_with(RSA_DISABLED_PREFIX),
+            "felmeddelandet måste börja med prefixet, var: {msg}"
+        );
+        assert!(
+            msg.contains(RSA_DISABLED_DOC_URL),
+            "URL:en ska med i klartext för terminalraden, var: {msg}"
+        );
+    }
+
     fn drain_until_data_error_or_closed(
         session: &SshSession,
         timeout: Duration,
@@ -736,7 +790,7 @@ mod tests {
     fn connects_to_real_localhost_sshd_and_gets_a_shell_prompt() {
         let key_path =
             std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
-        let user = std::env::var("USER").expect("USER måste vara satt");
+        let user = crate::test_support::test_user();
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
 
@@ -755,7 +809,7 @@ mod tests {
     fn rejects_connection_when_host_key_has_changed() {
         let key_path =
             std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
-        let user = std::env::var("USER").expect("USER måste vara satt");
+        let user = crate::test_support::test_user();
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
 
@@ -792,7 +846,7 @@ mod tests {
     fn run_command_executes_a_real_readonly_command_over_ssh() {
         let key_path =
             std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
-        let user = std::env::var("USER").expect("USER måste vara satt");
+        let user = crate::test_support::test_user();
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
 
@@ -809,7 +863,7 @@ mod tests {
     fn docker_list_command_parses_real_dockerd_output() {
         let key_path =
             std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
-        let user = std::env::var("USER").expect("USER måste vara satt");
+        let user = crate::test_support::test_user();
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
 
@@ -834,7 +888,7 @@ mod tests {
     fn typing_exit_in_the_shell_closes_the_session() {
         let key_path =
             std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
-        let user = std::env::var("USER").expect("USER måste vara satt");
+        let user = crate::test_support::test_user();
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
 
@@ -981,9 +1035,7 @@ mod tests {
         );
     }
 
-    fn whoami_user() -> String {
-        std::env::var("USER").unwrap_or_else(|_| "test".into())
-    }
+    use crate::test_support::test_user as whoami_user;
 
     /// Bygger en `Host` som pekar mot en `TestSshd`-instans, med dess egen
     /// klientnyckel som auth.

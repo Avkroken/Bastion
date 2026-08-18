@@ -26,6 +26,34 @@ final class CommandLibraryTests: XCTestCase {
         }
     }
 
+    /// VISION-kravet som regel i stället för som ambition. Fem av trettio
+    /// poster hade dokumentationslänk innan den här kördes första gången.
+    func testEveryEntryCarriesDocumentation() {
+        for entry in CommandLibrary.all {
+            guard let url = entry.docsURL else {
+                XCTFail("\(entry.id) saknar dokumentationslänk")
+                continue
+            }
+            XCTAssertTrue(url.hasPrefix("https://"), "\(entry.id): länken ska vara https, är \(url)")
+        }
+    }
+
+    /// Ett exempel finns för att visa hur en variabel fylls i. Har
+    /// kommandot inga variabler blir exemplet en upprepning av kommandot
+    /// — därför gäller kravet mallarna, och bara dem.
+    func testTemplatedCommandsCarryAnExampleWithTheVariablesFilledIn() {
+        for entry in CommandLibrary.all where entry.command.contains("{{") {
+            guard let example = entry.example else {
+                XCTFail("\(entry.id) är en mall men saknar exempel")
+                continue
+            }
+            XCTAssertFalse(
+                example.contains("{{"),
+                "\(entry.id): exemplet ska visa ifyllda värden, inte mallen igen (\(example))"
+            )
+        }
+    }
+
     func testAsSnippetRendersVariablesLikeARealSnippet() {
         let entry = CommandLibraryEntry(category: .docker, command: "docker compose restart {{service}}", summary: "test")
         XCTAssertEqual(entry.asSnippet.variableNames, ["service"])
