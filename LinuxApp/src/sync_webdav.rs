@@ -37,6 +37,37 @@ pub struct WebDavSyncProvider {
     password: String,
 }
 
+/// Får inloggningsuppgifter skickas till den här URL:en?
+///
+/// Basic auth är Base64, inte kryptering — användarnamn och lösenord går
+/// att läsa rakt av på tråden. Över `http://` är det alltså att skicka
+/// dem i klartext till varje mellanled, och det är inget en synk ska
+/// göra tyst för att någon råkat utelämna ett `s`.
+///
+/// Loopback är undantaget, och bara loopback: där finns inget nät att
+/// avlyssna. Undantaget behövs för att kunna testa mot en lokal server
+/// utan att sätta upp TLS — men det är också det enda fall där det är
+/// ofarligt.
+pub fn credentials_may_be_sent(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("https://") {
+        return true;
+    }
+    if let Some(rest) = lower.strip_prefix("http://") {
+        // En IPv6-litteral står inom hakparenteser och innehåller
+        // KOLON — att dela på `:` styckar sönder `[::1]` och ger `[`.
+        // Den formen måste alltså plockas ut för sig innan portens
+        // avgränsare får någon betydelse.
+        let host = if let Some(end) = rest.find(']') {
+            if rest.starts_with('[') { &rest[..=end] } else { "" }
+        } else {
+            rest.split(['/', ':', '?', '#']).next().unwrap_or("")
+        };
+        return matches!(host, "127.0.0.1" | "localhost" | "[::1]");
+    }
+    false
+}
+
 /// Vad som gick fel, i den detalj som går att åtgärda.
 ///
 /// Ett nätverksfel och ett `401` kräver helt olika saker av användaren,
@@ -51,6 +82,8 @@ pub enum WebDavError {
     Status(u16),
     /// Svaret kom fram men gick inte att tolka som ett synktillstånd.
     Malformed(String),
+    /// URL:en skulle ha skickat inloggningen i klartext.
+    InsecureUrl,
 }
 
 impl std::fmt::Display for WebDavError {
@@ -62,6 +95,11 @@ impl std::fmt::Display for WebDavError {
             }
             WebDavError::Status(code) => write!(f, "servern svarade {code}"),
             WebDavError::Malformed(e) => write!(f, "svaret gick inte att tolka: {e}"),
+            WebDavError::InsecureUrl => write!(
+                f,
+                "URL:en måste börja med https:// — basic auth är Base64, inte kryptering, \
+                 så över http:// skickas användarnamn och lösenord i klartext"
+            ),
         }
     }
 }
@@ -73,6 +111,7 @@ impl From<WebDavError> for std::io::Error {
             WebDavError::Unreachable(_) => std::io::ErrorKind::ConnectionRefused,
             WebDavError::Malformed(_) => std::io::ErrorKind::InvalidData,
             WebDavError::Status(_) => std::io::ErrorKind::Other,
+            WebDavError::InsecureUrl => std::io::ErrorKind::InvalidInput,
         };
         std::io::Error::new(kind, e.to_string())
     }
@@ -132,6 +171,9 @@ impl WebDavSyncProvider {
 
 impl SyncProvider for WebDavSyncProvider {
     fn pull(&self) -> std::io::Result<Option<SyncState>> {
+        if !credentials_may_be_sent(&self.url) {
+            return Err(WebDavError::InsecureUrl.into());
+        }
         let client = Self::client()?;
         let (status, body) = Self::block_on(async {
             let response = client
@@ -167,6 +209,9 @@ impl SyncProvider for WebDavSyncProvider {
     }
 
     fn push(&self, state: &SyncState) -> std::io::Result<()> {
+        if !credentials_may_be_sent(&self.url) {
+            return Err(WebDavError::InsecureUrl.into());
+        }
         let body = serde_json::to_string_pretty(state)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
@@ -215,6 +260,44 @@ mod tests {
         assert!(matches!(classify(403), Err(WebDavError::Unauthorized)));
         assert!(matches!(classify(500), Err(WebDavError::Status(500))));
         assert!(matches!(classify(301), Err(WebDavError::Status(301))));
+    }
+
+    /// Basic auth är Base64, inte kryptering. Över http:// går
+    /// användarnamn och lösenord att läsa rakt av på tråden, och det ska
+    /// synken vägra göra — inte göra tyst för att någon utelämnat ett s.
+    #[test]
+    fn credentials_only_go_over_https_or_loopback() {
+        assert!(credentials_may_be_sent("https://moln.example/dav/b.json"));
+        assert!(credentials_may_be_sent("HTTPS://MOLN.EXAMPLE/dav/b.json"), "schemat är skiftlägesokänsligt");
+
+        // Loopback är ofarligt och behövs för att kunna testa utan TLS.
+        assert!(credentials_may_be_sent("http://127.0.0.1:8080/b.json"));
+        assert!(credentials_may_be_sent("http://localhost/b.json"));
+        assert!(credentials_may_be_sent("http://[::1]:9000/b.json"));
+
+        // Allt annat över http är klartext.
+        assert!(!credentials_may_be_sent("http://moln.example/dav/b.json"));
+        assert!(!credentials_may_be_sent("http://192.168.1.10/b.json"), "LAN är inte loopback");
+        assert!(!credentials_may_be_sent("http://127.0.0.1.evil.example/b.json"),
+                "ett värdnamn som BÖRJAR med 127.0.0.1 är inte loopback");
+        assert!(!credentials_may_be_sent("ftp://moln.example/b.json"));
+        assert!(!credentials_may_be_sent(""));
+    }
+
+    /// Kontrollen ska ske FÖRE anropet, så inget skickas ens en gång.
+    #[test]
+    fn an_insecure_url_fails_before_anything_is_sent() {
+        let provider = WebDavSyncProvider::new(
+            "http://moln.example/dav/b.json".into(),
+            "anders".into(),
+            "hemligt".into(),
+        );
+        let pull = provider.pull().expect_err("http skulle avvisats");
+        assert_eq!(pull.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(pull.to_string().contains("https://"), "felet ska säga vad som krävs");
+
+        let push = provider.push(&SyncState::default()).expect_err("http skulle avvisats");
+        assert_eq!(push.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     /// Felen ska gå att skilja åt i gränssnittet — ett nätverksfel och ett
