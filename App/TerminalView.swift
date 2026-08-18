@@ -214,6 +214,18 @@ struct BastionTerminal: TerminalRepresentable {
         let view = TerminalView()
         view.terminalDelegate = context.coordinator
         context.coordinator.attach(view)
+        #if os(iOS)
+        // Ersätter SwiftTerms egen rad. Se `TerminalKeyboardBar` för vad
+        // den saknar — kort version: Alt, F11–F12, och F-tangenterna
+        // försvinner tyst när skärmen är smal.
+        //
+        // Bytesen går genom KOORDINATORN och inte genom vyns
+        // delegatmetod: den senare hade krävt vyn som argument till sig
+        // själv, och koordinatorn är ändå den som äger anslutningen.
+        view.inputAccessoryView = TerminalKeyboardBar { [weak coordinator = context.coordinator] bytes in
+            coordinator?.sendBytes(bytes)
+        }
+        #endif
         return view
     }
 
@@ -273,6 +285,12 @@ struct BastionTerminal: TerminalRepresentable {
         // Tangenttryck från terminalen -> fjärr-shell.
         func send(source: TerminalView, data: ArraySlice<UInt8>) {
             controller.sendKeys(data)
+        }
+
+        /// Samma väg, men för tangentbordsraden — den har ingen
+        /// `TerminalView` att skicka med som källa.
+        func sendBytes(_ bytes: [UInt8]) {
+            controller.sendKeys(ArraySlice(bytes))
         }
 
         // Terminalen ändrade storlek -> meddela fjärrsidan.
