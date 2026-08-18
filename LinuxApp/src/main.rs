@@ -11,7 +11,7 @@ mod bookmarks;
 // Integrationerna kommer från det fristående paketet `integrations/`.
 // Anropsställena skriver fortfarande `docker::…`, `kubernetes::…` och
 // `proxmox::…` — bara varifrån de kommer har ändrats.
-use bastion_integrations::{docker, kubernetes, proxmox, truenas, unraid};
+use bastion_integrations::{cloudflare, docker, kubernetes, proxmox, truenas, unraid};
 mod command_library;
 mod dashboard;
 mod external_binary_fetcher;
@@ -1158,6 +1158,34 @@ fn refresh_list(
                 }
             }
         ));
+        let cloudflare_action = gtk::gio::SimpleAction::new("cloudflare", None);
+        cloudflare_action.connect_activate(clone!(
+            #[strong]
+            store,
+            #[strong]
+            area,
+            #[strong(rename_to = host_id)]
+            h.id,
+            move |_, _| {
+                let host = store
+                    .borrow()
+                    .all()
+                    .iter()
+                    .find(|x| x.id == host_id)
+                    .map(|h| (*h).clone());
+                if let Some(host) = host {
+                    with_resolved_jump(&area, &store, host, clone!(
+                        #[strong]
+                        area,
+                        move |host, jump| {
+                            require_password(&area, host, move |area, host, password| {
+                                open_cloudflare_view(area, host, password, jump.clone())
+                            });
+                        }
+                    ));
+                }
+            }
+        ));
         let commands_action = gtk::gio::SimpleAction::new("commands", None);
         commands_action.connect_activate(clone!(
             #[strong]
@@ -1302,6 +1330,7 @@ fn refresh_list(
         action_group.add_action(&proxmox_action);
         action_group.add_action(&truenas_action);
         action_group.add_action(&unraid_action);
+        action_group.add_action(&cloudflare_action);
         action_group.add_action(&commands_action);
         action_group.add_action(&sftp_action);
         action_group.add_action(&forward_action);
@@ -1816,6 +1845,7 @@ fn gio_menu_for(toggles: &settings::FeatureToggles, mac_address: &Option<String>
         menu.append(Some("Proxmox"), Some("host.proxmox"));
         menu.append(Some("TrueNAS"), Some("host.truenas"));
         menu.append(Some("Unraid"), Some("host.unraid"));
+        menu.append(Some("Cloudflare Tunnel"), Some("host.cloudflare"));
     }
     if toggles.show_command_library {
         menu.append(Some("Kommandon"), Some("host.commands"));
@@ -6283,6 +6313,163 @@ fn open_unraid_view(
     });
 
     load_visible();
+}
+
+/// Cloudflare Tunnel-vy: tunnlar och tjänstens tillstånd via `cloudflared`.
+///
+/// Sjätte integrationen, och sjätte gången skelettet räckte oförändrat.
+///
+/// Vyn har två kategorier och inte tre, för det finns bara två frågor:
+/// vilka tunnlar finns och tar de trafik, och kör daemonen. Den andra
+/// förklarar nästan alltid den första när något ser fel ut.
+fn open_cloudflare_view(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    jump: Option<host::Host>,
+) {
+    let tunnels_list = docker_category_list();
+    let service_list = docker_category_list();
+
+    let stack = adw::ViewStack::new();
+    let category = adw::ViewSwitcher::builder()
+        .policy(adw::ViewSwitcherPolicy::Wide)
+        .build();
+    category.set_stack(Some(&stack));
+    stack.add_titled(&docker_category_scroller(&tunnels_list), Some("tunnels"), "Tunnlar");
+    stack.add_titled(&docker_category_scroller(&service_list), Some("service"), "Tjänst");
+
+    let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
+    refresh_button.set_tooltip_text(Some("Uppdatera"));
+
+    let toolbar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .build();
+    toolbar.append(
+        &gtk::Label::builder()
+            .label(format!("Cloudflare: {}", host.alias))
+            .hexpand(true)
+            .halign(gtk::Align::Start)
+            .build(),
+    );
+    toolbar.append(&category);
+    toolbar.append(&refresh_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&toolbar);
+    content.append(&stack);
+
+    let page = area.tab_view.append(&content);
+    page.set_title(&format!("Cloudflare: {}", host.alias));
+    area.tab_view.set_selected_page(&page);
+    area.update_placeholder();
+
+    let load_visible = {
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let stack = stack.clone();
+        let tunnels_list = tunnels_list.clone();
+        let service_list = service_list.clone();
+        move || {
+            let name = stack.visible_child_name().unwrap_or_else(|| "tunnels".into());
+            let (list, category) = match name.as_str() {
+                "service" => (&service_list, CloudflareCategory::Service),
+                _ => (&tunnels_list, CloudflareCategory::Tunnels),
+            };
+            refresh_cloudflare_category(host.clone(), password.clone(), list, jump.clone(), category);
+        }
+    };
+
+    refresh_button.connect_clicked({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+    stack.connect_visible_child_name_notify({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+
+    load_visible();
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CloudflareCategory {
+    Tunnels,
+    Service,
+}
+
+fn refresh_cloudflare_category(
+    host: host::Host,
+    password: Option<String>,
+    list: &gtk::ListBox,
+    jump: Option<host::Host>,
+    category: CloudflareCategory,
+) {
+    let command = Ok(match category {
+        CloudflareCategory::Tunnels => cloudflare::tunnels_command(),
+        CloudflareCategory::Service => cloudflare::service_status_command(),
+    });
+    let empty = (
+        match category {
+            CloudflareCategory::Tunnels => "Inga tunnlar",
+            CloudflareCategory::Service => "Inget svar",
+        },
+        Some("Tomt svar — kontrollera att cloudflared finns på värden och är inloggat"),
+    );
+
+    refresh_integration_list(
+        host,
+        password,
+        list,
+        jump,
+        command,
+        empty,
+        move |output: &str, list: &gtk::ListBox| match category {
+            CloudflareCategory::Tunnels => {
+                for tunnel in cloudflare::parse_tunnels(output) {
+                    // En tunnel kan finnas, vara rätt konfigurerad och
+                    // ändå inte förmedla trafik. Skillnaden syns bara på
+                    // anslutningarna, så den står i underrubriken.
+                    let subtitle = if tunnel.is_up() {
+                        let colos = tunnel.colos();
+                        format!("uppe · {}", colos.join(", "))
+                    } else {
+                        "⚠ inga aktiva anslutningar — kör cloudflared?".to_string()
+                    };
+                    let row = adw::ActionRow::builder()
+                        .title(&tunnel.name)
+                        .subtitle(subtitle)
+                        .build();
+                    let icon = if tunnel.is_up() {
+                        "network-transmit-receive-symbolic"
+                    } else {
+                        "network-offline-symbolic"
+                    };
+                    row.add_prefix(&gtk::Image::from_icon_name(icon));
+                    list.append(&row);
+                }
+            }
+            CloudflareCategory::Service => {
+                let (state, version) = cloudflare::parse_service_status(output);
+                let row = adw::ActionRow::builder()
+                    .title(format!("cloudflared: {state}"))
+                    .subtitle(match &version {
+                        Some(v) => v.clone(),
+                        None => "ingen version rapporterad".to_string(),
+                    })
+                    .build();
+                if state != "active" {
+                    row.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
+                }
+                list.append(&row);
+            }
+        },
+    );
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

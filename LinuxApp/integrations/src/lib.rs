@@ -40,6 +40,7 @@
 //! Att pressa in dem i en gemensam regel hade gjort den till den
 //! lösaste av dem, alltså sämst som injektionsskydd.
 
+pub mod cloudflare;
 pub mod docker;
 pub mod kubernetes;
 pub mod proxmox;
