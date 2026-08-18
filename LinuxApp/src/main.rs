@@ -7009,6 +7009,61 @@ fn build_dashboard_rows(snap: &dashboard::SystemSnapshot) -> Vec<adw::ActionRow>
         row.add_prefix(&gtk::Image::from_icon_name(icon_name));
         rows.push(row);
     }
+
+    // Temperaturerna slås ihop till EN rad. En värd kan ha ett dussin
+    // thermal_zones, och tolv rader som mest säger "27,8 °C" dränker
+    // resten av översikten. Den varmaste först — det är den man vill se.
+    if !snap.temperatures.is_empty() {
+        let mut temps = snap.temperatures.clone();
+        temps.sort_by(|a, b| b.celsius.partial_cmp(&a.celsius).unwrap_or(std::cmp::Ordering::Equal));
+        let summary: Vec<String> = temps
+            .iter()
+            .take(4)
+            .map(|t| format!("{}: {:.1} °C", t.label, t.celsius))
+            .collect();
+        let mut subtitle = summary.join(" · ");
+        if temps.len() > 4 {
+            subtitle.push_str(&format!(" · +{} till", temps.len() - 4));
+        }
+        rows.push(adw::ActionRow::builder().title("Temperatur").subtitle(subtitle).build());
+    }
+
+    for addr in &snap.addresses {
+        rows.push(
+            adw::ActionRow::builder()
+                .title(addr.address.clone())
+                .subtitle(format!(
+                    "{} · {}",
+                    addr.interface,
+                    if addr.is_ipv6 { "IPv6" } else { "IPv4" }
+                ))
+                .build(),
+        );
+    }
+
+    // Vem KAN logga in. Fingeravtrycket är det som identifierar nyckeln;
+    // kommentaren är bara vad någon råkade skriva och kan vara tom.
+    for key in &snap.authorized_keys {
+        let who = if key.comment.is_empty() { "utan kommentar" } else { key.comment.as_str() };
+        rows.push(
+            adw::ActionRow::builder()
+                .title(who)
+                .subtitle(format!("{} {} bitar · {}", key.algorithm, key.bits, key.fingerprint))
+                .build(),
+        );
+    }
+
+    // Vem ÄR inne just nu. Raden säger varifrån när `who` vet det —
+    // skillnaden mot en lokal inloggning är värd att synas.
+    for user in &snap.active_users {
+        let mut subtitle = format!("{} · sedan {}", user.tty, user.since);
+        match &user.from {
+            Some(from) => subtitle.push_str(&format!(" · från {from}")),
+            None => subtitle.push_str(" · lokalt"),
+        }
+        rows.push(adw::ActionRow::builder().title(user.user.clone()).subtitle(subtitle).build());
+    }
+
     rows
 }
 
