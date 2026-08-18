@@ -6457,6 +6457,39 @@ struct SftpContext {
     host: host::Host,
     password: Option<String>,
     jump: Option<host::Host>,
+    /// Namnen som är ikryssade i den AKTUELLA katalogen. BTreeSet, inte
+    /// HashSet: ordningen blir då densamma varje gång, så `tar`-kommandot
+    /// (och därmed arkivet) är reproducerbart. Töms vid katalogbyte —
+    /// namnen är relativa till katalogen och betyder inget utanför den.
+    selection: Rc<RefCell<std::collections::BTreeSet<String>>>,
+    /// Knappen som packar markeringen. Ligger i kontexten och inte som
+    /// parameter enbart för att kontexten redan når varenda kodväg som kan
+    /// ändra markeringen (radbyggare, ta bort, byt namn, katalogbyte) —
+    /// alternativet vore en extra parameter genom tio anropsställen.
+    compress_button: gtk::Button,
+}
+
+impl SftpContext {
+    /// Ett enda ställe som håller mängden och knappen i synk. Knappen ska
+    /// vara tryckbar exakt när det finns något att packa.
+    fn sync_compress_button(&self) {
+        let any = !self.selection.borrow().is_empty();
+        self.compress_button.set_sensitive(any);
+    }
+
+    fn clear_selection(&self) {
+        self.selection.borrow_mut().clear();
+        self.sync_compress_button();
+    }
+
+    fn set_selected(&self, name: &str, selected: bool) {
+        if selected {
+            self.selection.borrow_mut().insert(name.to_string());
+        } else {
+            self.selection.borrow_mut().remove(name);
+        }
+        self.sync_compress_button();
+    }
 }
 
 fn open_sftp_view(
@@ -6466,11 +6499,19 @@ fn open_sftp_view(
     jump: Option<host::Host>,
 ) {
     let handle = sftp::spawn(host.clone(), password.clone(), jump.clone());
+    // Komprimerar de MARKERADE filerna, till skillnad från mappknappen på
+    // varje mapprad som packar hela mappen. Avstängd tills något är
+    // markerat — en knapp som inte kan göra något ska inte gå att trycka på.
+    let compress_selected_button = gtk::Button::from_icon_name("package-x-generic-symbolic");
+    compress_selected_button.set_tooltip_text(Some("Komprimera markerade"));
+    compress_selected_button.set_sensitive(false);
     let ctx = SftpContext {
         handle,
         host,
         password,
         jump,
+        selection: Rc::new(RefCell::new(std::collections::BTreeSet::new())),
+        compress_button: compress_selected_button.clone(),
     };
     let current_path = Rc::new(RefCell::new(".".to_string()));
 
@@ -6506,6 +6547,7 @@ fn open_sftp_view(
         .build();
     toolbar.append(&up_button);
     toolbar.append(&path_label);
+    toolbar.append(&compress_selected_button);
     toolbar.append(&mkdir_button);
     toolbar.append(&refresh_button);
 
@@ -6517,6 +6559,55 @@ fn open_sftp_view(
     page.set_title(&format!("Filer: {}", ctx.host.alias));
     area.tab_view.set_selected_page(&page);
     area.update_placeholder();
+
+    compress_selected_button.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        ctx,
+        #[strong]
+        current_path,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        move |_| {
+            let names: Vec<String> = ctx.selection.borrow().iter().cloned().collect();
+            if names.is_empty() {
+                return;
+            }
+            let dir = current_path.borrow().clone();
+            // Tidsstämplat namn: markeringen kan vara godtyckligt lång, och
+            // ett fast namn hade skrivit över ett tidigare arkiv tyst.
+            let archive_name = archive::multi_selection_archive_name(
+                &chrono::Local::now().format("%Y%m%d-%H%M%S").to_string(),
+            );
+            let command = archive::create_tar_gz_command(&names, &archive_name, &dir);
+            let rx = ssh::run_command(ctx.host.clone(), ctx.password.clone(), command, ctx.jump.clone());
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                ctx,
+                #[strong]
+                current_path,
+                #[weak]
+                list,
+                #[weak]
+                path_label,
+                async move {
+                    match rx.recv().await {
+                        Ok(Err(e)) => list.append(&error_row(&e)),
+                        // Arkivet är en ny fil i katalogen — listan måste
+                        // läsas om för att den ska synas, och omläsningen
+                        // nollställer markeringen (se refresh_sftp_list).
+                        _ => refresh_sftp_list(&area, ctx, current_path.clone(), dir, &list, &path_label),
+                    }
+                }
+            ));
+        }
+    ));
+
 
     up_button.connect_clicked(clone!(
         #[strong]
@@ -6659,6 +6750,10 @@ fn refresh_sftp_list(
     path_label: &gtk::Label,
 ) {
     path_label.set_text(&path);
+    // Markeringen är relativ till katalogen vi lämnar — den får inte följa
+    // med till nästa, där samma namn kan betyda en helt annan fil (eller
+    // ingen alls). Knappen slocknar med den.
+    ctx.clear_selection();
     glib::spawn_future_local(clone!(
         #[strong]
         area,
@@ -6718,6 +6813,23 @@ fn build_sftp_entry_row(
         .subtitle(subtitle)
         .activatable(true)
         .build();
+    // Kryssrutan sitter FÖRE ikonen och markerar raden för komprimering.
+    // `set_activates_default(false)` + egen toggle-hanterare: ett klick i
+    // rutan ska bara ändra markeringen, inte råka aktivera raden (som
+    // navigerar in i mappar respektive öppnar filer).
+    let select_check = gtk::CheckButton::new();
+    select_check.set_valign(gtk::Align::Center);
+    select_check.set_tooltip_text(Some("Markera för komprimering"));
+    select_check.set_active(ctx.selection.borrow().contains(&entry.name));
+    select_check.connect_toggled(clone!(
+        #[strong]
+        ctx,
+        #[strong(rename_to = name)]
+        entry.name,
+        move |check| ctx.set_selected(&name, check.is_active())
+    ));
+    row.add_prefix(&select_check);
+
     let icon = gtk::Image::from_icon_name(if entry.is_dir {
         "folder-symbolic"
     } else {
