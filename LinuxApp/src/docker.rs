@@ -250,6 +250,39 @@ pub fn compose_restart_command(config_files: &str) -> Result<String, String> {
     compose_command(config_files, "restart 2>&1")
 }
 
+/// Uppdaterar ett Compose-projekt: hämtar nyare images och återskapar de
+/// tjänster vars image faktiskt ändrats.
+///
+/// # Varför bara Compose, och inte enskilda containrar
+///
+/// VISION listar "Update" under Docker, och det ser ut som något som
+/// borde sitta på varje containerrad. Det gör det inte, och skälet är
+/// att `docker` inte kan det: det finns inget kommando som byter image
+/// på en körande container. Vägen vore `stop` + `rm` + `run …`, och då
+/// måste hela ursprungskonfigurationen återskapas — portar, volymer,
+/// miljövariabler, nätverk, restart policy, capabilities. Den datan har
+/// vi inte, och att gissa fel betyder tyst tappade volymer eller en
+/// tjänst som kommer tillbaka utan sina portar.
+///
+/// Compose däremot HAR konfigurationen, i filerna. `pull` följt av
+/// `up -d` är den dokumenterade vägen, och `up -d` rör bara det som
+/// ändrats — oförändrade tjänster startas inte om i onödan.
+///
+/// Så: en container som körs under Compose uppdateras via sitt projekt.
+/// En fristående container får `pull` på sin image (se
+/// [`pull_image_command`]) och måste återskapas för hand av den som vet
+/// hur den startades. Det är en ärligare gräns än en knapp som ibland
+/// tappar data.
+///
+/// `&&` och inte `;`: misslyckas hämtningen ska ingenting återskapas.
+/// Att riva och starta om tjänster efter en trasig `pull` vore att göra
+/// en nätverksstörning till ett driftavbrott.
+pub fn compose_update_command(config_files: &str) -> Result<String, String> {
+    let pull = compose_command(config_files, "pull")?;
+    let up = compose_command(config_files, "up -d")?;
+    Ok(format!("{pull} && {up} 2>&1"))
+}
+
 pub fn compose_logs_command(config_files: &str, tail: i64) -> Result<String, String> {
     let n = tail.max(1);
     compose_command(config_files, &format!("logs --tail {n} 2>&1"))
@@ -575,6 +608,42 @@ mod tests {
         // Ett projekt man vill STARTA är per definition stoppat — utan
         // --all syns aldrig det man söker.
         assert!(compose_ls_command().contains("--all"));
+    }
+
+    /// Ordningen är hela säkerheten i uppdateringen: `&&` betyder att en
+    /// misslyckad hämtning stoppar återskapandet. Med `;` hade en
+    /// nätverksstörning under `pull` blivit ett driftavbrott.
+    #[test]
+    fn update_pulls_before_recreating_and_stops_if_the_pull_fails() {
+        let cmd = compose_update_command("/srv/app/compose.yml").unwrap();
+        assert_eq!(
+            cmd,
+            "docker compose -f '/srv/app/compose.yml' pull && \
+             docker compose -f '/srv/app/compose.yml' up -d 2>&1"
+        );
+        let pull_at = cmd.find("pull").expect("pull saknas");
+        let up_at = cmd.find("up -d").expect("up saknas");
+        assert!(pull_at < up_at, "pull måste komma före up");
+        assert!(cmd.contains("&&"), "en misslyckad pull får inte leda till up");
+        assert!(!cmd.contains("; docker compose"), "semikolon skulle köra up ändå");
+    }
+
+    /// Flera compose-filer ska ge flera `-f`, i BÅDA leden — annars kör
+    /// andra halvan mot en annan projektdefinition än första.
+    #[test]
+    fn update_passes_every_compose_file_to_both_halves() {
+        let cmd = compose_update_command("/srv/a.yml,/srv/b.yml").unwrap();
+        assert_eq!(cmd.matches("-f '/srv/a.yml'").count(), 2);
+        assert_eq!(cmd.matches("-f '/srv/b.yml'").count(), 2);
+    }
+
+    /// Samma citeringsregel som övriga compose-kommandon: mellanslag är
+    /// ofarliga inom citat, ett citattecken bryter dem och avvisas.
+    #[test]
+    fn update_quotes_paths_and_rejects_the_one_character_that_breaks_quoting() {
+        assert!(compose_update_command("/srv/mina projekt/app.yml").is_ok());
+        assert!(compose_update_command("/srv/it's/app.yml").is_err());
+        assert!(compose_update_command("").is_err(), "utan filer finns inget projekt");
     }
 
     #[test]

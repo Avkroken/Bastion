@@ -5701,6 +5701,59 @@ fn build_compose_row(
     ));
     row.add_suffix(&logs);
 
+    // Uppdatering finns bara här, inte på containerraderna. Skälet står
+    // i `docker::compose_update_command`: `docker` kan inte byta image på
+    // en körande container, och att riva och återskapa den kräver en
+    // konfiguration vi inte har. Compose har den, i filerna.
+    //
+    // Bekräftas trots att `up -d` bara rör det som ändrats: en ny image
+    // kan innehålla en migrering eller en brytande ändring, och det ska
+    // vara ett aktivt val — inte ett klick bredvid "visa loggar".
+    let update = gtk::Button::from_icon_name("software-update-available-symbolic");
+    update.set_tooltip_text(Some("Uppdatera (pull + up -d)"));
+    update.set_valign(gtk::Align::Center);
+    update.add_css_class("flat");
+    update.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        run_then_reload,
+        #[strong]
+        files,
+        #[strong(rename_to = name)]
+        project.name,
+        move |_| {
+            let dialog = adw::AlertDialog::new(
+                Some("Uppdatera projektet"),
+                Some(&format!(
+                    "Hämta nyare images för {name} och återskapa de tjänster vars \
+                     image ändrats?\n\nOförändrade tjänster startas inte om. \
+                     Hämtningen måste lyckas innan något återskapas."
+                )),
+            );
+            dialog.add_response("cancel", "Avbryt");
+            dialog.add_response("update", "Uppdatera");
+            dialog.set_response_appearance("update", adw::ResponseAppearance::Suggested);
+            dialog.set_default_response(Some("cancel"));
+            dialog.connect_response(
+                None,
+                clone!(
+                    #[strong]
+                    run_then_reload,
+                    #[strong]
+                    files,
+                    move |_, response| {
+                        if response == "update" {
+                            run_then_reload(docker::compose_update_command(&files));
+                        }
+                    }
+                ),
+            );
+            dialog.present(Some(&area.overlay));
+        }
+    ));
+    row.add_suffix(&update);
+
     // `up` och `restart` är återställande och bekräftas inte. `down`
     // river containrarna och gör det.
     if project.is_running() {
