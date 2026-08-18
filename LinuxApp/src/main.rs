@@ -18,6 +18,7 @@ mod host;
 mod host_grouping;
 mod key_deploy;
 mod known_hosts;
+mod kubernetes;
 mod oauth;
 mod palette_actions;
 mod port_forward;
@@ -1030,6 +1031,34 @@ fn refresh_list(
                 }
             }
         ));
+        let kubernetes_action = gtk::gio::SimpleAction::new("kubernetes", None);
+        kubernetes_action.connect_activate(clone!(
+            #[strong]
+            store,
+            #[strong]
+            area,
+            #[strong(rename_to = host_id)]
+            h.id,
+            move |_, _| {
+                let host = store
+                    .borrow()
+                    .all()
+                    .iter()
+                    .find(|x| x.id == host_id)
+                    .map(|h| (*h).clone());
+                if let Some(host) = host {
+                    with_resolved_jump(&area, &store, host, clone!(
+                        #[strong]
+                        area,
+                        move |host, jump| {
+                            require_password(&area, host, move |area, host, password| {
+                                open_kubernetes_view(area, host, password, jump.clone())
+                            });
+                        }
+                    ));
+                }
+            }
+        ));
         let commands_action = gtk::gio::SimpleAction::new("commands", None);
         commands_action.connect_activate(clone!(
             #[strong]
@@ -1170,6 +1199,7 @@ fn refresh_list(
         action_group.add_action(&delete_action);
         action_group.add_action(&dashboard_action);
         action_group.add_action(&docker_action);
+        action_group.add_action(&kubernetes_action);
         action_group.add_action(&commands_action);
         action_group.add_action(&sftp_action);
         action_group.add_action(&forward_action);
@@ -1679,6 +1709,7 @@ fn gio_menu_for(toggles: &settings::FeatureToggles, mac_address: &Option<String>
     }
     if toggles.show_docker {
         menu.append(Some("Docker"), Some("host.docker"));
+        menu.append(Some("Kubernetes"), Some("host.kubernetes"));
     }
     if toggles.show_command_library {
         menu.append(Some("Kommandon"), Some("host.commands"));
@@ -5260,6 +5291,498 @@ fn prompt_new_bucket_name(
 /// Öppnar Docker-vyn för `host` i en ny flik: en containerlista med
 /// start/stopp/omstart/loggar/shell per rad. Port av App/DockerView.swift
 /// till en fristående SSH-engångskörning per anrop (`ssh::run_command`).
+/// Kubernetes-vy för `host`: poddar, deployments och noder via `kubectl`
+/// över SSH.
+///
+/// Andra integrationen bredvid Docker, och medvetet byggd med samma
+/// mönster — en `ViewSwitcher` över kategorier, bara den synliga
+/// kategorin hämtas, GTK-fri radmappning som går att testa. När en
+/// tredje tillkommer är det de här tre likheterna som är värda att
+/// extrahera, inte en abstraktion gissad i förväg.
+///
+/// Namnrymdsväljaren är det som INTE finns i Docker-vyn. Den fylls från
+/// klustret vid öppning, med "Alla namnrymder" först: den som felsöker
+/// vet sällan i vilken namnrymd problemet sitter.
+fn open_kubernetes_view(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    jump: Option<host::Host>,
+) {
+    let pods_list = docker_category_list();
+    let deployments_list = docker_category_list();
+    let nodes_list = docker_category_list();
+
+    let stack = adw::ViewStack::new();
+    let category = adw::ViewSwitcher::builder()
+        .policy(adw::ViewSwitcherPolicy::Wide)
+        .build();
+    category.set_stack(Some(&stack));
+    stack.add_titled(&docker_category_scroller(&pods_list), Some("pods"), "Poddar");
+    stack.add_titled(&docker_category_scroller(&deployments_list), Some("deployments"), "Deployments");
+    stack.add_titled(&docker_category_scroller(&nodes_list), Some("nodes"), "Noder");
+
+    // "Alla namnrymder" ligger först och är förval. Noder påverkas inte —
+    // de är kluster-globala.
+    let namespace_row = gtk::DropDown::from_strings(&["Alla namnrymder"]);
+    namespace_row.set_valign(gtk::Align::Center);
+    namespace_row.set_tooltip_text(Some("Namnrymd"));
+    let namespaces: Rc<RefCell<Vec<kubernetes::Namespace>>> =
+        Rc::new(RefCell::new(vec![kubernetes::Namespace::All]));
+
+    let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
+    refresh_button.set_tooltip_text(Some("Uppdatera"));
+
+    let toolbar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .build();
+    toolbar.append(
+        &gtk::Label::builder()
+            .label(format!("Kubernetes: {}", host.alias))
+            .hexpand(true)
+            .halign(gtk::Align::Start)
+            .build(),
+    );
+    toolbar.append(&namespace_row);
+    toolbar.append(&category);
+    toolbar.append(&refresh_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&toolbar);
+    content.append(&stack);
+
+    let page = area.tab_view.append(&content);
+    page.set_title(&format!("K8s: {}", host.alias));
+    area.tab_view.set_selected_page(&page);
+    area.update_placeholder();
+
+    let load_visible = {
+        let area = area.clone();
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let stack = stack.clone();
+        let namespace_row = namespace_row.clone();
+        let namespaces = namespaces.clone();
+        let pods_list = pods_list.clone();
+        let deployments_list = deployments_list.clone();
+        let nodes_list = nodes_list.clone();
+        move || {
+            let selected = namespaces
+                .borrow()
+                .get(namespace_row.selected() as usize)
+                .cloned()
+                .unwrap_or(kubernetes::Namespace::All);
+            let name = stack.visible_child_name().unwrap_or_else(|| "pods".into());
+            match name.as_str() {
+                "deployments" => refresh_kubernetes_category(
+                    &area, host.clone(), password.clone(), &deployments_list, jump.clone(),
+                    KubernetesCategory::Deployments, selected,
+                ),
+                "nodes" => refresh_kubernetes_category(
+                    &area, host.clone(), password.clone(), &nodes_list, jump.clone(),
+                    KubernetesCategory::Nodes, selected,
+                ),
+                _ => refresh_kubernetes_category(
+                    &area, host.clone(), password.clone(), &pods_list, jump.clone(),
+                    KubernetesCategory::Pods, selected,
+                ),
+            }
+        }
+    };
+
+    refresh_button.connect_clicked({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+    stack.connect_visible_child_name_notify({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+    namespace_row.connect_selected_notify({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+
+    // Namnrymderna hämtas en gång vid öppning. Listan ändras sällan, och
+    // att hämta om den vid varje kategoribyte vore en round-trip för
+    // data som nästan aldrig skiljer sig.
+    let rx = ssh::run_command(
+        host.clone(),
+        password.clone(),
+        kubernetes::namespaces_command(),
+        jump.clone(),
+    );
+    glib::spawn_future_local(clone!(
+        #[weak]
+        namespace_row,
+        #[strong]
+        namespaces,
+        #[strong]
+        load_visible,
+        async move {
+            if let Ok(Ok(output)) = rx.recv().await {
+                let found = kubernetes::parse_namespaces(&output);
+                if !found.is_empty() {
+                    let mut labels = vec!["Alla namnrymder".to_string()];
+                    let mut values = vec![kubernetes::Namespace::All];
+                    for name in found {
+                        labels.push(name.clone());
+                        values.push(kubernetes::Namespace::Named(name));
+                    }
+                    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+                    namespace_row.set_model(Some(&gtk::StringList::new(&refs)));
+                    *namespaces.borrow_mut() = values;
+                }
+            }
+            // Körs oavsett: misslyckas namnrymdshämtningen ska poddarna
+            // ändå visas (eller felet från dem synas), inte en tom vy.
+            load_visible();
+        }
+    ));
+}
+
+/// Hämtar och ritar en av de tre Kubernetes-listorna.
+fn refresh_kubernetes_category(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    list: &gtk::ListBox,
+    jump: Option<host::Host>,
+    category: KubernetesCategory,
+    namespace: kubernetes::Namespace,
+) {
+    let command = match category {
+        KubernetesCategory::Pods => kubernetes::pods_command(&namespace),
+        KubernetesCategory::Deployments => kubernetes::deployments_command(&namespace),
+        KubernetesCategory::Nodes => Ok(kubernetes::nodes_command()),
+    };
+    let command = match command {
+        Ok(command) => command,
+        Err(e) => {
+            while let Some(row) = list.row_at_index(0) {
+                list.remove(&row);
+            }
+            list.append(&error_row(&e));
+            return;
+        }
+    };
+
+    let rx = ssh::run_command(host.clone(), password.clone(), command, jump.clone());
+    glib::spawn_future_local(clone!(
+        #[weak]
+        list,
+        #[strong]
+        area,
+        #[strong]
+        host,
+        #[strong]
+        password,
+        #[strong]
+        jump,
+        #[strong]
+        namespace,
+        async move {
+            while let Some(row) = list.row_at_index(0) {
+                list.remove(&row);
+            }
+            let output = match rx.recv().await {
+                Ok(Ok(output)) => output,
+                Ok(Err(e)) => {
+                    list.append(&error_row(&e));
+                    return;
+                }
+                Err(_) => {
+                    list.append(&error_row("SSH-anslutningen avbröts oväntat"));
+                    return;
+                }
+            };
+
+            let rows = kubernetes_category_rows(&output, category, &namespace);
+            if rows.is_empty() {
+                // Tom lista och trasigt kommando ser annars likadana ut.
+                // `kubectl` som saknas ger tom utdata här, eftersom
+                // felet gått till /dev/null — därför nämns det.
+                list.append(
+                    &adw::ActionRow::builder()
+                        .title(match category {
+                            KubernetesCategory::Pods => "Inga poddar",
+                            KubernetesCategory::Deployments => "Inga deployments",
+                            KubernetesCategory::Nodes => "Inga noder",
+                        })
+                        .subtitle("Tomt svar — kontrollera att kubectl finns på värden och når ett kluster")
+                        .build(),
+                );
+                return;
+            }
+            for (title, subtitle, target) in rows {
+                list.append(&build_kubernetes_row(
+                    &area, &host, &password, &list, &jump, category, &namespace, title, subtitle, target,
+                ));
+            }
+        }
+    ));
+}
+
+/// En rad i podd-, deployment- eller nodlistan.
+#[allow(clippy::too_many_arguments)]
+fn build_kubernetes_row(
+    area: &Rc<SessionArea>,
+    host: &host::Host,
+    password: &Option<String>,
+    list: &gtk::ListBox,
+    jump: &Option<host::Host>,
+    category: KubernetesCategory,
+    namespace: &kubernetes::Namespace,
+    title: String,
+    subtitle: String,
+    target: Option<(String, String)>,
+) -> adw::ActionRow {
+    let row = adw::ActionRow::builder().title(&title).subtitle(&subtitle).build();
+
+    let Some((ns, name)) = target else {
+        return row; // noder har inga åtgärder
+    };
+
+    let reload = {
+        let area = area.clone();
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let list = list.clone();
+        let namespace = namespace.clone();
+        move || {
+            refresh_kubernetes_category(
+                &area, host.clone(), password.clone(), &list, jump.clone(), category,
+                namespace.clone(),
+            )
+        }
+    };
+
+    let run_then_reload = {
+        let area = area.clone();
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let reload = reload.clone();
+        move |command: Result<String, String>| {
+            let Ok(command) = command else {
+                show_message_dialog(&area, "Kubernetes", "ogiltigt namn — kommandot byggdes aldrig");
+                return;
+            };
+            let rx = ssh::run_command(host.clone(), password.clone(), command, jump.clone());
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                reload,
+                async move {
+                    match rx.recv().await {
+                        Ok(Ok(_)) => reload(),
+                        Ok(Err(e)) => show_message_dialog(&area, "Kubernetes", &e),
+                        Err(_) => show_message_dialog(&area, "Kubernetes", "SSH-anslutningen avbröts oväntat"),
+                    }
+                }
+            ));
+        }
+    };
+
+    if category == KubernetesCategory::Pods {
+        // `describe` före loggar: när en podd inte startar finns svaret i
+        // händelserna, inte i loggen — den är tom.
+        let describe = gtk::Button::from_icon_name("dialog-information-symbolic");
+        describe.set_tooltip_text(Some("Beskriv (händelser och orsak)"));
+        describe.set_valign(gtk::Align::Center);
+        describe.add_css_class("flat");
+        describe.connect_clicked(clone!(
+            #[strong]
+            area,
+            #[strong]
+            host,
+            #[strong]
+            password,
+            #[strong]
+            jump,
+            #[strong]
+            ns,
+            #[strong]
+            name,
+            move |_| {
+                let Ok(command) = kubernetes::describe_pod_command(&ns, &name) else {
+                    show_message_dialog(&area, "Kubernetes", "ogiltigt namn");
+                    return;
+                };
+                show_command_output(&area, &host, &password, &jump, &format!("describe {name}"), command);
+            }
+        ));
+        row.add_suffix(&describe);
+
+        let logs = gtk::Button::from_icon_name("text-x-generic-symbolic");
+        logs.set_tooltip_text(Some("Visa loggar"));
+        logs.set_valign(gtk::Align::Center);
+        logs.add_css_class("flat");
+        logs.connect_clicked(clone!(
+            #[strong]
+            area,
+            #[strong]
+            host,
+            #[strong]
+            password,
+            #[strong]
+            jump,
+            #[strong]
+            ns,
+            #[strong]
+            name,
+            move |_| {
+                let Ok(command) = kubernetes::pod_logs_command(&ns, &name, 200) else {
+                    show_message_dialog(&area, "Kubernetes", "ogiltigt namn");
+                    return;
+                };
+                show_command_output(&area, &host, &password, &jump, &format!("logs {name}"), command);
+            }
+        ));
+        row.add_suffix(&logs);
+
+        // Bekräftas, och texten säger vad som FAKTISKT händer: podden
+        // raderas. Har den ingen controller kommer den inte tillbaka, och
+        // den som tror att knappen betyder "starta om" blir förvånad.
+        let delete = gtk::Button::from_icon_name("view-refresh-symbolic");
+        delete.set_tooltip_text(Some("Ersätt podden (radera)"));
+        delete.set_valign(gtk::Align::Center);
+        delete.add_css_class("flat");
+        delete.connect_clicked(clone!(
+            #[strong]
+            area,
+            #[strong]
+            run_then_reload,
+            #[strong]
+            ns,
+            #[strong]
+            name,
+            move |_| {
+                let dialog = adw::AlertDialog::new(
+                    Some("Ersätt podden"),
+                    Some(&format!(
+                        "Radera {name} i {ns}?\n\nEn podd startas aldrig om — den ersätts. \
+                         Har den en controller (Deployment, StatefulSet, DaemonSet) skapas en ny \
+                         direkt. Saknar den controller kommer den INTE tillbaka."
+                    )),
+                );
+                dialog.add_response("cancel", "Avbryt");
+                dialog.add_response("delete", "Radera");
+                dialog.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
+                dialog.set_default_response(Some("cancel"));
+                dialog.connect_response(
+                    None,
+                    clone!(
+                        #[strong]
+                        run_then_reload,
+                        #[strong]
+                        ns,
+                        #[strong]
+                        name,
+                        move |_, response| {
+                            if response == "delete" {
+                                run_then_reload(kubernetes::delete_pod_command(&ns, &name));
+                            }
+                        }
+                    ),
+                );
+                dialog.present(Some(&area.overlay));
+            }
+        ));
+        row.add_suffix(&delete);
+    }
+
+    if category == KubernetesCategory::Deployments {
+        // Rullande omstart, inte radering — poddarna byts en i taget utan
+        // avbrott. Därför behöver den ingen bekräftelse.
+        let restart = gtk::Button::from_icon_name("view-refresh-symbolic");
+        restart.set_tooltip_text(Some("Rullande omstart"));
+        restart.set_valign(gtk::Align::Center);
+        restart.add_css_class("flat");
+        restart.connect_clicked({
+            let run_then_reload = run_then_reload.clone();
+            let ns = ns.clone();
+            let name = name.clone();
+            move |_| run_then_reload(kubernetes::restart_deployment_command(&ns, &name))
+        });
+        row.add_suffix(&restart);
+    }
+
+    row
+}
+
+/// Vilken Kubernetes-resurs en listning gäller.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum KubernetesCategory {
+    Pods,
+    Deployments,
+    Nodes,
+}
+
+/// Rådata → (rubrik, underrubrik, åtgärder).
+///
+/// GTK-fri och därför testbar, precis som `docker_category_rows`. Sista
+/// fältet är `(namnrymd, namn)` för de poster som har åtgärder; noder har
+/// inga och får `None`.
+type KubernetesRow = (String, String, Option<(String, String)>);
+
+fn kubernetes_category_rows(
+    output: &str,
+    category: KubernetesCategory,
+    namespace: &kubernetes::Namespace,
+) -> Vec<KubernetesRow> {
+    match category {
+        KubernetesCategory::Pods => kubernetes::parse_pods(output, namespace)
+            .into_iter()
+            .map(|p| {
+                // Ohälsosamma poddar säger VAD som är fel i underrubriken.
+                // "Running" räcker inte som lugnande besked när bara en av
+                // tre containrar är uppe.
+                let mut subtitle = format!("{} · {} klara", p.status, p.ready);
+                if p.restarts != "0" {
+                    subtitle.push_str(&format!(" · {} omstarter", p.restarts));
+                }
+                if !p.is_healthy() {
+                    subtitle.push_str(" · ⚠");
+                }
+                let title = format!("{}/{}", p.namespace, p.name);
+                (title, subtitle, Some((p.namespace, p.name)))
+            })
+            .collect(),
+        KubernetesCategory::Deployments => kubernetes::parse_deployments(output, namespace)
+            .into_iter()
+            .map(|d| {
+                let subtitle = if d.is_fully_available() {
+                    format!("{} tillgängliga", d.ready)
+                } else {
+                    format!("{} tillgängliga · ⚠", d.ready)
+                };
+                (format!("{}/{}", d.namespace, d.name), subtitle, Some((d.namespace, d.name)))
+            })
+            .collect(),
+        KubernetesCategory::Nodes => kubernetes::parse_nodes(output)
+            .into_iter()
+            .map(|n| {
+                let mut subtitle = n.version.clone();
+                if n.is_cordoned() {
+                    subtitle.push_str(" · avstängd för schemaläggning");
+                }
+                if !n.is_ready() {
+                    subtitle.push_str(" · ⚠ inte redo");
+                }
+                (n.name, subtitle, None)
+            })
+            .collect(),
+    }
+}
+
 fn open_docker_view(
     area: &Rc<SessionArea>,
     host: host::Host,
@@ -8712,6 +9235,90 @@ mod docker_category_tests {
         ] {
             assert!(docker_category_rows("", category).is_empty(), "{category:?}");
             assert!(docker_category_rows("\n\n", category).is_empty(), "{category:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod kubernetes_row_tests {
+    use super::*;
+
+    fn ns(name: &str) -> kubernetes::Namespace {
+        kubernetes::Namespace::Named(name.to_string())
+    }
+
+    /// Poängen med vyn: en podd i `Running` med 1/3 klara containrar ska
+    /// se problematisk ut, inte lugnande. Utan varningen är den visuellt
+    /// omöjlig att skilja från en frisk.
+    #[test]
+    fn unhealthy_pods_are_marked_while_healthy_ones_are_not() {
+        let out = "web-1  3/3  Running  0  1d\nweb-2  1/3  Running  7  1d";
+        let rows = kubernetes_category_rows(out, KubernetesCategory::Pods, &ns("prod"));
+        assert_eq!(rows.len(), 2);
+
+        assert_eq!(rows[0].0, "prod/web-1");
+        assert!(!rows[0].1.contains('⚠'), "en frisk podd ska inte varna: {}", rows[0].1);
+        assert!(!rows[0].1.contains("omstarter"), "noll omstarter är inte värt en rad");
+
+        assert!(rows[1].1.contains('⚠'), "1/3 klara i Running måste varna");
+        assert!(rows[1].1.contains("7 omstarter"), "omstarterna är det som förklarar varför");
+    }
+
+    /// Noder är kluster-globala och har inga åtgärder — `None` betyder
+    /// att raden inte får några knappar alls.
+    #[test]
+    fn nodes_have_no_actions_but_do_report_cordon_and_readiness() {
+        let out = "\
+node-a  Ready                     control-plane  30d  v1.31.2
+node-b  Ready,SchedulingDisabled  <none>         30d  v1.31.2
+node-c  NotReady                  <none>         30d  v1.30.8";
+        let rows = kubernetes_category_rows(out, KubernetesCategory::Nodes, &kubernetes::Namespace::All);
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|r| r.2.is_none()), "noder ska inte ha åtgärder");
+
+        assert_eq!(rows[0].1, "v1.31.2");
+        assert!(rows[1].1.contains("avstängd"), "cordon ska synas: {}", rows[1].1);
+        assert!(!rows[1].1.contains("inte redo"), "avstängd är inte samma sak som trasig");
+        assert!(rows[2].1.contains("inte redo"));
+    }
+
+    /// Åtgärderna behöver namnrymd OCH namn. Med `--all-namespaces` kommer
+    /// namnrymden från utdatan, annars från frågan — och båda vägarna
+    /// måste ge en användbar referens.
+    #[test]
+    fn actions_carry_namespace_from_output_or_from_the_query() {
+        let rows = kubernetes_category_rows(
+            "kube-system  coredns-abc  1/1  Running  0  5d",
+            KubernetesCategory::Pods,
+            &kubernetes::Namespace::All,
+        );
+        assert_eq!(rows[0].2, Some(("kube-system".to_string(), "coredns-abc".to_string())));
+
+        let rows = kubernetes_category_rows(
+            "coredns-abc  1/1  Running  0  5d",
+            KubernetesCategory::Pods,
+            &ns("kube-system"),
+        );
+        assert_eq!(rows[0].2, Some(("kube-system".to_string(), "coredns-abc".to_string())));
+    }
+
+    #[test]
+    fn partially_available_deployments_are_marked() {
+        let rows = kubernetes_category_rows(
+            "web  2/3  3  2  5d\napi  4/4  4  4  5d",
+            KubernetesCategory::Deployments,
+            &ns("prod"),
+        );
+        assert!(rows[0].1.contains('⚠'), "2/3 ska varna");
+        assert!(!rows[1].1.contains('⚠'), "4/4 ska inte varna");
+        assert_eq!(rows[1].2, Some(("prod".to_string(), "api".to_string())));
+    }
+
+    #[test]
+    fn empty_output_yields_no_rows_for_any_category() {
+        for c in [KubernetesCategory::Pods, KubernetesCategory::Deployments, KubernetesCategory::Nodes] {
+            assert!(kubernetes_category_rows("", c, &ns("default")).is_empty(), "{c:?}");
+            assert!(kubernetes_category_rows("\n\n", c, &ns("default")).is_empty(), "{c:?}");
         }
     }
 }
