@@ -406,6 +406,23 @@ impl HostStore {
         }
         Ok(Some(jump_host))
     }
+
+    /// Värdar som är giltiga att välja som jump-host för `editing` — alltså
+    /// exakt de `resolve_jump` ovan accepterar. Reglerna bor här, bredvid
+    /// den som verkställer dem, så att host-dialogen inte kan råka erbjuda
+    /// ett val som sedan avvisas vid anslutning.
+    ///
+    /// `editing` är `None` när en ny värd skapas (då finns inget eget ID att
+    /// utesluta ännu).
+    pub fn jump_host_candidates(&self, editing: Option<Uuid>) -> Vec<&Host> {
+        self.all()
+            .into_iter()
+            // En värd kan inte gå via sig själv.
+            .filter(|h| Some(h.id) != editing)
+            // Bara ett hopp stöds — en värd som själv har en jump vore en kedja.
+            .filter(|h| h.jump_host_id.is_none())
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -574,5 +591,61 @@ mod tests {
             err.contains("mer än ett hopp"),
             "felmeddelandet ska förklara VARFÖR, fick: {err}"
         );
+    }
+
+    #[test]
+    fn jump_host_candidates_excludes_the_host_being_edited() {
+        let a = Host::new("a".into(), "1.1.1.1".into(), "u".into());
+        let b = Host::new("b".into(), "2.2.2.2".into(), "u".into());
+        let store = store_with(vec![a.clone(), b.clone()]);
+
+        let ids: Vec<_> = store.jump_host_candidates(Some(a.id)).iter().map(|h| h.id).collect();
+        assert_eq!(ids, vec![b.id], "en värd får inte gå via sig själv");
+    }
+
+    #[test]
+    fn jump_host_candidates_excludes_hosts_that_are_themselves_chained() {
+        let plain = Host::new("plain".into(), "1.1.1.1".into(), "u".into());
+        let mut chained = Host::new("chained".into(), "2.2.2.2".into(), "u".into());
+        chained.jump_host_id = Some(plain.id);
+        let store = store_with(vec![plain.clone(), chained]);
+
+        let ids: Vec<_> = store.jump_host_candidates(None).iter().map(|h| h.id).collect();
+        assert_eq!(
+            ids,
+            vec![plain.id],
+            "bara ett hopp stöds, så en värd med egen jump får inte erbjudas"
+        );
+    }
+
+    /// Kontraktet mellan dialogen och anslutningen: allt som erbjuds som val
+    /// måste faktiskt gå att ansluta med. Annars flyttas felet från
+    /// valögonblicket till anslutningsögonblicket, där det är svårare att
+    /// förstå.
+    #[test]
+    fn every_offered_candidate_is_accepted_by_resolve_jump() {
+        let plain = Host::new("plain".into(), "1.1.1.1".into(), "u".into());
+        let other = Host::new("other".into(), "3.3.3.3".into(), "u".into());
+        let mut chained = Host::new("chained".into(), "2.2.2.2".into(), "u".into());
+        chained.jump_host_id = Some(plain.id);
+        let mut target = Host::new("target".into(), "4.4.4.4".into(), "u".into());
+        let store = store_with(vec![plain, other, chained, target.clone()]);
+
+        let candidates: Vec<Uuid> = store
+            .jump_host_candidates(Some(target.id))
+            .iter()
+            .map(|h| h.id)
+            .collect();
+        assert!(!candidates.is_empty(), "testet är meningslöst utan kandidater");
+
+        for id in candidates {
+            target.jump_host_id = Some(id);
+            let resolved = store.resolve_jump(&target);
+            assert!(
+                resolved.is_ok(),
+                "kandidaten {id} erbjöds i dialogen men avvisades vid anslutning: {:?}",
+                resolved.err()
+            );
+        }
     }
 }
