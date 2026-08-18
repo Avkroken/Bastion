@@ -790,7 +790,7 @@ mod tests {
     fn connects_to_real_localhost_sshd_and_gets_a_shell_prompt() {
         let key_path =
             std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
-        let user = std::env::var("USER").expect("USER måste vara satt");
+        let user = crate::test_support::test_user();
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
 
@@ -809,7 +809,7 @@ mod tests {
     fn rejects_connection_when_host_key_has_changed() {
         let key_path =
             std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
-        let user = std::env::var("USER").expect("USER måste vara satt");
+        let user = crate::test_support::test_user();
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
 
@@ -846,7 +846,7 @@ mod tests {
     fn run_command_executes_a_real_readonly_command_over_ssh() {
         let key_path =
             std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
-        let user = std::env::var("USER").expect("USER måste vara satt");
+        let user = crate::test_support::test_user();
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
 
@@ -863,7 +863,7 @@ mod tests {
     fn docker_list_command_parses_real_dockerd_output() {
         let key_path =
             std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
-        let user = std::env::var("USER").expect("USER måste vara satt");
+        let user = crate::test_support::test_user();
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
 
@@ -888,7 +888,7 @@ mod tests {
     fn typing_exit_in_the_shell_closes_the_session() {
         let key_path =
             std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
-        let user = std::env::var("USER").expect("USER måste vara satt");
+        let user = crate::test_support::test_user();
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
 
@@ -1035,9 +1035,7 @@ mod tests {
         );
     }
 
-    fn whoami_user() -> String {
-        std::env::var("USER").unwrap_or_else(|_| "test".into())
-    }
+    use crate::test_support::test_user as whoami_user;
 
     /// Bygger en `Host` som pekar mot en `TestSshd`-instans, med dess egen
     /// klientnyckel som auth.
