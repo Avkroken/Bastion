@@ -19,16 +19,18 @@
 //!
 //! VTE:s `gtk::Adjustment` är RELATIV till bufferten, inte en absolut
 //! radräknare: när gamla rader faller ur numreras det som är kvar om, och
-//! en sparad position pekar då på en senare rad än den gjorde. Upptäckt
-//! genom att köra appen — ett bokmärke satt vid rad 368 landade på rad
-//! 658 efter ytterligare 400 utskrivna rader, vilket är exakt hur många
-//! som hunnit falla ur en 512-radersbuffert.
+//! en sparad position pekar då på en senare rad än den gjorde. Det följer
+//! av hur VTE definierar adjustmentet (`upper` är antalet rader som
+//! FINNS, och en full buffert kastar en rad i toppen för varje ny rad i
+//! botten) — inte av en mätning här. Något körande GUI att verifiera det
+//! i finns inte i den här miljön.
 //!
 //! Två svar på det, båda behövda:
 //!
-//! 1. Skrollbufferten höjdes från VTE:s förval (512 rader — futtigt för
-//!    en SSH-klient som ska klara en `tail -f` eller en paketuppgradering)
-//!    till 100 000. Inom den ramen glider ingenting.
+//! 1. Skrollbufferten sätts till 100 000 rader i `new_themed_terminal`
+//!    i stället för att lita på VTE:s förval (512 — futtigt för en
+//!    SSH-klient som ska klara en `tail -f` eller en paketuppgradering).
+//!    Inom den ramen glider ingenting.
 //! 2. Har bufferten ÄNDÅ svämmat över säger listan det rent ut i stället
 //!    för att låtsas att positionerna stämmer. Se
 //!    [`positions_may_have_drifted`] — frågan gäller terminalen som

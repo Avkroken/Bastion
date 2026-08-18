@@ -6,6 +6,34 @@
 //! flera trådar, så "välj en ledig port" är inte en lokal fråga — två
 //! tester som väljer var för sig kan välja SAMMA port.
 
+/// Användaren e2e-testerna ansluter som.
+///
+/// `$USER` sätts av inloggningsskalet, inte av kärnan — i en container, ett
+/// cron-jobb eller ett CI-steg som inte startar ett skal är den helt enkelt
+/// osatt. Reserven var tidigare användarnamnet `"test"`, som sällan finns:
+/// sshd avvisade auth, och tio e2e-tester failade med "servern avvisade
+/// autentiseringen" utan att peka på den verkliga orsaken. Reproducerat i en
+/// container 2026-08-18, där `/usr/sbin/sshd` fanns men `$USER` inte.
+///
+/// `id -un` frågar systemet i stället för miljön och svarar rätt även utan
+/// skal. Först när ÄVEN den saknas faller vi tillbaka på ett namn, och då är
+/// testet ändå dömt — men felet blir åtminstone begripligt.
+///
+/// Regeln låg i fem exemplar, en per modul med e2e-tester. Nu en gång.
+pub fn test_user() -> String {
+    if let Some(user) = std::env::var("USER").ok().filter(|u| !u.is_empty()) {
+        return user;
+    }
+    std::process::Command::new("id")
+        .arg("-un")
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "test".into())
+}
+
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 

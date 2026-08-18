@@ -16,8 +16,17 @@ use tokio::io::AsyncWriteExt;
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub name: String,
+    /// Efter upplösning: en länk som pekar på en katalog räknas som
+    /// katalog, så att den går att gå in i. `READDIR` ger `lstat`-attribut
+    /// (länken själv, inte målet), så utan det extra `stat`-anropet i
+    /// [`list`] hade en länk till en katalog visats som fil och varit
+    /// omöjlig att öppna.
     pub is_dir: bool,
     pub size: u64,
+    /// `Some` betyder att posten ÄR en symbolisk länk; innehållet är vad
+    /// den pekar på, ordagrant som det står i länken (kan vara relativt,
+    /// och kan peka på något som inte finns).
+    pub link_target: Option<String>,
 }
 
 enum Command {
@@ -30,6 +39,7 @@ enum Command {
     Rename { from: String, to: String, reply: async_channel::Sender<Result<(), String>> },
     Chmod { path: String, mode: u32, reply: async_channel::Sender<Result<(), String>> },
     Chown { path: String, uid: u32, gid: u32, reply: async_channel::Sender<Result<(), String>> },
+    Symlink { link_path: String, target: String, reply: async_channel::Sender<Result<(), String>> },
 }
 
 #[derive(Clone)]
@@ -78,6 +88,21 @@ impl SftpHandle {
     pub async fn chmod(&self, path: String, mode: u32) -> Result<(), String> {
         let (reply, rx) = async_channel::bounded(1);
         self.send(Command::Chmod { path, mode, reply }, rx).await
+    }
+
+    /// Skapar en symbolisk länk på `link_path` som pekar på `target`.
+    ///
+    /// Argumentordningen är INTE självklar. `SSH_FXP_SYMLINK` beskrivs i
+    /// utkastet som `linkpath` följt av `targetpath`, men OpenSSH:s
+    /// sftp-server läser dem i omvänd ordning — en gammal bugg som blev
+    /// de facto-standard, och som `russh-sftp` inte kompenserar för
+    /// (`rawsession::symlink` skickar utkastets ordning rakt av). Vilken
+    /// ordning som faktiskt gäller är avgjort genom att köra mot en
+    /// riktig OpenSSH-sftp-server, inte genom att läsa specen — se
+    /// [`tests::symlinks_round_trip_against_a_real_sftp_server`].
+    pub async fn symlink(&self, link_path: String, target: String) -> Result<(), String> {
+        let (reply, rx) = async_channel::bounded(1);
+        self.send(Command::Symlink { link_path, target, reply }, rx).await
     }
 
     pub async fn chown(&self, path: String, uid: u32, gid: u32) -> Result<(), String> {
@@ -213,6 +238,10 @@ async fn run(session: SftpSession, rx: async_channel::Receiver<Command>) {
                 let result = chown(&session, &path, uid, gid).await;
                 let _ = reply.send(result).await;
             }
+            Command::Symlink { link_path, target, reply } => {
+                let result = symlink(&session, link_path, target).await;
+                let _ = reply.send(result).await;
+            }
         }
     }
 }
@@ -249,12 +278,65 @@ async fn chown(session: &SftpSession, path: &str, uid: u32, gid: u32) -> Result<
     session.set_metadata(path, attrs).await.map_err(|e| e.to_string())
 }
 
+/// Sätter ihop katalog + filnamn till en fjärrsökväg.
+///
+/// Fjärrsidan är alltid POSIX, så `std::path::Path::join` (som följer
+/// VÄRDENS regler) vore fel verktyg — den hade gett bakstreck om appen
+/// någon gång byggs för Windows.
+///
+/// Två specialfall, och de kom från var sitt håll: `"."` är sökvägen vyn
+/// startar på (relativt hemkatalogen) och ska ge bara namnet, medan
+/// roten `"/"` annars ger `//namn`. Regeln låg tidigare i två
+/// exemplar — `main.rs` kunde `"."` men inte roten, den här sidan
+/// tvärtom. Nu finns den en gång.
+pub fn joined_path(dir: &str, name: &str) -> String {
+    if dir == "." {
+        name.to_string()
+    } else if dir.ends_with('/') {
+        format!("{dir}{name}")
+    } else {
+        format!("{dir}/{name}")
+    }
+}
+
+/// Skapar en symbolisk länk. Se [`SftpHandle::symlink`] om argumentordningen.
+async fn symlink(session: &SftpSession, link_path: String, target: String) -> Result<(), String> {
+    session.symlink(target, link_path).await.map_err(|e| e.to_string())
+}
+
 async fn list(session: &SftpSession, path: &str) -> Result<Vec<Entry>, String> {
     let read_dir = session.read_dir(path).await.map_err(|e| e.to_string())?;
-    let mut entries: Vec<Entry> = read_dir
+    let raw: Vec<_> = read_dir
         .filter(|e| e.file_name() != "." && e.file_name() != "..")
-        .map(|e| Entry { name: e.file_name(), is_dir: e.file_type().is_dir(), size: e.metadata().len() })
         .collect();
+
+    let mut entries: Vec<Entry> = Vec::with_capacity(raw.len());
+    for e in raw {
+        let name = e.file_name();
+        let mut entry = Entry {
+            is_dir: e.file_type().is_dir(),
+            size: e.metadata().len(),
+            link_target: None,
+            name: name.clone(),
+        };
+
+        // Bara för länkar, och bara då: två extra rundturer per post hade
+        // gjort varje katalogbyte märkbart långsammare i en mapp med
+        // hundratals filer, utan att ge något för de posterna.
+        if e.file_type().is_symlink() {
+            let full = joined_path(path, &name);
+            entry.link_target = session.read_link(full.clone()).await.ok();
+            // `stat` FÖLJER länken; `read_dir` gav `lstat`. Utan det här
+            // vore en länk till en katalog inte navigerbar. En trasig
+            // länk svarar med fel — då står `is_dir` kvar på false och
+            // målet visas ändå, vilket är hela poängen med att se det.
+            if let Ok(meta) = session.metadata(full).await {
+                entry.is_dir = meta.file_type().is_dir();
+                entry.size = meta.len();
+            }
+        }
+        entries.push(entry);
+    }
     // Mapp-först, sedan alfabetiskt inom varje grupp — samma sortering som
     // Swiftsidans `sortedEntries`.
     entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
@@ -275,7 +357,8 @@ fn reply_error(cmd: Command, message: &str) {
         | Command::RemoveDir { reply, .. }
         | Command::Rename { reply, .. }
         | Command::Chmod { reply, .. }
-        | Command::Chown { reply, .. } => {
+        | Command::Chown { reply, .. }
+        | Command::Symlink { reply, .. } => {
             let _ = reply.send_blocking(Err(message.to_string()));
         }
     }
@@ -352,7 +435,7 @@ mod tests {
     #[ignore = "kräver en riktig localhost-sshd + en nyckel förberedd i authorized_keys, se ROADMAP.md"]
     fn full_round_trip_against_a_real_sftp_server() {
         let key_path = std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
-        let user = std::env::var("USER").expect("USER måste vara satt");
+        let user = crate::test_support::test_user();
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
 
@@ -385,6 +468,113 @@ mod tests {
         });
     }
 
+    /// Symlänkar mot en RIKTIG OpenSSH-sftp-server.
+    ///
+    /// Testet finns för att `SSH_FXP_SYMLINK`s argumentordning inte går
+    /// att läsa sig till: utkastet säger `linkpath` före `targetpath`,
+    /// OpenSSH:s sftp-server läser dem tvärtom, och `russh-sftp` skickar
+    /// utkastets ordning rakt av. Vilken väg länken faktiskt pekar är
+    /// alltså en empirisk fråga, och det här är svaret.
+    ///
+    /// Utöver ordningen täcks det som gjorde stödet värt att bygga:
+    /// att en länk till en KATALOG blir navigerbar (`is_dir`), och att en
+    /// TRASIG länk fortfarande visar sitt mål i stället för att döljas.
+    #[test]
+    #[ignore = "kräver en riktig localhost-sshd + en nyckel förberedd i authorized_keys, se ROADMAP.md"]
+    fn symlinks_round_trip_against_a_real_sftp_server() {
+        let key_path = std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
+        let user = crate::test_support::test_user();
+        let port: i64 = std::env::var("BASTION_TEST_SSH_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(22);
+        let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
+        host.auth = HostAuth::KeyFile(key_path);
+        host.port = port;
+
+        let dir = format!("/tmp/bastion-symlink-test-{}", uuid::Uuid::new_v4());
+        let handle = spawn(host, None, None);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            handle.mkdir(dir.clone()).await.expect("mkdir misslyckades");
+            handle.mkdir(format!("{dir}/riktig-katalog")).await.expect("mkdir katalog misslyckades");
+            handle
+                .write(format!("{dir}/riktig-fil.txt"), b"innehall".to_vec())
+                .await
+                .expect("write misslyckades");
+
+            handle
+                .symlink(format!("{dir}/lank-till-fil"), "riktig-fil.txt".into())
+                .await
+                .expect("symlink mot fil misslyckades");
+            handle
+                .symlink(format!("{dir}/lank-till-katalog"), "riktig-katalog".into())
+                .await
+                .expect("symlink mot katalog misslyckades");
+            handle
+                .symlink(format!("{dir}/trasig-lank"), "finns-inte-alls".into())
+                .await
+                .expect("symlink mot obefintligt mål misslyckades");
+
+            let entries = handle.list(dir.clone()).await.expect("list misslyckades");
+            let by_name = |n: &str| {
+                entries
+                    .iter()
+                    .find(|e| e.name == n)
+                    .unwrap_or_else(|| panic!("{n} saknas i listningen: {entries:?}"))
+                    .clone()
+            };
+
+            // Ordningen: pekar länken åt rätt håll? Vore argumenten
+            // omkastade hade det här namnet inte funnits — i stället hade
+            // en post som heter "riktig-fil.txt" skapats.
+            let to_file = by_name("lank-till-fil");
+            assert_eq!(
+                to_file.link_target.as_deref(),
+                Some("riktig-fil.txt"),
+                "länken ska peka på målet, inte tvärtom"
+            );
+            assert!(!to_file.is_dir);
+
+            // En länk till en katalog måste räknas som katalog, annars går
+            // den inte att öppna i vyn.
+            let to_dir = by_name("lank-till-katalog");
+            assert_eq!(to_dir.link_target.as_deref(), Some("riktig-katalog"));
+            assert!(to_dir.is_dir, "en länk till en katalog ska gå att gå in i");
+
+            // En trasig länk ska synas MED sitt mål — det är just då man
+            // behöver se vart den pekar.
+            let broken = by_name("trasig-lank");
+            assert_eq!(broken.link_target.as_deref(), Some("finns-inte-alls"));
+            assert!(!broken.is_dir);
+
+            // Vanliga poster ska inte ha fått ett länkmål på köpet.
+            assert!(by_name("riktig-fil.txt").link_target.is_none());
+            assert!(by_name("riktig-katalog").link_target.is_none());
+            assert!(by_name("riktig-katalog").is_dir);
+
+            for name in ["lank-till-fil", "lank-till-katalog", "trasig-lank", "riktig-fil.txt"] {
+                handle
+                    .remove_file(format!("{dir}/{name}"))
+                    .await
+                    .unwrap_or_else(|e| panic!("kunde inte ta bort {name}: {e}"));
+            }
+            handle.remove_dir(format!("{dir}/riktig-katalog")).await.expect("rmdir misslyckades");
+            handle.remove_dir(dir).await.expect("remove_dir misslyckades");
+        });
+    }
+
+    /// Båda specialfallen i ett test, eftersom de tidigare låg i var sin
+    /// kopia av regeln och var sin kopia saknade det andra.
+    #[test]
+    fn joined_path_uses_posix_separators_and_handles_both_special_cases() {
+        assert_eq!(joined_path("/tmp", "fil.txt"), "/tmp/fil.txt");
+        assert_eq!(joined_path(".", "fil.txt"), "fil.txt", "startsökvägen ska ge bara namnet");
+        assert_eq!(joined_path("/", "fil.txt"), "/fil.txt", "roten ska inte ge dubbelt snedstreck");
+        assert_eq!(joined_path("/var/log/", "syslog"), "/var/log/syslog");
+    }
+
     /// Verifierar chmod/chown mot en RIKTIG sshd — kollar det faktiska
     /// resultatet via `stat` över den vanliga exec-kanalen (inte bara att
     /// SFTP-anropet returnerade Ok), samma oberoende-verifieringsprincip
@@ -393,7 +583,7 @@ mod tests {
     #[ignore = "kräver en riktig localhost-sshd + en nyckel förberedd i authorized_keys, se ROADMAP.md"]
     fn chmod_and_chown_apply_on_a_real_sftp_server() {
         let key_path = std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
-        let user = std::env::var("USER").expect("USER måste vara satt");
+        let user = crate::test_support::test_user();
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
 
@@ -422,7 +612,7 @@ mod tests {
     #[ignore = "kräver en riktig localhost-sshd + en nyckel förberedd i authorized_keys, se ROADMAP.md"]
     fn compress_then_extract_round_trips_real_file_content() {
         let key_path = std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
-        let user = std::env::var("USER").expect("USER måste vara satt");
+        let user = crate::test_support::test_user();
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
 
@@ -576,6 +766,6 @@ mod tests {
     }
 
     fn whoami_user() -> String {
-        std::env::var("USER").unwrap_or_else(|_| "test".into())
+        crate::test_support::test_user()
     }
 }

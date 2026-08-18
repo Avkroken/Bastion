@@ -7,6 +7,7 @@ use vte::prelude::*;
 
 mod archive;
 mod bitwarden;
+mod bookmarks;
 mod command_library;
 mod dashboard;
 mod docker;
@@ -573,10 +574,35 @@ fn build_ui(app: &adw::Application) {
     ));
     app.add_action(&close_pane_action);
 
+    // Log-bokmärken. Två åtgärder och inte en: att SÄTTA ett bokmärke ska
+    // gå utan att något öppnas — man trycker mitt i en körning man tittar
+    // på — medan att hitta tillbaka kräver listan.
+    let bookmark_add_action = gtk::gio::SimpleAction::new("bookmark-add", None);
+    bookmark_add_action.connect_activate(clone!(
+        #[strong]
+        area,
+        move |_, _| bookmark_focused_pane(&area)
+    ));
+    app.add_action(&bookmark_add_action);
+
+    let bookmark_list_action = gtk::gio::SimpleAction::new("bookmark-list", None);
+    bookmark_list_action.connect_activate(clone!(
+        #[strong]
+        area,
+        move |_, _| show_bookmarks_dialog(&area)
+    ));
+    app.add_action(&bookmark_list_action);
+
     // Rutåtgärderna betyder ingenting utan en öppen session. I stället
     // för att tyst inte göra något gråas de ut i menyn, vilket GTK sköter
     // självt så fort åtgärden är avstängd.
-    let session_actions = vec![split_right_action, split_down_action, close_pane_action];
+    let session_actions = vec![
+        split_right_action,
+        split_down_action,
+        close_pane_action,
+        bookmark_add_action,
+        bookmark_list_action,
+    ];
     let set_session_actions_enabled = move |enabled: bool| {
         for action in &session_actions {
             action.set_enabled(enabled);
@@ -640,6 +666,11 @@ fn build_ui(app: &adw::Application) {
     app.set_accels_for_action("app.split-right", &["<Ctrl><Shift>e"]);
     app.set_accels_for_action("app.split-down", &["<Ctrl><Shift>o"]);
     app.set_accels_for_action("app.close-pane", &["<Ctrl><Shift>x"]);
+    // `D` för att sätta ett bokmärke och `B` för att lista dem. `Ctrl+B`
+    // utan Shift är tmux prefixtangent och `Ctrl+D` skickar EOF — båda
+    // hade tagits från skalet, samma resonemang som ovan.
+    app.set_accels_for_action("app.bookmark-add", &["<Ctrl><Shift>d"]);
+    app.set_accels_for_action("app.bookmark-list", &["<Ctrl><Shift>b"]);
     app.set_accels_for_action("app.settings", &["<Ctrl>comma"]);
     for number in 1..=9 {
         app.set_accels_for_action(
@@ -1602,6 +1633,11 @@ fn sidebar_menu() -> gtk::gio::Menu {
     panes.append(Some("Dela nedåt"), Some("app.split-down"));
     panes.append(Some("Stäng ruta"), Some("app.close-pane"));
     menu.append_section(None, &panes);
+
+    let marks = gtk::gio::Menu::new();
+    marks.append(Some("Sätt bokmärke"), Some("app.bookmark-add"));
+    marks.append(Some("Bokmärken i loggen"), Some("app.bookmark-list"));
+    menu.append_section(None, &marks);
 
     let connections = gtk::gio::Menu::new();
     connections.append(Some("Telnet"), Some("app.telnet"));
@@ -2807,6 +2843,10 @@ fn show_settings_dialog(
 /// olöst för gamla SwiftCrossUI-Linux, se project-bastion-linuxapp-touchscreen-goal).
 struct SessionArea {
     overlay: gtk::Overlay,
+    /// Kortlivad återkoppling ovanpå sessionerna. En modal dialog vore
+    /// fel verktyg för "bokmärke satt": den avbryter precis den körning
+    /// man tittade på när man tryckte.
+    toasts: adw::ToastOverlay,
     tab_view: adw::TabView,
     tab_bar: adw::TabBar,
     placeholder: adw::StatusPage,
@@ -2826,8 +2866,14 @@ impl SessionArea {
             .hexpand(true)
             .build();
 
+        // Toast-lagret ligger MELLAN överlägget och flikvyn: `overlay`
+        // förblir det dialoger presenteras på och det platshållaren
+        // ritas över, medan toasts hamnar ovanpå sessionsinnehållet.
+        let toasts = adw::ToastOverlay::new();
+        toasts.set_child(Some(&tab_view));
+
         let overlay = gtk::Overlay::new();
-        overlay.set_child(Some(&tab_view));
+        overlay.set_child(Some(&toasts));
         overlay.add_overlay(&placeholder);
 
         let swipe = gtk::GestureSwipe::new();
@@ -2849,6 +2895,7 @@ impl SessionArea {
 
         let area = Rc::new(SessionArea {
             overlay,
+            toasts,
             tab_view,
             tab_bar,
             placeholder,
@@ -3053,7 +3100,16 @@ fn prompt_password_then(
 /// (SSH/Telnet/Seriell) i stället för att var och en läser
 /// `TerminalThemeStore` och sätter färger separat.
 fn new_themed_terminal() -> vte::Terminal {
-    let terminal = vte::Terminal::builder().vexpand(true).hexpand(true).build();
+    let terminal = vte::Terminal::builder()
+        .vexpand(true)
+        .hexpand(true)
+        // VTE:s förval är 512 rader. Det räcker inte för det appen är
+        // till för — en `apt upgrade` eller ett bygge skrollar förbi det
+        // långt innan man hunnit läsa, och log-bokmärken pekar in i
+        // just den här bufferten (se `bookmarks`), så taket är också
+        // gränsen för hur långt tillbaka ett bokmärke kan peka.
+        .scrollback_lines(SCROLLBACK_LINES)
+        .build();
     let store = terminal_theme::TerminalThemeStore::open(terminal_theme::TerminalThemeStore::default_path());
     terminal_theme::apply(&terminal, terminal_theme::theme(store.selected_id().as_deref()));
     terminal
@@ -3129,7 +3185,30 @@ enum PaneSource {
     },
 }
 
+/// Hur många rader terminalens skrollbuffert håller. Se
+/// `new_themed_terminal` och `bookmarks`-modulens kommentar om glidning.
+const SCROLLBACK_LINES: u32 = 100_000;
+
 const PANE_SOURCE_KEY: &str = "bastion-pane-source";
+
+const BOOKMARKS_KEY: &str = "bastion-bookmarks";
+
+/// Rutans bokmärkeslista, skapad vid första anropet.
+///
+/// Listan hänger på widgeten och inte i en central tabell av samma skäl
+/// som `PaneSource`: en ruta som stängs tar med sig sina bokmärken, utan
+/// att något måste komma ihåg att städa. Se `bookmarks`-modulen för
+/// varför de inte sparas till disk.
+fn pane_bookmarks(terminal: &vte::Terminal) -> Rc<RefCell<bookmarks::BookmarkList>> {
+    unsafe {
+        if let Some(ptr) = terminal.data::<Rc<RefCell<bookmarks::BookmarkList>>>(BOOKMARKS_KEY) {
+            return ptr.as_ref().clone();
+        }
+        let list = Rc::new(RefCell::new(bookmarks::BookmarkList::new()));
+        terminal.set_data(BOOKMARKS_KEY, list.clone());
+        list
+    }
+}
 
 fn set_pane_source(terminal: &vte::Terminal, source: PaneSource) {
     unsafe {
@@ -3257,6 +3336,226 @@ fn split_focused_pane(area: &Rc<SessionArea>, orientation: gtk::Orientation) {
         }
         PaneSource::Telnet { host, port } => start_telnet_session(area, host, port, target),
     }
+}
+
+/// Sätter ett bokmärke vid den rad som ligger överst i rutan med fokus.
+///
+/// Gör ingenting utan en terminalruta — Docker-, SFTP- och tunnelflikar
+/// har ingen skrollbuffert att peka in i.
+fn bookmark_focused_pane(area: &Rc<SessionArea>) {
+    let Some(pane) = focused_pane(area) else {
+        return;
+    };
+    use chrono::Timelike as _;
+    let now = chrono::Local::now();
+    let label = bookmarks::default_label(now.hour(), now.minute(), now.second());
+    let row = pane.vadjustment().map(|adj| adj.value()).unwrap_or(0.0);
+    pane_bookmarks(&pane).borrow_mut().add(row, label.clone());
+    area.toasts
+        .add_toast(adw::Toast::new(&format!("Bokmärke satt: {label}")));
+}
+
+/// Terminalrutan med fokus i den valda fliken, om fliken har någon.
+fn focused_pane(area: &Rc<SessionArea>) -> Option<vte::Terminal> {
+    split::focused_terminal(&area.tab_view.selected_page()?.child())
+}
+
+/// Sen bindning av "rita om listan" till sig själv: raderna behöver kunna
+/// utlösa en ombyggnad, men de skapas AV ombyggnaden, så stängningen kan
+/// inte fånga sig själv utan att gå via en cell som fylls i efteråt.
+type Rebuild = Rc<RefCell<Option<Box<dyn Fn()>>>>;
+
+/// Listan över rutans bokmärken, med hopp, omdöpning och borttagning.
+///
+/// Byggs om från listan varje gång något ändras (`rebuild`) i stället för
+/// att raderna uppdateras på plats: en omdöpning kan flytta ingenting,
+/// men en borttagning ändrar vilka rader som finns, och två vägar att
+/// hålla vyn i synk är en väg för mycket.
+fn show_bookmarks_dialog(area: &Rc<SessionArea>) {
+    let Some(pane) = focused_pane(area) else {
+        return;
+    };
+    let list = pane_bookmarks(&pane);
+
+    let rows = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(12)
+        .margin_bottom(12)
+        .build();
+    let scrolled = gtk::ScrolledWindow::builder()
+        .child(&rows)
+        .min_content_height(280)
+        .vexpand(true)
+        .build();
+
+    // Har skrollbufferten svämmat över pekar bokmärkena på senare rader
+    // än de sattes vid. Att säga det rakt ut är hela poängen — se
+    // `bookmarks`-modulens kommentar.
+    let (rows_in_buffer, visible) = match pane.vadjustment() {
+        Some(adj) => (adj.upper(), adj.page_size()),
+        None => (0.0, 0.0),
+    };
+    let drift_banner = adw::Banner::builder()
+        .title(
+            "Skrollbufferten är full — äldre rader har fallit ur, så \
+             bokmärkena kan peka en bit fel.",
+        )
+        .revealed(bookmarks::positions_may_have_drifted(
+            rows_in_buffer,
+            f64::from(SCROLLBACK_LINES) + visible,
+        ))
+        .build();
+
+    let close_button = gtk::Button::with_label("Klar");
+    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    header.pack_start(&close_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&drift_banner);
+    content.append(&scrolled);
+
+    let win = dialog_window(&session_window(area), "Bokmärken", DialogSize::List, &content);
+
+    let rebuild: Rebuild = Rc::new(RefCell::new(None));
+    let build = {
+        let rows = rows.clone();
+        let list = list.clone();
+        let pane = pane.clone();
+        let win = win.clone();
+        let rebuild = rebuild.clone();
+        move || {
+            while let Some(child) = rows.first_child() {
+                rows.remove(&child);
+            }
+            if list.borrow().is_empty() {
+                let empty = adw::ActionRow::builder()
+                    .title("Inga bokmärken")
+                    .subtitle("Ctrl+Shift+D sätter ett vid raden överst i rutan")
+                    .build();
+                rows.append(&empty);
+                return;
+            }
+            for bookmark in list.borrow().all() {
+                let row = adw::ActionRow::builder()
+                    .title(&bookmark.label)
+                    .subtitle(format!("rad {}", bookmark.row.round() as i64))
+                    .activatable(true)
+                    .build();
+
+                let rename = gtk::Button::builder()
+                    .icon_name("document-edit-symbolic")
+                    .tooltip_text("Byt namn")
+                    .valign(gtk::Align::Center)
+                    .css_classes(["flat"])
+                    .build();
+                let remove = gtk::Button::builder()
+                    .icon_name("user-trash-symbolic")
+                    .tooltip_text("Ta bort")
+                    .valign(gtk::Align::Center)
+                    .css_classes(["flat"])
+                    .build();
+                row.add_suffix(&rename);
+                row.add_suffix(&remove);
+
+                // Att aktivera raden hoppar dit OCH stänger dialogen: den
+                // fanns bara för att hitta tillbaka, och att lämna den
+                // öppen skymmer det man just hoppade till.
+                let target = bookmark.row;
+                row.connect_activated(clone!(
+                    #[weak]
+                    pane,
+                    #[weak]
+                    win,
+                    move |_| {
+                        if let Some(adj) = pane.vadjustment() {
+                            adj.set_value(target);
+                        }
+                        win.close();
+                    }
+                ));
+
+                let id = bookmark.id;
+                remove.connect_clicked(clone!(
+                    #[strong]
+                    list,
+                    #[strong]
+                    rebuild,
+                    move |_| {
+                        list.borrow_mut().remove(id);
+                        if let Some(again) = rebuild.borrow().as_ref() {
+                            again();
+                        }
+                    }
+                ));
+
+                let current = bookmark.label.clone();
+                rename.connect_clicked(clone!(
+                    #[strong]
+                    list,
+                    #[strong]
+                    rebuild,
+                    #[weak]
+                    win,
+                    move |_| {
+                        let entry = gtk::Entry::builder().text(&current).build();
+                        let dialog = adw::AlertDialog::new(Some("Byt namn"), None);
+                        dialog.set_extra_child(Some(&entry));
+                        dialog.add_response("cancel", "Avbryt");
+                        dialog.add_response("save", "Spara");
+                        dialog.set_response_appearance(
+                            "save",
+                            adw::ResponseAppearance::Suggested,
+                        );
+                        dialog.set_default_response(Some("save"));
+                        dialog.connect_response(
+                            None,
+                            clone!(
+                                #[strong]
+                                list,
+                                #[strong]
+                                rebuild,
+                                #[weak]
+                                entry,
+                                move |_, response| {
+                                    if response != "save" {
+                                        return;
+                                    }
+                                    let label = entry.text().trim().to_string();
+                                    // Ett tomt namn vore sämre än det
+                                    // gamla: raden blir omöjlig att skilja
+                                    // från grannen.
+                                    if label.is_empty() {
+                                        return;
+                                    }
+                                    list.borrow_mut().rename(id, label);
+                                    if let Some(again) = rebuild.borrow().as_ref() {
+                                        again();
+                                    }
+                                }
+                            ),
+                        );
+                        dialog.present(Some(&win));
+                    }
+                ));
+
+                rows.append(&row);
+            }
+        }
+    };
+    build();
+    *rebuild.borrow_mut() = Some(Box::new(build));
+
+    close_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        move |_| win.close()
+    ));
+
+    win.present();
 }
 
 /// Stänger rutan med fokus. Ett kortkommando för den som har en hängd
@@ -4982,6 +5281,17 @@ fn open_docker_view(
 
     let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
     refresh_button.set_tooltip_text(Some("Uppdatera"));
+
+    // VISION räknar upp Containers/Images/Volumes/Networks som en och
+    // samma Docker-yta. En växlare i stället för fyra flikar: det är fyra
+    // vyer av EN värd, och att öppna fyra flikar per server hade gjort
+    // flikraden oläslig så fort man tittar på mer än en maskin.
+    let category = adw::ViewSwitcher::builder()
+        .policy(adw::ViewSwitcherPolicy::Wide)
+        .build();
+    let stack = adw::ViewStack::new();
+    category.set_stack(Some(&stack));
+
     let toolbar = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .margin_start(12)
@@ -4995,18 +5305,117 @@ fn open_docker_view(
             .halign(gtk::Align::Start)
             .build(),
     );
+    toolbar.append(&category);
     toolbar.append(&refresh_button);
+
+    let images_list = docker_category_list();
+    let volumes_list = docker_category_list();
+    let networks_list = docker_category_list();
+    stack.add_titled(&scrolled, Some("containers"), "Containrar");
+    stack.add_titled(&docker_category_scroller(&images_list), Some("images"), "Images");
+    stack.add_titled(&docker_category_scroller(&volumes_list), Some("volumes"), "Volymer");
+    stack.add_titled(&docker_category_scroller(&networks_list), Some("networks"), "Nätverk");
+    let compose_list = docker_category_list();
+    stack.add_titled(&docker_category_scroller(&compose_list), Some("compose"), "Compose");
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.append(&toolbar);
-    content.append(&scrolled);
+    content.append(&stack);
 
     let page = area.tab_view.append(&content);
     page.set_title(&format!("Docker: {}", host.alias));
     area.tab_view.set_selected_page(&page);
     area.update_placeholder();
 
-    refresh_button.connect_clicked(clone!(
+    // Bara den synliga kategorin hämtas. Fyra SSH-kommandon vid varje
+    // öppning hade kostat fyra round-trips för tre listor man kanske
+    // aldrig tittar på — och `docker images` på en välanvänd värd är inte
+    // gratis.
+    let load_visible = {
+        let area = area.clone();
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let stack = stack.clone();
+        let list = list.clone();
+        let images_list = images_list.clone();
+        let volumes_list = volumes_list.clone();
+        let networks_list = networks_list.clone();
+        let compose_list = compose_list.clone();
+        move || {
+            let name = stack.visible_child_name().unwrap_or_else(|| "containers".into());
+            match name.as_str() {
+                "images" => refresh_docker_category(
+                    &area, host.clone(), password.clone(), &images_list, jump.clone(),
+                    DockerCategory::Images,
+                ),
+                "volumes" => refresh_docker_category(
+                    &area, host.clone(), password.clone(), &volumes_list, jump.clone(),
+                    DockerCategory::Volumes,
+                ),
+                "networks" => refresh_docker_category(
+                    &area, host.clone(), password.clone(), &networks_list, jump.clone(),
+                    DockerCategory::Networks,
+                ),
+                "compose" => refresh_docker_category(
+                    &area, host.clone(), password.clone(), &compose_list, jump.clone(),
+                    DockerCategory::Compose,
+                ),
+                _ => refresh_docker_list(&area, host.clone(), password.clone(), &list, jump.clone()),
+            }
+        }
+    };
+
+    refresh_button.connect_clicked({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+    stack.connect_visible_child_name_notify({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+
+    load_visible();
+}
+
+/// Vilken Docker-resurs en listning gäller. Skiljer sig från containrarna
+/// genom att vara ren läsning plus borttagning — ingen start/stopp/logg,
+/// för det finns inget att köra.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum DockerCategory {
+    Images,
+    Volumes,
+    Networks,
+    /// Compose skiljer sig från de andra tre: posterna går att STARTA och
+    /// STOPPA, inte bara tas bort. Raderna byggs därför av
+    /// `build_compose_row` i stället för `build_docker_resource_row`.
+    Compose,
+}
+
+/// Hämtar och ritar en av de tre resurslistorna.
+///
+/// En funktion för alla tre i stället för tre nästan identiska: det enda
+/// som skiljer är kommandot, parsningen och vad raden heter — och tre
+/// kopior av samma hämta-rensa-rita-slinga hade drivit isär vid första
+/// felhanteringsändringen.
+fn refresh_docker_category(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    list: &gtk::ListBox,
+    jump: Option<host::Host>,
+    category: DockerCategory,
+) {
+    let command = match category {
+        DockerCategory::Images => docker::images_command(),
+        DockerCategory::Volumes => docker::volumes_command(),
+        DockerCategory::Networks => docker::networks_command(),
+        DockerCategory::Compose => docker::compose_ls_command(),
+    };
+    let rx = ssh::run_command(host.clone(), password.clone(), command, jump.clone());
+    glib::spawn_future_local(clone!(
+        #[weak]
+        list,
         #[strong]
         area,
         #[strong]
@@ -5015,12 +5424,418 @@ fn open_docker_view(
         password,
         #[strong]
         jump,
-        #[weak]
-        list,
-        move |_| refresh_docker_list(&area, host.clone(), password.clone(), &list, jump.clone())
-    ));
+        async move {
+            while let Some(row) = list.row_at_index(0) {
+                list.remove(&row);
+            }
+            let output = match rx.recv().await {
+                Ok(Ok(output)) => output,
+                Ok(Err(e)) => {
+                    list.append(&error_row(&e));
+                    return;
+                }
+                Err(_) => {
+                    list.append(&error_row("SSH-anslutningen avbröts oväntat"));
+                    return;
+                }
+            };
 
-    refresh_docker_list(area, host, password, &list, jump);
+            let rows = docker_category_rows(&output, category);
+            if rows.is_empty() {
+                // Skilj "inget finns" från "det gick fel". Utan den här
+                // raden ser en tom lista likadan ut som en trasig.
+                list.append(
+                    &adw::ActionRow::builder()
+                        .title(match category {
+                            DockerCategory::Images => "Inga images",
+                            DockerCategory::Volumes => "Inga volymer",
+                            DockerCategory::Networks => "Inga nätverk",
+                            DockerCategory::Compose => "Inga Compose-projekt",
+                        })
+                        .build(),
+                );
+                return;
+            }
+            if category == DockerCategory::Compose {
+                for project in docker::parse_compose_projects(&output) {
+                    list.append(&build_compose_row(
+                        &area, &host, &password, &list, &jump, project,
+                    ));
+                }
+                return;
+            }
+            for (title, subtitle, removable) in rows {
+                list.append(&build_docker_resource_row(
+                    &area, &host, &password, &list, &jump, category, title, subtitle, removable,
+                ));
+            }
+        }
+    ));
+}
+
+/// En rad i images/volymer/nätverk-listan.
+///
+/// Borttagning är den enda muterande åtgärden här, och den är alltid
+/// bekräftad: `docker rmi`/`volume rm` är oåterkalleligt, och en volym
+/// bär data. Images får dessutom en `pull` — den hämtar en nyare version
+/// men startar INTE om något, så den går alltid att låta bli att agera på.
+#[allow(clippy::too_many_arguments)]
+fn build_docker_resource_row(
+    area: &Rc<SessionArea>,
+    host: &host::Host,
+    password: &Option<String>,
+    list: &gtk::ListBox,
+    jump: &Option<host::Host>,
+    category: DockerCategory,
+    title: String,
+    subtitle: String,
+    removable: Option<String>,
+) -> adw::ActionRow {
+    let row = adw::ActionRow::builder().title(&title).subtitle(&subtitle).build();
+
+    let reload = {
+        let area = area.clone();
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let list = list.clone();
+        move || refresh_docker_category(&area, host.clone(), password.clone(), &list, jump.clone(), category)
+    };
+
+    let run_then_reload = {
+        let area = area.clone();
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let list = list.clone();
+        let reload = reload.clone();
+        move |command: Result<String, String>| {
+            let Ok(command) = command else {
+                list.append(&error_row("kunde inte bygga kommandot — ogiltig referens"));
+                return;
+            };
+            let rx = ssh::run_command(host.clone(), password.clone(), command, jump.clone());
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                reload,
+                async move {
+                    match rx.recv().await {
+                        Ok(Ok(_)) => reload(),
+                        Ok(Err(e)) => show_message_dialog(&area, "Docker", &e),
+                        Err(_) => show_message_dialog(&area, "Docker", "SSH-anslutningen avbröts oväntat"),
+                    }
+                }
+            ));
+        }
+    };
+
+    // Bara images kan hämtas om; en volym eller ett nätverk har ingen
+    // uppström att jämföra mot.
+    if let (DockerCategory::Images, Some(reference)) = (category, removable.clone()) {
+        let pull = gtk::Button::from_icon_name("folder-download-symbolic");
+        pull.set_tooltip_text(Some("Hämta nyare version (startar inte om något)"));
+        pull.set_valign(gtk::Align::Center);
+        pull.add_css_class("flat");
+        pull.connect_clicked({
+            let run_then_reload = run_then_reload.clone();
+            move |_| run_then_reload(docker::pull_image_command(&reference))
+        });
+        row.add_suffix(&pull);
+    }
+
+    if let Some(reference) = removable {
+        let remove = gtk::Button::from_icon_name("user-trash-symbolic");
+        remove.set_tooltip_text(Some("Ta bort"));
+        remove.set_valign(gtk::Align::Center);
+        remove.add_css_class("flat");
+        remove.connect_clicked(clone!(
+            #[strong]
+            area,
+            #[strong]
+            run_then_reload,
+            #[strong]
+            reference,
+            #[strong]
+            title,
+            move |_| {
+                let body = match category {
+                    DockerCategory::Images => format!("Ta bort imagen {title}?"),
+                    // Volymen är den enda som bär data — säg det, i
+                    // stället för att lita på att användaren vet.
+                    DockerCategory::Volumes => {
+                        format!("Ta bort volymen {title}? All data i den försvinner.")
+                    }
+                    DockerCategory::Networks => format!("Ta bort nätverket {title}?"),
+                    // Compose ritas av `build_compose_row` och kommer
+                    // aldrig hit. Ett projekt "tas" inte heller bort — det
+                    // stoppas med `down`, vilket är en annan sak.
+                    DockerCategory::Compose => unreachable!("Compose har egen radbyggare"),
+                };
+                let dialog = adw::AlertDialog::new(Some("Ta bort"), Some(&body));
+                dialog.add_response("cancel", "Avbryt");
+                dialog.add_response("remove", "Ta bort");
+                dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
+                dialog.set_default_response(Some("cancel"));
+                dialog.connect_response(
+                    None,
+                    clone!(
+                        #[strong]
+                        run_then_reload,
+                        #[strong]
+                        reference,
+                        move |_, response| {
+                            if response != "remove" {
+                                return;
+                            }
+                            run_then_reload(match category {
+                                DockerCategory::Images => docker::remove_image_command(&reference),
+                                DockerCategory::Volumes => docker::remove_volume_command(&reference),
+                                DockerCategory::Networks => docker::remove_network_command(&reference),
+                                DockerCategory::Compose => unreachable!("Compose har egen radbyggare"),
+                            });
+                        }
+                    ),
+                );
+                dialog.present(Some(&area.overlay));
+            }
+        ));
+        row.add_suffix(&remove);
+    }
+
+    row
+}
+
+/// En rad för ett Compose-projekt.
+///
+/// Egen byggare i stället för `build_docker_resource_row`, för ett
+/// projekt är inte en resurs som tas bort: det STARTAS och STOPPAS. Ett
+/// `down` river dessutom containrarna, vilket är ett driftbeslut och
+/// därför bekräftas — till skillnad från `up` och `restart`, som är
+/// återställande.
+fn build_compose_row(
+    area: &Rc<SessionArea>,
+    host: &host::Host,
+    password: &Option<String>,
+    list: &gtk::ListBox,
+    jump: &Option<host::Host>,
+    project: docker::ComposeProject,
+) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
+        .title(&project.name)
+        .subtitle(&project.status)
+        .build();
+
+    let run_then_reload = {
+        let area = area.clone();
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let list = list.clone();
+        move |command: Result<String, String>| {
+            let command = match command {
+                Ok(command) => command,
+                Err(e) => {
+                    // Felet är begripligt (t.ex. citattecken i sökvägen)
+                    // och förtjänar att synas ordagrant.
+                    show_message_dialog(&area, "Compose", &e);
+                    return;
+                }
+            };
+            let rx = ssh::run_command(host.clone(), password.clone(), command, jump.clone());
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                host,
+                #[strong]
+                password,
+                #[strong]
+                jump,
+                #[weak]
+                list,
+                async move {
+                    match rx.recv().await {
+                        Ok(Ok(_)) => refresh_docker_category(
+                            &area, host, password, &list, jump, DockerCategory::Compose,
+                        ),
+                        Ok(Err(e)) => show_message_dialog(&area, "Compose", &e),
+                        Err(_) => show_message_dialog(
+                            &area,
+                            "Compose",
+                            "SSH-anslutningen avbröts oväntat",
+                        ),
+                    }
+                }
+            ));
+        }
+    };
+
+    let files = project.config_files.clone();
+
+    let logs = gtk::Button::from_icon_name("text-x-generic-symbolic");
+    logs.set_tooltip_text(Some("Visa loggar"));
+    logs.set_valign(gtk::Align::Center);
+    logs.add_css_class("flat");
+    logs.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        host,
+        #[strong]
+        password,
+        #[strong]
+        jump,
+        #[strong]
+        files,
+        #[strong(rename_to = name)]
+        project.name,
+        move |_| {
+            let Ok(command) = docker::compose_logs_command(&files, 200) else {
+                show_message_dialog(&area, "Compose", "projektet saknar compose-filer");
+                return;
+            };
+            show_command_output(&area, &host, &password, &jump, &format!("Compose: {name}"), command);
+        }
+    ));
+    row.add_suffix(&logs);
+
+    // `up` och `restart` är återställande och bekräftas inte. `down`
+    // river containrarna och gör det.
+    if project.is_running() {
+        let restart = gtk::Button::from_icon_name("view-refresh-symbolic");
+        restart.set_tooltip_text(Some("Starta om projektet"));
+        restart.set_valign(gtk::Align::Center);
+        restart.add_css_class("flat");
+        restart.connect_clicked({
+            let run_then_reload = run_then_reload.clone();
+            let files = files.clone();
+            move |_| run_then_reload(docker::compose_restart_command(&files))
+        });
+        row.add_suffix(&restart);
+
+        let down = gtk::Button::from_icon_name("media-playback-stop-symbolic");
+        down.set_tooltip_text(Some("Stoppa projektet (down)"));
+        down.set_valign(gtk::Align::Center);
+        down.add_css_class("flat");
+        down.connect_clicked(clone!(
+            #[strong]
+            area,
+            #[strong]
+            run_then_reload,
+            #[strong]
+            files,
+            #[strong(rename_to = name)]
+            project.name,
+            move |_| {
+                let dialog = adw::AlertDialog::new(
+                    Some("Stoppa projektet"),
+                    Some(&format!(
+                        "Kör `docker compose down` för {name}? Containrarna rivs — \
+                         namngivna volymer rörs inte."
+                    )),
+                );
+                dialog.add_response("cancel", "Avbryt");
+                dialog.add_response("down", "Stoppa");
+                dialog.set_response_appearance("down", adw::ResponseAppearance::Destructive);
+                dialog.set_default_response(Some("cancel"));
+                dialog.connect_response(
+                    None,
+                    clone!(
+                        #[strong]
+                        run_then_reload,
+                        #[strong]
+                        files,
+                        move |_, response| {
+                            if response == "down" {
+                                run_then_reload(docker::compose_down_command(&files));
+                            }
+                        }
+                    ),
+                );
+                dialog.present(Some(&area.overlay));
+            }
+        ));
+        row.add_suffix(&down);
+    } else {
+        let up = gtk::Button::from_icon_name("media-playback-start-symbolic");
+        up.set_tooltip_text(Some("Starta projektet (up -d)"));
+        up.set_valign(gtk::Align::Center);
+        up.add_css_class("flat");
+        up.connect_clicked({
+            let run_then_reload = run_then_reload.clone();
+            let files = files.clone();
+            move |_| run_then_reload(docker::compose_up_command(&files))
+        });
+        row.add_suffix(&up);
+    }
+
+    row
+}
+
+/// Rådata → (rubrik, underrubrik, referens att ta bort med).
+///
+/// GTK-fri och därför testbar: hela skillnaden mellan de tre kategorierna
+/// bor här, inte i widgetkoden. `None` som tredje fält betyder "erbjud
+/// ingen borttagning" — Dockers egna nätverk går inte att ta bort.
+fn docker_category_rows(
+    output: &str,
+    category: DockerCategory,
+) -> Vec<(String, String, Option<String>)> {
+    match category {
+        DockerCategory::Images => docker::parse_images(output)
+            .into_iter()
+            .map(|i| {
+                let title = if i.is_dangling() {
+                    format!("<none> ({})", i.id)
+                } else {
+                    format!("{}:{}", i.repository, i.tag)
+                };
+                let subtitle = if i.is_dangling() {
+                    format!("{} · dinglande, inget pekar på den", i.size)
+                } else {
+                    format!("{} · {}", i.size, i.id)
+                };
+                (title, subtitle, Some(i.reference()))
+            })
+            .collect(),
+        DockerCategory::Volumes => docker::parse_volumes(output)
+            .into_iter()
+            .map(|v| (v.name.clone(), format!("drivrutin: {}", v.driver), Some(v.name)))
+            .collect(),
+        DockerCategory::Networks => docker::parse_networks(output)
+            .into_iter()
+            .map(|n| {
+                let subtitle = format!("{} · {}", n.driver, n.scope);
+                let removable = if n.is_builtin() { None } else { Some(n.name.clone()) };
+                (n.name, subtitle, removable)
+            })
+            .collect(),
+        // Compose ritas av `build_compose_row`, men den här funktionen
+        // avgör fortfarande om listan är TOM — och den frågan måste
+        // besvaras för alla kategorier, annars visas "Inga Compose-projekt"
+        // ovanför projekt som finns.
+        DockerCategory::Compose => docker::parse_compose_projects(output)
+            .into_iter()
+            .map(|p| (p.name, p.status, None))
+            .collect(),
+    }
+}
+
+fn docker_category_list() -> gtk::ListBox {
+    gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(12)
+        .margin_bottom(12)
+        .build()
+}
+
+fn docker_category_scroller(list: &gtk::ListBox) -> gtk::ScrolledWindow {
+    gtk::ScrolledWindow::builder().child(list).vexpand(true).build()
 }
 
 /// Öppnar en "Systemöversikt"-flik för `host`: EN kombinerad SSH-round-trip
@@ -6036,6 +6851,30 @@ fn show_docker_logs(
     let Ok(cmd) = docker::logs_command(&container.id, 200) else {
         return;
     };
+    show_command_output(
+        area,
+        host,
+        password,
+        jump,
+        &format!("Loggar: {}", container.name),
+        cmd,
+    );
+}
+
+/// Kör ett kommando på värden och visar utdatan i ett skrollbart fönster.
+///
+/// Bröts ut ur `show_docker_logs` när Compose behövde exakt samma sak för
+/// `docker compose logs`. Två kopior av "kör, vänta, skriv i en buffert"
+/// hade drivit isär vid första ändringen av felhanteringen — och felen är
+/// just det som skiljer en användbar loggvy från en tom ruta.
+fn show_command_output(
+    area: &Rc<SessionArea>,
+    host: &host::Host,
+    password: &Option<String>,
+    jump: &Option<host::Host>,
+    title: &str,
+    command: String,
+) {
     let text_view = gtk::TextView::builder()
         .editable(false)
         .monospace(true)
@@ -6044,15 +6883,10 @@ fn show_docker_logs(
         .child(&text_view)
         .vexpand(true)
         .build();
-    let win = dialog_window(
-        &session_window(area),
-        &format!("Loggar: {}", container.name),
-        DialogSize::Viewer,
-        &scrolled,
-    );
+    let win = dialog_window(&session_window(area), title, DialogSize::Viewer, &scrolled);
     win.present();
 
-    let rx = ssh::run_command(host.clone(), password.clone(), cmd, jump.clone());
+    let rx = ssh::run_command(host.clone(), password.clone(), command, jump.clone());
     glib::spawn_future_local(clone!(
         #[weak]
         text_view,
@@ -6616,6 +7450,8 @@ fn open_sftp_view(
     up_button.set_tooltip_text(Some("Upp en nivå"));
     let mkdir_button = gtk::Button::from_icon_name("folder-new-symbolic");
     mkdir_button.set_tooltip_text(Some("Ny mapp"));
+    let symlink_button = gtk::Button::from_icon_name("emblem-symbolic-link");
+    symlink_button.set_tooltip_text(Some("Ny symbolisk länk"));
     let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
 
     let toolbar = gtk::Box::builder()
@@ -6629,6 +7465,7 @@ fn open_sftp_view(
     toolbar.append(&path_label);
     toolbar.append(&compress_selected_button);
     toolbar.append(&mkdir_button);
+    toolbar.append(&symlink_button);
     toolbar.append(&refresh_button);
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -6733,6 +7570,26 @@ fn open_sftp_view(
         #[weak]
         path_label,
         move |_| prompt_new_folder_name(
+            &area,
+            ctx.clone(),
+            current_path.clone(),
+            &list,
+            &path_label
+        )
+    ));
+
+    symlink_button.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        ctx,
+        #[strong]
+        current_path,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        move |_| prompt_new_symlink(
             &area,
             ctx.clone(),
             current_path.clone(),
@@ -6865,13 +7722,7 @@ fn refresh_sftp_list(
     ));
 }
 
-fn joined_path(base: &str, name: &str) -> String {
-    if base == "." {
-        name.to_string()
-    } else {
-        format!("{base}/{name}")
-    }
-}
+use crate::sftp::joined_path;
 
 
 fn build_sftp_entry_row(
@@ -6883,10 +7734,15 @@ fn build_sftp_entry_row(
     list: &gtk::ListBox,
     path_label: &gtk::Label,
 ) -> adw::ActionRow {
-    let subtitle = if entry.is_dir {
-        "Mapp".to_string()
-    } else {
-        format!("{} bytes", entry.size)
+    // En symbolisk länk beskrivs av vad den PEKAR PÅ, inte av sin egen
+    // storlek — en länk är några tiotal byte oavsett vad som ligger i
+    // andra änden, så "41 bytes" hade varit sant och samtidigt
+    // vilseledande. Pilen är samma konvention som `ls -l`.
+    let subtitle = match (&entry.link_target, entry.is_dir) {
+        (Some(target), true) => format!("→ {target} (mapp)"),
+        (Some(target), false) => format!("→ {target}"),
+        (None, true) => "Mapp".to_string(),
+        (None, false) => format!("{} bytes", entry.size),
     };
     let row = adw::ActionRow::builder()
         .title(&entry.name)
@@ -6910,10 +7766,12 @@ fn build_sftp_entry_row(
     ));
     row.add_prefix(&select_check);
 
-    let icon = gtk::Image::from_icon_name(if entry.is_dir {
-        "folder-symbolic"
-    } else {
-        "text-x-generic-symbolic"
+    let icon = gtk::Image::from_icon_name(match (&entry.link_target, entry.is_dir) {
+        // Egen ikon för länkar, så att de går att skilja från det de
+        // pekar på utan att läsa underrubriken.
+        (Some(_), _) => "emblem-symbolic-link",
+        (None, true) => "folder-symbolic",
+        (None, false) => "text-x-generic-symbolic",
     });
     row.add_prefix(&icon);
 
@@ -7213,6 +8071,100 @@ fn prompt_new_folder_name(
                 path_label,
                 async move {
                     if let Err(e) = ctx.handle.mkdir(full_path).await {
+                        list.append(&error_row(&e));
+                        return;
+                    }
+                    let path = current_path.borrow().clone();
+                    refresh_sftp_list(&area, ctx.clone(), current_path, path, &list, &path_label);
+                }
+            ));
+        }
+    ));
+
+    win.present();
+}
+
+/// Skapar en symbolisk länk i den katalog vyn står i.
+///
+/// Två fält, och ordningen är medveten: namnet på länken först, målet
+/// sedan — samma ordning som `ln -s` skriver ut den och som raden sedan
+/// visas i vyn ("namn → mål"). Att SFTP-protokollet internt skickar dem
+/// tvärtom mot OpenSSH är en detalj som stannar i `sftp::symlink`.
+fn prompt_new_symlink(
+    area: &Rc<SessionArea>,
+    ctx: SftpContext,
+    current_path: Rc<RefCell<String>>,
+    list: &gtk::ListBox,
+    path_label: &gtk::Label,
+) {
+    let name_row = adw::EntryRow::builder().title("Länkens namn").build();
+    let target_row = adw::EntryRow::builder().title("Pekar på (sökväg)").build();
+    let group = adw::PreferencesGroup::builder()
+        // Relativa mål är det vanliga och det som överlever att katalogen
+        // flyttas — värt att säga, eftersom fältet annars inbjuder till
+        // att klistra in en absolut sökväg.
+        .description("Målet får vara relativt katalogen du står i, eller absolut. Det behöver inte finnas än.")
+        .build();
+    group.add(&name_row);
+    group.add(&target_row);
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+
+    let create_button = gtk::Button::with_label("Skapa");
+    create_button.add_css_class("suggested-action");
+    let cancel_button = gtk::Button::with_label("Avbryt");
+    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    header.pack_start(&cancel_button);
+    header.pack_end(&create_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&page);
+
+    let win = dialog_window(&session_window(area), "Ny symbolisk länk", DialogSize::Form, &content);
+
+    cancel_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        move |_| win.close()
+    ));
+    create_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        #[strong]
+        area,
+        #[strong]
+        ctx,
+        #[strong]
+        current_path,
+        #[weak]
+        list,
+        #[weak]
+        path_label,
+        move |_| {
+            let name = name_row.text().trim().to_string();
+            let target = target_row.text().trim().to_string();
+            // Båda krävs. Ett tomt mål hade gett en länk som pekar på
+            // ingenting alls, vilket är något annat än en trasig länk.
+            if name.is_empty() || target.is_empty() {
+                return;
+            }
+            win.close();
+            let base = current_path.borrow().clone();
+            let link_path = joined_path(&base, &name);
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                ctx,
+                #[strong]
+                current_path,
+                #[weak]
+                list,
+                #[weak]
+                path_label,
+                async move {
+                    if let Err(e) = ctx.handle.symlink(link_path, target).await {
                         list.append(&error_row(&e));
                         return;
                     }
@@ -7631,4 +8583,82 @@ fn open_sftp_file_editor(area: &Rc<SessionArea>, handle: sftp::SftpHandle, path:
             }
         }
     ));
+}
+
+#[cfg(test)]
+mod docker_category_tests {
+    use super::*;
+
+    /// Hela skillnaden mellan de tre kategorierna bor i den här
+    /// funktionen, så det är den som är värd att testa — widgetkoden
+    /// däromkring gör bara samma sak med olika strängar.
+    #[test]
+    fn images_show_size_and_id_and_can_be_removed_by_reference() {
+        let rows = docker_category_rows("sha1|nginx|1.27|54MB", DockerCategory::Images);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "nginx:1.27");
+        assert_eq!(rows[0].1, "54MB · sha1");
+        assert_eq!(rows[0].2.as_deref(), Some("nginx:1.27"));
+    }
+
+    /// En dinglande image har inget namn att visa eller referera med.
+    /// Raden ska säga VARFÖR den ser konstig ut, inte bara visa `<none>`.
+    #[test]
+    fn dangling_images_are_labelled_and_removed_by_id() {
+        let rows = docker_category_rows("sha9|<none>|<none>|142MB", DockerCategory::Images);
+        assert_eq!(rows[0].0, "<none> (sha9)");
+        assert!(rows[0].1.contains("dinglande"), "skälet ska stå i raden: {}", rows[0].1);
+        assert_eq!(rows[0].2.as_deref(), Some("sha9"), "utan namn är id:t enda referensen");
+    }
+
+    /// Dockers egna nätverk går inte att ta bort. `None` betyder att
+    /// raden inte ens erbjuder knappen — bättre än en knapp som alltid
+    /// ger ett felmeddelande.
+    #[test]
+    fn builtin_networks_offer_no_removal_but_custom_ones_do() {
+        let rows = docker_category_rows(
+            "n1|bridge|bridge|local\nn2|mitt-nat|bridge|local",
+            DockerCategory::Networks,
+        );
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "bridge");
+        assert!(rows[0].2.is_none(), "bridge ska inte gå att ta bort");
+        assert_eq!(rows[1].2.as_deref(), Some("mitt-nat"));
+    }
+
+    #[test]
+    fn volumes_are_removed_by_name_and_show_their_driver() {
+        let rows = docker_category_rows("data|local", DockerCategory::Volumes);
+        assert_eq!(rows[0].0, "data");
+        assert_eq!(rows[0].1, "drivrutin: local");
+        assert_eq!(rows[0].2.as_deref(), Some("data"));
+    }
+
+    /// Tom utdata ska ge noll rader, inte en tom post. Vyn skiljer sedan
+    /// "inget finns" från "det gick fel" på just den skillnaden.
+    /// Compose ritas av `build_compose_row`, men `docker_category_rows`
+    /// avgör fortfarande om listan är tom. Missas den frågan visas
+    /// "Inga Compose-projekt" ovanför projekt som faktiskt finns.
+    #[test]
+    fn compose_rows_are_counted_so_the_empty_state_is_not_shown_over_real_projects() {
+        let out = r#"[{"Name":"webb","Status":"running(3)","ConfigFiles":"/srv/c.yml"}]"#;
+        let rows = docker_category_rows(out, DockerCategory::Compose);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "webb");
+        assert_eq!(rows[0].1, "running(3)");
+        assert!(rows[0].2.is_none(), "ett projekt tas inte bort — det stoppas");
+    }
+
+    #[test]
+    fn empty_output_yields_no_rows_for_any_category() {
+        for category in [
+            DockerCategory::Images,
+            DockerCategory::Volumes,
+            DockerCategory::Networks,
+            DockerCategory::Compose,
+        ] {
+            assert!(docker_category_rows("", category).is_empty(), "{category:?}");
+            assert!(docker_category_rows("\n\n", category).is_empty(), "{category:?}");
+        }
+    }
 }
