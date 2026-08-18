@@ -11,7 +11,7 @@ mod bookmarks;
 // Integrationerna kommer från det fristående paketet `integrations/`.
 // Anropsställena skriver fortfarande `docker::…`, `kubernetes::…` och
 // `proxmox::…` — bara varifrån de kommer har ändrats.
-use bastion_integrations::{docker, kubernetes, proxmox, truenas};
+use bastion_integrations::{docker, kubernetes, proxmox, truenas, unraid};
 mod command_library;
 mod dashboard;
 mod external_binary_fetcher;
@@ -1130,6 +1130,34 @@ fn refresh_list(
                 }
             }
         ));
+        let unraid_action = gtk::gio::SimpleAction::new("unraid", None);
+        unraid_action.connect_activate(clone!(
+            #[strong]
+            store,
+            #[strong]
+            area,
+            #[strong(rename_to = host_id)]
+            h.id,
+            move |_, _| {
+                let host = store
+                    .borrow()
+                    .all()
+                    .iter()
+                    .find(|x| x.id == host_id)
+                    .map(|h| (*h).clone());
+                if let Some(host) = host {
+                    with_resolved_jump(&area, &store, host, clone!(
+                        #[strong]
+                        area,
+                        move |host, jump| {
+                            require_password(&area, host, move |area, host, password| {
+                                open_unraid_view(area, host, password, jump.clone())
+                            });
+                        }
+                    ));
+                }
+            }
+        ));
         let commands_action = gtk::gio::SimpleAction::new("commands", None);
         commands_action.connect_activate(clone!(
             #[strong]
@@ -1273,6 +1301,7 @@ fn refresh_list(
         action_group.add_action(&kubernetes_action);
         action_group.add_action(&proxmox_action);
         action_group.add_action(&truenas_action);
+        action_group.add_action(&unraid_action);
         action_group.add_action(&commands_action);
         action_group.add_action(&sftp_action);
         action_group.add_action(&forward_action);
@@ -1786,6 +1815,7 @@ fn gio_menu_for(toggles: &settings::FeatureToggles, mac_address: &Option<String>
         menu.append(Some("Kubernetes"), Some("host.kubernetes"));
         menu.append(Some("Proxmox"), Some("host.proxmox"));
         menu.append(Some("TrueNAS"), Some("host.truenas"));
+        menu.append(Some("Unraid"), Some("host.unraid"));
     }
     if toggles.show_command_library {
         menu.append(Some("Kommandon"), Some("host.commands"));
@@ -6167,6 +6197,191 @@ fn open_truenas_view(
     });
 
     load_visible();
+}
+
+/// Unraid-vy: array, diskar och delade mappar via `mdcmd`.
+///
+/// Femte integrationen, och femte gången `refresh_integration_list`
+/// räckte oförändrat. Unraid är dessutom den enda som är ren LÄSNING —
+/// arrayen startas och stoppas inte härifrån. Att stoppa en array med
+/// öppna filer är ett driftbeslut som hör hemma i Unraids eget
+/// gränssnitt, där konsekvenserna står utskrivna.
+fn open_unraid_view(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    jump: Option<host::Host>,
+) {
+    let array_list = docker_category_list();
+    let disks_list = docker_category_list();
+    let shares_list = docker_category_list();
+
+    let stack = adw::ViewStack::new();
+    let category = adw::ViewSwitcher::builder()
+        .policy(adw::ViewSwitcherPolicy::Wide)
+        .build();
+    category.set_stack(Some(&stack));
+    stack.add_titled(&docker_category_scroller(&array_list), Some("array"), "Array");
+    stack.add_titled(&docker_category_scroller(&disks_list), Some("disks"), "Diskar");
+    stack.add_titled(&docker_category_scroller(&shares_list), Some("shares"), "Delningar");
+
+    let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
+    refresh_button.set_tooltip_text(Some("Uppdatera"));
+
+    let toolbar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .build();
+    toolbar.append(
+        &gtk::Label::builder()
+            .label(format!("Unraid: {}", host.alias))
+            .hexpand(true)
+            .halign(gtk::Align::Start)
+            .build(),
+    );
+    toolbar.append(&category);
+    toolbar.append(&refresh_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&toolbar);
+    content.append(&stack);
+
+    let page = area.tab_view.append(&content);
+    page.set_title(&format!("Unraid: {}", host.alias));
+    area.tab_view.set_selected_page(&page);
+    area.update_placeholder();
+
+    let load_visible = {
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let stack = stack.clone();
+        let array_list = array_list.clone();
+        let disks_list = disks_list.clone();
+        let shares_list = shares_list.clone();
+        move || {
+            let name = stack.visible_child_name().unwrap_or_else(|| "array".into());
+            let (list, category) = match name.as_str() {
+                "disks" => (&disks_list, UnraidCategory::Disks),
+                "shares" => (&shares_list, UnraidCategory::Shares),
+                _ => (&array_list, UnraidCategory::Array),
+            };
+            refresh_unraid_category(host.clone(), password.clone(), list, jump.clone(), category);
+        }
+    };
+
+    refresh_button.connect_clicked({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+    stack.connect_visible_child_name_notify({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+
+    load_visible();
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum UnraidCategory {
+    Array,
+    Disks,
+    Shares,
+}
+
+fn refresh_unraid_category(
+    host: host::Host,
+    password: Option<String>,
+    list: &gtk::ListBox,
+    jump: Option<host::Host>,
+    category: UnraidCategory,
+) {
+    let command = Ok(match category {
+        UnraidCategory::Shares => unraid::shares_command(),
+        // Array och diskar kommer ur SAMMA svar — `mdcmd status` ger båda,
+        // och två anrop hade varit två round-trips för samma data.
+        _ => unraid::status_command(),
+    });
+    let empty = (
+        match category {
+            UnraidCategory::Array => "Ingen array",
+            UnraidCategory::Disks => "Inga diskar",
+            UnraidCategory::Shares => "Inga delningar",
+        },
+        Some("Tomt svar — kontrollera att värden är en Unraid och att mdcmd finns"),
+    );
+
+    refresh_integration_list(
+        host,
+        password,
+        list,
+        jump,
+        command,
+        empty,
+        move |output: &str, list: &gtk::ListBox| match category {
+            UnraidCategory::Array => {
+                let Some(status) = unraid::parse_status(output) else {
+                    return;
+                };
+                let row = adw::ActionRow::builder()
+                    .title(if status.is_started() { "Arrayen är igång" } else { "Arrayen är stoppad" })
+                    .subtitle(match status.disk_count {
+                        Some(n) => format!("{} · {n} diskar", status.state),
+                        None => status.state.clone(),
+                    })
+                    .build();
+                list.append(&row);
+
+                // En avstängd disk betyder att arrayen kör PÅ PARITET:
+                // data finns kvar, men nästa diskfel är ett datafel.
+                if status.has_disabled_disks() {
+                    let n = status.disabled_count.unwrap_or(0);
+                    let warning = adw::ActionRow::builder()
+                        .title(format!("{n} disk(ar) avstängda"))
+                        .subtitle("Arrayen kör på paritet — nästa diskfel blir ett datafel")
+                        .build();
+                    warning.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
+                    list.append(&warning);
+                }
+
+                if let Some(resync) = &status.resync {
+                    let subtitle = match resync.fraction() {
+                        Some(f) => format!("{:.1} % klart", f * 100.0),
+                        None => "pågår".to_string(),
+                    };
+                    list.append(
+                        &adw::ActionRow::builder()
+                            .title("Paritetskontroll pågår")
+                            .subtitle(subtitle)
+                            .build(),
+                    );
+                }
+            }
+            UnraidCategory::Disks => {
+                for disk in unraid::parse_disks(output) {
+                    list.append(
+                        &adw::ActionRow::builder()
+                            .title(&disk.name)
+                            .subtitle(format!(
+                                "plats {} · {} · tillstånd {}",
+                                disk.slot,
+                                format_bytes(disk.size_bytes() as i64),
+                                disk.state
+                            ))
+                            .build(),
+                    );
+                }
+            }
+            UnraidCategory::Shares => {
+                for share in unraid::parse_shares(output) {
+                    list.append(&adw::ActionRow::builder().title(&share).build());
+                }
+            }
+        },
+    );
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

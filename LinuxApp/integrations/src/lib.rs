@@ -33,10 +33,15 @@
 //! - [`truenas`]: korta gemena ord (`cifs`, `nfs`), middlewares egna
 //!   tjänste-id:n
 //!
+//! [`unraid`] är undantaget som bekräftar regeln: den är ren LÄSNING och
+//! bygger inga kommandon med användarindata, så den behöver ingen
+//! valideringsregel alls.
+//!
 //! Att pressa in dem i en gemensam regel hade gjort den till den
-//! lösaste av de fyra, alltså sämst som injektionsskydd.
+//! lösaste av dem, alltså sämst som injektionsskydd.
 
 pub mod docker;
 pub mod kubernetes;
 pub mod proxmox;
 pub mod truenas;
+pub mod unraid;
