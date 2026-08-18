@@ -159,6 +159,7 @@ pub fn apply(terminal: &vte::Terminal, theme: &TerminalTheme) {
 
 /// Ren lokal preferens (INTE synkad, se modulkommentaren) — bara ett
 /// `{"id": "..."}`-objekt.
+#[derive(Clone)]
 pub struct TerminalThemeStore {
     path: std::path::PathBuf,
 }
@@ -185,11 +186,74 @@ impl TerminalThemeStore {
     }
 
     pub fn set_selected_id(&self, id: &str) -> std::io::Result<()> {
+        self.write_field("id", serde_json::Value::String(id.to_string()))
+    }
+
+    /// Terminalens typsnitt som en Pango-beskrivning (`"JetBrains Mono 11"`).
+    ///
+    /// `None` betyder systemets monospace, vilket är rätt förval: ett
+    /// påhittat typsnittsnamn som inte finns installerat ger en tyst
+    /// fallback till något annat, och då är det bättre att inte ha valt.
+    pub fn font(&self) -> Option<String> {
+        let data = std::fs::read_to_string(&self.path).ok()?;
+        let value: serde_json::Value = serde_json::from_str(&data).ok()?;
+        let font = value.get("font")?.as_str()?.trim();
+        if font.is_empty() { None } else { Some(font.to_string()) }
+    }
+
+    /// Tom sträng nollställer till systemets monospace.
+    pub fn set_font(&self, font: &str) -> std::io::Result<()> {
+        self.write_field("font", serde_json::Value::String(font.trim().to_string()))
+    }
+
+    /// Skriver EN nyckel och behåller resten av filen.
+    ///
+    /// Den gamla `set_selected_id` skrev `{"id": …}` rakt av. Så länge
+    /// filen bara hade en nyckel gick det bra; med två skulle ett
+    /// temabyte ha raderat typsnittet och tvärtom. Fällan är inte
+    /// hypotetisk — den hade uppstått vid första sparningen.
+    fn write_field(&self, key: &str, value: serde_json::Value) -> std::io::Result<()> {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&self.path, serde_json::json!({ "id": id }).to_string())
+        let mut root = std::fs::read_to_string(&self.path)
+            .ok()
+            .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok())
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default();
+        root.insert(key.to_string(), value);
+        std::fs::write(&self.path, serde_json::Value::Object(root).to_string())
     }
+}
+
+/// Typsnitt som är monospace OCH har programmeringsligaturer.
+///
+/// VISION listar "Ligatures (valfritt)" under Terminal. Att det står
+/// "valfritt" är väl valt: **VTE har inget ligatur-API** (kontrollerat i
+/// vte4 0.10 — ingen träff på `ligature` i hela crate:n), och renderingen
+/// är cellbaserad. Om `->` faktiskt slås ihop till en pil beror på
+/// systemets VTE och Pango, inte på något appen kan slå på.
+///
+/// Det appen KAN göra är att låta användaren välja ett typsnitt som har
+/// ligaturerna, och att peka ut vilka de är. Listan är därför förslag,
+/// inte ett löfte om rendering.
+pub const LIGATURE_FONTS: &[&str] = &[
+    "Cascadia Code",
+    "FiraCode Nerd Font",
+    "Fira Code",
+    "Hasklig",
+    "Iosevka",
+    "JetBrains Mono",
+    "Monoid",
+    "Victor Mono",
+];
+
+/// Filtrerar [`LIGATURE_FONTS`] till dem som faktiskt är installerade.
+///
+/// `installed` skickas in i stället för att anropa fontconfig direkt, så
+/// att urvalet går att testa utan att bero på vad testmaskinen har.
+pub fn available_ligature_fonts(installed: impl Fn(&str) -> bool) -> Vec<&'static str> {
+    LIGATURE_FONTS.iter().copied().filter(|f| installed(f)).collect()
 }
 
 #[cfg(test)]
@@ -208,6 +272,63 @@ mod tests {
         let mut sorted_names = names.clone();
         sorted_names.sort();
         assert_eq!(names, sorted_names);
+    }
+
+    /// Fällan som fanns inbyggd i den gamla `set_selected_id`: den skrev
+    /// hela filen som `{"id": …}`. Med två nycklar hade ett temabyte
+    /// raderat typsnittet och tvärtom — vid FÖRSTA sparningen, inte i
+    /// något kantfall.
+    #[test]
+    fn theme_and_font_do_not_overwrite_each_other() {
+        let dir = std::env::temp_dir().join(format!("bastion-theme-{}", uuid::Uuid::new_v4()));
+        let store = TerminalThemeStore::open(dir.join("theme.json"));
+
+        store.set_selected_id("nord").unwrap();
+        store.set_font("JetBrains Mono 11").unwrap();
+        assert_eq!(store.selected_id().as_deref(), Some("nord"), "typsnittet raderade temat");
+        assert_eq!(store.font().as_deref(), Some("JetBrains Mono 11"));
+
+        // Och åt andra hållet.
+        store.set_selected_id("dracula").unwrap();
+        assert_eq!(store.font().as_deref(), Some("JetBrains Mono 11"), "temat raderade typsnittet");
+        assert_eq!(store.selected_id().as_deref(), Some("dracula"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Tomt typsnitt betyder systemets monospace, inte ett typsnitt som
+    /// heter tomma strängen.
+    #[test]
+    fn an_empty_font_reads_back_as_none() {
+        let dir = std::env::temp_dir().join(format!("bastion-font-{}", uuid::Uuid::new_v4()));
+        let store = TerminalThemeStore::open(dir.join("theme.json"));
+
+        assert_eq!(store.font(), None, "utan fil finns inget val");
+        store.set_font("Fira Code 12").unwrap();
+        assert_eq!(store.font().as_deref(), Some("Fira Code 12"));
+        store.set_font("   ").unwrap();
+        assert_eq!(store.font(), None, "blanktecken nollställer");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Listan är förslag, inte ett löfte: bara det som faktiskt är
+    /// installerat ska erbjudas.
+    #[test]
+    fn only_installed_ligature_fonts_are_offered() {
+        assert!(available_ligature_fonts(|_| false).is_empty());
+        assert_eq!(available_ligature_fonts(|_| true).len(), LIGATURE_FONTS.len());
+
+        let only_jetbrains = available_ligature_fonts(|f| f == "JetBrains Mono");
+        assert_eq!(only_jetbrains, vec!["JetBrains Mono"]);
+    }
+
+    #[test]
+    fn every_ligature_font_name_is_usable_as_a_pango_description() {
+        for name in LIGATURE_FONTS {
+            assert!(!name.is_empty());
+            assert!(!name.contains(','), "{name}: komma skulle bryta Pango-beskrivningen");
+        }
     }
 
     #[test]

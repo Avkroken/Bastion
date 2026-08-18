@@ -2591,8 +2591,51 @@ fn show_settings_dialog(
     if let Some(pos) = themes.iter().position(|t| t.id == current_theme.id) {
         theme_row.set_selected(pos as u32);
     }
-    let terminal_group = adw::PreferencesGroup::builder().title("Terminal").build();
+    // Typsnittet skrivs som en Pango-beskrivning: namn plus storlek,
+    // t.ex. "JetBrains Mono 11". Tomt betyder systemets monospace.
+    let font_row = adw::EntryRow::builder().title("Terminaltypsnitt").build();
+    if let Some(font) = theme_store.font() {
+        font_row.set_text(&font);
+    }
+
+    // Installerade ligaturtypsnitt blir klickbara förslag. VTE har inget
+    // ligatur-API, så appen kan inte LOVA att `->` blir en pil — den kan
+    // bara se till att man har ett typsnitt som bär ligaturerna, och
+    // säga som det är om resten.
+    let installed = |name: &str| {
+        std::process::Command::new("fc-list")
+            .args(["-q", name])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+    let ligature_fonts = terminal_theme::available_ligature_fonts(installed);
+
+    let terminal_group = adw::PreferencesGroup::builder()
+        .title("Terminal")
+        .description(if ligature_fonts.is_empty() {
+            "Ligaturer kräver ett typsnitt som har dem (t.ex. JetBrains Mono eller Fira Code).              Inget sådant hittades installerat. Om de faktiskt ritas ihop avgörs dessutom av              systemets VTE — appen kan inte slå på det."
+        } else {
+            "Ligaturer kräver ett typsnitt som har dem. Installerade sådana finns som förslag              nedan. Om de faktiskt ritas ihop avgörs av systemets VTE — appen kan inte slå på det."
+        })
+        .build();
     terminal_group.add(&theme_row);
+    terminal_group.add(&font_row);
+    for name in &ligature_fonts {
+        let row = adw::ActionRow::builder()
+            .title(*name)
+            .subtitle("Installerat — klicka för att använda")
+            .activatable(true)
+            .build();
+        row.connect_activated(clone!(
+            #[weak]
+            font_row,
+            #[strong(rename_to = font)]
+            name.to_string(),
+            move |_| font_row.set_text(&format!("{font} 11"))
+        ));
+        terminal_group.add(&row);
+    }
 
     let sync_folder_row = adw::ActionRow::builder()
         .title("Synkmapp")
@@ -2861,6 +2904,37 @@ fn show_settings_dialog(
                 eprintln!("kunde inte spara inställningarna: {e}");
             }
             refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store, &search_query);
+        }
+    ));
+
+    // Typsnittet sparas när fältet lämnas, inte vid varje tangenttryck:
+    // "JetBrains Mo" är inget typsnitt, och att tillämpa halvskrivna namn
+    // hade blinkat fram systemets fallback för varje bokstav.
+    font_row.connect_apply(clone!(
+        #[strong]
+        area,
+        #[strong]
+        theme_store,
+        move |row| {
+            let font = row.text().to_string();
+            if let Err(e) = theme_store.set_font(&font) {
+                eprintln!("kunde inte spara terminaltypsnittet: {e}");
+                return;
+            }
+            // Samma resonemang som för temat: bara redan öppna flikar
+            // behöver uppdateras, nya läser valet vid skapandet.
+            let desc = if font.trim().is_empty() {
+                None
+            } else {
+                Some(gtk::pango::FontDescription::from_string(font.trim()))
+            };
+            let pages = area.tab_view.pages();
+            for i in 0..pages.n_items() {
+                let Some(page) = pages.item(i).and_downcast::<adw::TabPage>() else { continue };
+                for terminal in split::terminals_in(&page.child()) {
+                    terminal.set_font(desc.as_ref());
+                }
+            }
         }
     ));
 
@@ -3328,6 +3402,12 @@ fn new_themed_terminal() -> vte::Terminal {
         .build();
     let store = terminal_theme::TerminalThemeStore::open(terminal_theme::TerminalThemeStore::default_path());
     terminal_theme::apply(&terminal, terminal_theme::theme(store.selected_id().as_deref()));
+    // Inget valt typsnitt betyder systemets monospace, inte ett påhittat
+    // namn: ett typsnitt som inte finns installerat ger en tyst fallback,
+    // och då är det bättre att aldrig ha satt något.
+    if let Some(font) = store.font() {
+        terminal.set_font(Some(&gtk::pango::FontDescription::from_string(&font)));
+    }
     terminal
 }
 
