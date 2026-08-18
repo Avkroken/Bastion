@@ -5461,71 +5461,48 @@ fn refresh_kubernetes_category(
         KubernetesCategory::Deployments => kubernetes::deployments_command(&namespace),
         KubernetesCategory::Nodes => Ok(kubernetes::nodes_command()),
     };
-    let command = match command {
-        Ok(command) => command,
-        Err(e) => {
-            while let Some(row) = list.row_at_index(0) {
-                list.remove(&row);
-            }
-            list.append(&error_row(&e));
-            return;
-        }
-    };
+    let empty = (
+        match category {
+            KubernetesCategory::Pods => "Inga poddar",
+            KubernetesCategory::Deployments => "Inga deployments",
+            KubernetesCategory::Nodes => "Inga noder",
+        },
+        // `kubectl` som saknas ger tom utdata här, eftersom felet gått
+        // till /dev/null — därför nämns det i stället för att lämna
+        // användaren att gissa.
+        Some("Tomt svar — kontrollera att kubectl finns på värden och når ett kluster"),
+    );
 
-    let rx = ssh::run_command(host.clone(), password.clone(), command, jump.clone());
-    glib::spawn_future_local(clone!(
-        #[weak]
+    refresh_integration_list(
+        host.clone(),
+        password.clone(),
         list,
-        #[strong]
-        area,
-        #[strong]
-        host,
-        #[strong]
-        password,
-        #[strong]
-        jump,
-        #[strong]
-        namespace,
-        async move {
-            while let Some(row) = list.row_at_index(0) {
-                list.remove(&row);
-            }
-            let output = match rx.recv().await {
-                Ok(Ok(output)) => output,
-                Ok(Err(e)) => {
-                    list.append(&error_row(&e));
-                    return;
+        jump.clone(),
+        command,
+        empty,
+        clone!(
+            #[strong]
+            area,
+            #[strong]
+            host,
+            #[strong]
+            password,
+            #[strong]
+            jump,
+            #[strong]
+            namespace,
+            move |output: &str, list: &gtk::ListBox| {
+                for (title, subtitle, target) in
+                    kubernetes_category_rows(output, category, &namespace)
+                {
+                    list.append(&build_kubernetes_row(
+                        &area, &host, &password, list, &jump, category, &namespace, title,
+                        subtitle, target,
+                    ));
                 }
-                Err(_) => {
-                    list.append(&error_row("SSH-anslutningen avbröts oväntat"));
-                    return;
-                }
-            };
-
-            let rows = kubernetes_category_rows(&output, category, &namespace);
-            if rows.is_empty() {
-                // Tom lista och trasigt kommando ser annars likadana ut.
-                // `kubectl` som saknas ger tom utdata här, eftersom
-                // felet gått till /dev/null — därför nämns det.
-                list.append(
-                    &adw::ActionRow::builder()
-                        .title(match category {
-                            KubernetesCategory::Pods => "Inga poddar",
-                            KubernetesCategory::Deployments => "Inga deployments",
-                            KubernetesCategory::Nodes => "Inga noder",
-                        })
-                        .subtitle("Tomt svar — kontrollera att kubectl finns på värden och når ett kluster")
-                        .build(),
-                );
-                return;
             }
-            for (title, subtitle, target) in rows {
-                list.append(&build_kubernetes_row(
-                    &area, &host, &password, &list, &jump, category, &namespace, title, subtitle, target,
-                ));
-            }
-        }
-    ));
+        ),
+    );
 }
 
 /// En rad i podd-, deployment- eller nodlistan.
@@ -5921,36 +5898,59 @@ enum DockerCategory {
 /// som skiljer är kommandot, parsningen och vad raden heter — och tre
 /// kopior av samma hämta-rensa-rita-slinga hade drivit isär vid första
 /// felhanteringsändringen.
-fn refresh_docker_category(
-    area: &Rc<SessionArea>,
+/// Hämtar ett kommandos utdata över SSH och ritar om en lista med det.
+///
+/// # Vad som visade sig gemensamt, och vad som inte gjorde det
+///
+/// Extraherad ur `refresh_docker_category` och
+/// `refresh_kubernetes_category` EFTER att båda fanns, inte gissad i
+/// förväg. Skelettet var identiskt rad för rad: rensa listan, tre utfall
+/// från kanalen, tom utdata som eget fall, annars rita rader.
+///
+/// Radbyggarna var det INTE — 126 mot 187 rader, olika knappar, olika
+/// bekräftelsetexter, olika begrepp (ta bort en volym mot ersätta en
+/// podd). Att pressa ihop dem hade gett en funktion med ett dussin
+/// flaggor och sämre felmeddelanden. Därför tar den här funktionen en
+/// stängning som får rita raderna själv.
+///
+/// `command` kommer in FÄRDIGBYGGT, inklusive eventuellt valideringsfel:
+/// varje integration har sin egen namnregel (Dockers tillåter versaler
+/// och punkter, Kubernetes RFC 1123-etiketter) och den kunskapen hör
+/// hemma i respektive modul, inte här.
+///
+/// `empty` är rubrik plus valfri förklaring för tomt svar. Att skilja
+/// "inget finns" från "det gick fel" är hela poängen — en tom lista och
+/// en trasig ser annars likadana ut.
+fn refresh_integration_list(
     host: host::Host,
     password: Option<String>,
     list: &gtk::ListBox,
     jump: Option<host::Host>,
-    category: DockerCategory,
+    command: Result<String, String>,
+    empty: (&'static str, Option<&'static str>),
+    build_rows: impl Fn(&str, &gtk::ListBox) + 'static,
 ) {
-    let command = match category {
-        DockerCategory::Images => docker::images_command(),
-        DockerCategory::Volumes => docker::volumes_command(),
-        DockerCategory::Networks => docker::networks_command(),
-        DockerCategory::Compose => docker::compose_ls_command(),
+    let clear = |list: &gtk::ListBox| {
+        while let Some(row) = list.row_at_index(0) {
+            list.remove(&row);
+        }
     };
-    let rx = ssh::run_command(host.clone(), password.clone(), command, jump.clone());
+
+    let command = match command {
+        Ok(command) => command,
+        Err(e) => {
+            clear(list);
+            list.append(&error_row(&e));
+            return;
+        }
+    };
+
+    let rx = ssh::run_command(host, password, command, jump);
     glib::spawn_future_local(clone!(
         #[weak]
         list,
-        #[strong]
-        area,
-        #[strong]
-        host,
-        #[strong]
-        password,
-        #[strong]
-        jump,
         async move {
-            while let Some(row) = list.row_at_index(0) {
-                list.remove(&row);
-            }
+            clear(&list);
             let output = match rx.recv().await {
                 Ok(Ok(output)) => output,
                 Ok(Err(e)) => {
@@ -5963,37 +5963,78 @@ fn refresh_docker_category(
                 }
             };
 
-            let rows = docker_category_rows(&output, category);
-            if rows.is_empty() {
-                // Skilj "inget finns" från "det gick fel". Utan den här
-                // raden ser en tom lista likadan ut som en trasig.
-                list.append(
-                    &adw::ActionRow::builder()
-                        .title(match category {
-                            DockerCategory::Images => "Inga images",
-                            DockerCategory::Volumes => "Inga volymer",
-                            DockerCategory::Networks => "Inga nätverk",
-                            DockerCategory::Compose => "Inga Compose-projekt",
-                        })
-                        .build(),
-                );
-                return;
-            }
-            if category == DockerCategory::Compose {
-                for project in docker::parse_compose_projects(&output) {
-                    list.append(&build_compose_row(
-                        &area, &host, &password, &list, &jump, project,
-                    ));
-                }
-                return;
-            }
-            for (title, subtitle, removable) in rows {
-                list.append(&build_docker_resource_row(
-                    &area, &host, &password, &list, &jump, category, title, subtitle, removable,
-                ));
+            let before = list.row_at_index(0).is_some();
+            build_rows(&output, &list);
+            if !before && list.row_at_index(0).is_none() {
+                let (title, subtitle) = empty;
+                let row = adw::ActionRow::builder().title(title);
+                let row = match subtitle {
+                    Some(subtitle) => row.subtitle(subtitle),
+                    None => row,
+                };
+                list.append(&row.build());
             }
         }
     ));
+}
+
+fn refresh_docker_category(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    list: &gtk::ListBox,
+    jump: Option<host::Host>,
+    category: DockerCategory,
+) {
+    let command = Ok(match category {
+        DockerCategory::Images => docker::images_command(),
+        DockerCategory::Volumes => docker::volumes_command(),
+        DockerCategory::Networks => docker::networks_command(),
+        DockerCategory::Compose => docker::compose_ls_command(),
+    });
+    let empty = (
+        match category {
+            DockerCategory::Images => "Inga images",
+            DockerCategory::Volumes => "Inga volymer",
+            DockerCategory::Networks => "Inga nätverk",
+            DockerCategory::Compose => "Inga Compose-projekt",
+        },
+        None,
+    );
+
+    refresh_integration_list(
+        host.clone(),
+        password.clone(),
+        list,
+        jump.clone(),
+        command,
+        empty,
+        clone!(
+            #[strong]
+            area,
+            #[strong]
+            host,
+            #[strong]
+            password,
+            #[strong]
+            jump,
+            move |output: &str, list: &gtk::ListBox| {
+                // Compose har egen radbyggare: ett projekt startas och
+                // stoppas som helhet och har inget "ta bort".
+                if category == DockerCategory::Compose {
+                    for project in docker::parse_compose_projects(output) {
+                        list.append(&build_compose_row(&area, &host, &password, list, &jump, project));
+                    }
+                    return;
+                }
+                for (title, subtitle, removable) in docker_category_rows(output, category) {
+                    list.append(&build_docker_resource_row(
+                        &area, &host, &password, list, &jump, category, title, subtitle, removable,
+                    ));
+                }
+            }
+        ),
+    );
 }
 
 /// En rad i images/volymer/nätverk-listan.
