@@ -5281,6 +5281,17 @@ fn open_docker_view(
 
     let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
     refresh_button.set_tooltip_text(Some("Uppdatera"));
+
+    // VISION räknar upp Containers/Images/Volumes/Networks som en och
+    // samma Docker-yta. En växlare i stället för fyra flikar: det är fyra
+    // vyer av EN värd, och att öppna fyra flikar per server hade gjort
+    // flikraden oläslig så fort man tittar på mer än en maskin.
+    let category = adw::ViewSwitcher::builder()
+        .policy(adw::ViewSwitcherPolicy::Wide)
+        .build();
+    let stack = adw::ViewStack::new();
+    category.set_stack(Some(&stack));
+
     let toolbar = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .margin_start(12)
@@ -5294,18 +5305,105 @@ fn open_docker_view(
             .halign(gtk::Align::Start)
             .build(),
     );
+    toolbar.append(&category);
     toolbar.append(&refresh_button);
+
+    let images_list = docker_category_list();
+    let volumes_list = docker_category_list();
+    let networks_list = docker_category_list();
+    stack.add_titled(&scrolled, Some("containers"), "Containrar");
+    stack.add_titled(&docker_category_scroller(&images_list), Some("images"), "Images");
+    stack.add_titled(&docker_category_scroller(&volumes_list), Some("volumes"), "Volymer");
+    stack.add_titled(&docker_category_scroller(&networks_list), Some("networks"), "Nätverk");
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.append(&toolbar);
-    content.append(&scrolled);
+    content.append(&stack);
 
     let page = area.tab_view.append(&content);
     page.set_title(&format!("Docker: {}", host.alias));
     area.tab_view.set_selected_page(&page);
     area.update_placeholder();
 
-    refresh_button.connect_clicked(clone!(
+    // Bara den synliga kategorin hämtas. Fyra SSH-kommandon vid varje
+    // öppning hade kostat fyra round-trips för tre listor man kanske
+    // aldrig tittar på — och `docker images` på en välanvänd värd är inte
+    // gratis.
+    let load_visible = {
+        let area = area.clone();
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let stack = stack.clone();
+        let list = list.clone();
+        let images_list = images_list.clone();
+        let volumes_list = volumes_list.clone();
+        let networks_list = networks_list.clone();
+        move || {
+            let name = stack.visible_child_name().unwrap_or_else(|| "containers".into());
+            match name.as_str() {
+                "images" => refresh_docker_category(
+                    &area, host.clone(), password.clone(), &images_list, jump.clone(),
+                    DockerCategory::Images,
+                ),
+                "volumes" => refresh_docker_category(
+                    &area, host.clone(), password.clone(), &volumes_list, jump.clone(),
+                    DockerCategory::Volumes,
+                ),
+                "networks" => refresh_docker_category(
+                    &area, host.clone(), password.clone(), &networks_list, jump.clone(),
+                    DockerCategory::Networks,
+                ),
+                _ => refresh_docker_list(&area, host.clone(), password.clone(), &list, jump.clone()),
+            }
+        }
+    };
+
+    refresh_button.connect_clicked({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+    stack.connect_visible_child_name_notify({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+
+    load_visible();
+}
+
+/// Vilken Docker-resurs en listning gäller. Skiljer sig från containrarna
+/// genom att vara ren läsning plus borttagning — ingen start/stopp/logg,
+/// för det finns inget att köra.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum DockerCategory {
+    Images,
+    Volumes,
+    Networks,
+}
+
+/// Hämtar och ritar en av de tre resurslistorna.
+///
+/// En funktion för alla tre i stället för tre nästan identiska: det enda
+/// som skiljer är kommandot, parsningen och vad raden heter — och tre
+/// kopior av samma hämta-rensa-rita-slinga hade drivit isär vid första
+/// felhanteringsändringen.
+fn refresh_docker_category(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    list: &gtk::ListBox,
+    jump: Option<host::Host>,
+    category: DockerCategory,
+) {
+    let command = match category {
+        DockerCategory::Images => docker::images_command(),
+        DockerCategory::Volumes => docker::volumes_command(),
+        DockerCategory::Networks => docker::networks_command(),
+    };
+    let rx = ssh::run_command(host.clone(), password.clone(), command, jump.clone());
+    glib::spawn_future_local(clone!(
+        #[weak]
+        list,
         #[strong]
         area,
         #[strong]
@@ -5314,12 +5412,229 @@ fn open_docker_view(
         password,
         #[strong]
         jump,
-        #[weak]
-        list,
-        move |_| refresh_docker_list(&area, host.clone(), password.clone(), &list, jump.clone())
-    ));
+        async move {
+            while let Some(row) = list.row_at_index(0) {
+                list.remove(&row);
+            }
+            let output = match rx.recv().await {
+                Ok(Ok(output)) => output,
+                Ok(Err(e)) => {
+                    list.append(&error_row(&e));
+                    return;
+                }
+                Err(_) => {
+                    list.append(&error_row("SSH-anslutningen avbröts oväntat"));
+                    return;
+                }
+            };
 
-    refresh_docker_list(area, host, password, &list, jump);
+            let rows = docker_category_rows(&output, category);
+            if rows.is_empty() {
+                // Skilj "inget finns" från "det gick fel". Utan den här
+                // raden ser en tom lista likadan ut som en trasig.
+                list.append(
+                    &adw::ActionRow::builder()
+                        .title(match category {
+                            DockerCategory::Images => "Inga images",
+                            DockerCategory::Volumes => "Inga volymer",
+                            DockerCategory::Networks => "Inga nätverk",
+                        })
+                        .build(),
+                );
+                return;
+            }
+            for (title, subtitle, removable) in rows {
+                list.append(&build_docker_resource_row(
+                    &area, &host, &password, &list, &jump, category, title, subtitle, removable,
+                ));
+            }
+        }
+    ));
+}
+
+/// En rad i images/volymer/nätverk-listan.
+///
+/// Borttagning är den enda muterande åtgärden här, och den är alltid
+/// bekräftad: `docker rmi`/`volume rm` är oåterkalleligt, och en volym
+/// bär data. Images får dessutom en `pull` — den hämtar en nyare version
+/// men startar INTE om något, så den går alltid att låta bli att agera på.
+#[allow(clippy::too_many_arguments)]
+fn build_docker_resource_row(
+    area: &Rc<SessionArea>,
+    host: &host::Host,
+    password: &Option<String>,
+    list: &gtk::ListBox,
+    jump: &Option<host::Host>,
+    category: DockerCategory,
+    title: String,
+    subtitle: String,
+    removable: Option<String>,
+) -> adw::ActionRow {
+    let row = adw::ActionRow::builder().title(&title).subtitle(&subtitle).build();
+
+    let reload = {
+        let area = area.clone();
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let list = list.clone();
+        move || refresh_docker_category(&area, host.clone(), password.clone(), &list, jump.clone(), category)
+    };
+
+    let run_then_reload = {
+        let area = area.clone();
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let list = list.clone();
+        let reload = reload.clone();
+        move |command: Result<String, String>| {
+            let Ok(command) = command else {
+                list.append(&error_row("kunde inte bygga kommandot — ogiltig referens"));
+                return;
+            };
+            let rx = ssh::run_command(host.clone(), password.clone(), command, jump.clone());
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                reload,
+                async move {
+                    match rx.recv().await {
+                        Ok(Ok(_)) => reload(),
+                        Ok(Err(e)) => show_message_dialog(&area, "Docker", &e),
+                        Err(_) => show_message_dialog(&area, "Docker", "SSH-anslutningen avbröts oväntat"),
+                    }
+                }
+            ));
+        }
+    };
+
+    // Bara images kan hämtas om; en volym eller ett nätverk har ingen
+    // uppström att jämföra mot.
+    if let (DockerCategory::Images, Some(reference)) = (category, removable.clone()) {
+        let pull = gtk::Button::from_icon_name("folder-download-symbolic");
+        pull.set_tooltip_text(Some("Hämta nyare version (startar inte om något)"));
+        pull.set_valign(gtk::Align::Center);
+        pull.add_css_class("flat");
+        pull.connect_clicked({
+            let run_then_reload = run_then_reload.clone();
+            move |_| run_then_reload(docker::pull_image_command(&reference))
+        });
+        row.add_suffix(&pull);
+    }
+
+    if let Some(reference) = removable {
+        let remove = gtk::Button::from_icon_name("user-trash-symbolic");
+        remove.set_tooltip_text(Some("Ta bort"));
+        remove.set_valign(gtk::Align::Center);
+        remove.add_css_class("flat");
+        remove.connect_clicked(clone!(
+            #[strong]
+            area,
+            #[strong]
+            run_then_reload,
+            #[strong]
+            reference,
+            #[strong]
+            title,
+            move |_| {
+                let body = match category {
+                    DockerCategory::Images => format!("Ta bort imagen {title}?"),
+                    // Volymen är den enda som bär data — säg det, i
+                    // stället för att lita på att användaren vet.
+                    DockerCategory::Volumes => {
+                        format!("Ta bort volymen {title}? All data i den försvinner.")
+                    }
+                    DockerCategory::Networks => format!("Ta bort nätverket {title}?"),
+                };
+                let dialog = adw::AlertDialog::new(Some("Ta bort"), Some(&body));
+                dialog.add_response("cancel", "Avbryt");
+                dialog.add_response("remove", "Ta bort");
+                dialog.set_response_appearance("remove", adw::ResponseAppearance::Destructive);
+                dialog.set_default_response(Some("cancel"));
+                dialog.connect_response(
+                    None,
+                    clone!(
+                        #[strong]
+                        run_then_reload,
+                        #[strong]
+                        reference,
+                        move |_, response| {
+                            if response != "remove" {
+                                return;
+                            }
+                            run_then_reload(match category {
+                                DockerCategory::Images => docker::remove_image_command(&reference),
+                                DockerCategory::Volumes => docker::remove_volume_command(&reference),
+                                DockerCategory::Networks => docker::remove_network_command(&reference),
+                            });
+                        }
+                    ),
+                );
+                dialog.present(Some(&area.overlay));
+            }
+        ));
+        row.add_suffix(&remove);
+    }
+
+    row
+}
+
+/// Rådata → (rubrik, underrubrik, referens att ta bort med).
+///
+/// GTK-fri och därför testbar: hela skillnaden mellan de tre kategorierna
+/// bor här, inte i widgetkoden. `None` som tredje fält betyder "erbjud
+/// ingen borttagning" — Dockers egna nätverk går inte att ta bort.
+fn docker_category_rows(
+    output: &str,
+    category: DockerCategory,
+) -> Vec<(String, String, Option<String>)> {
+    match category {
+        DockerCategory::Images => docker::parse_images(output)
+            .into_iter()
+            .map(|i| {
+                let title = if i.is_dangling() {
+                    format!("<none> ({})", i.id)
+                } else {
+                    format!("{}:{}", i.repository, i.tag)
+                };
+                let subtitle = if i.is_dangling() {
+                    format!("{} · dinglande, inget pekar på den", i.size)
+                } else {
+                    format!("{} · {}", i.size, i.id)
+                };
+                (title, subtitle, Some(i.reference()))
+            })
+            .collect(),
+        DockerCategory::Volumes => docker::parse_volumes(output)
+            .into_iter()
+            .map(|v| (v.name.clone(), format!("drivrutin: {}", v.driver), Some(v.name)))
+            .collect(),
+        DockerCategory::Networks => docker::parse_networks(output)
+            .into_iter()
+            .map(|n| {
+                let subtitle = format!("{} · {}", n.driver, n.scope);
+                let removable = if n.is_builtin() { None } else { Some(n.name.clone()) };
+                (n.name, subtitle, removable)
+            })
+            .collect(),
+    }
+}
+
+fn docker_category_list() -> gtk::ListBox {
+    gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(12)
+        .margin_bottom(12)
+        .build()
+}
+
+fn docker_category_scroller(list: &gtk::ListBox) -> gtk::ScrolledWindow {
+    gtk::ScrolledWindow::builder().child(list).vexpand(true).build()
 }
 
 /// Öppnar en "Systemöversikt"-flik för `host`: EN kombinerad SSH-round-trip
@@ -7930,4 +8245,64 @@ fn open_sftp_file_editor(area: &Rc<SessionArea>, handle: sftp::SftpHandle, path:
             }
         }
     ));
+}
+
+#[cfg(test)]
+mod docker_category_tests {
+    use super::*;
+
+    /// Hela skillnaden mellan de tre kategorierna bor i den här
+    /// funktionen, så det är den som är värd att testa — widgetkoden
+    /// däromkring gör bara samma sak med olika strängar.
+    #[test]
+    fn images_show_size_and_id_and_can_be_removed_by_reference() {
+        let rows = docker_category_rows("sha1|nginx|1.27|54MB", DockerCategory::Images);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "nginx:1.27");
+        assert_eq!(rows[0].1, "54MB · sha1");
+        assert_eq!(rows[0].2.as_deref(), Some("nginx:1.27"));
+    }
+
+    /// En dinglande image har inget namn att visa eller referera med.
+    /// Raden ska säga VARFÖR den ser konstig ut, inte bara visa `<none>`.
+    #[test]
+    fn dangling_images_are_labelled_and_removed_by_id() {
+        let rows = docker_category_rows("sha9|<none>|<none>|142MB", DockerCategory::Images);
+        assert_eq!(rows[0].0, "<none> (sha9)");
+        assert!(rows[0].1.contains("dinglande"), "skälet ska stå i raden: {}", rows[0].1);
+        assert_eq!(rows[0].2.as_deref(), Some("sha9"), "utan namn är id:t enda referensen");
+    }
+
+    /// Dockers egna nätverk går inte att ta bort. `None` betyder att
+    /// raden inte ens erbjuder knappen — bättre än en knapp som alltid
+    /// ger ett felmeddelande.
+    #[test]
+    fn builtin_networks_offer_no_removal_but_custom_ones_do() {
+        let rows = docker_category_rows(
+            "n1|bridge|bridge|local\nn2|mitt-nat|bridge|local",
+            DockerCategory::Networks,
+        );
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "bridge");
+        assert!(rows[0].2.is_none(), "bridge ska inte gå att ta bort");
+        assert_eq!(rows[1].2.as_deref(), Some("mitt-nat"));
+    }
+
+    #[test]
+    fn volumes_are_removed_by_name_and_show_their_driver() {
+        let rows = docker_category_rows("data|local", DockerCategory::Volumes);
+        assert_eq!(rows[0].0, "data");
+        assert_eq!(rows[0].1, "drivrutin: local");
+        assert_eq!(rows[0].2.as_deref(), Some("data"));
+    }
+
+    /// Tom utdata ska ge noll rader, inte en tom post. Vyn skiljer sedan
+    /// "inget finns" från "det gick fel" på just den skillnaden.
+    #[test]
+    fn empty_output_yields_no_rows_for_any_category() {
+        for category in [DockerCategory::Images, DockerCategory::Volumes, DockerCategory::Networks] {
+            assert!(docker_category_rows("", category).is_empty(), "{category:?}");
+            assert!(docker_category_rows("\n\n", category).is_empty(), "{category:?}");
+        }
+    }
 }
