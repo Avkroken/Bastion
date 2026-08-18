@@ -8,9 +8,12 @@ use vte::prelude::*;
 mod archive;
 mod bitwarden;
 mod bookmarks;
+// Integrationerna kommer från det fristående paketet `integrations/`.
+// Anropsställena skriver fortfarande `docker::…`, `kubernetes::…` och
+// `proxmox::…` — bara varifrån de kommer har ändrats.
+use bastion_integrations::{cloudflare, docker, github, kubernetes, proxmox, truenas, unraid};
 mod command_library;
 mod dashboard;
-mod docker;
 mod external_binary_fetcher;
 mod fsutil;
 mod fuzzy;
@@ -18,9 +21,9 @@ mod host;
 mod host_grouping;
 mod key_deploy;
 mod known_hosts;
-mod kubernetes;
 mod oauth;
 mod palette_actions;
+mod pkcs11;
 mod port_forward;
 mod s3;
 mod serial;
@@ -416,6 +419,18 @@ fn build_ui(app: &adw::Application) {
         }
     ));
     app.add_action(&known_hosts_action);
+
+    // PKCS#11-token (YubiKey, smartkort). Ligger som en egen åtgärd och
+    // inte i värdlistan: ett token laddas i den LOKALA ssh-agenten och
+    // gäller sedan alla värdar med autentisering "ssh-agent" — det är
+    // inte en egenskap hos en enskild värd.
+    let pkcs11_action = gtk::gio::SimpleAction::new("pkcs11", None);
+    pkcs11_action.connect_activate(clone!(
+        #[strong]
+        app,
+        move |_, _| show_pkcs11_dialog(&app)
+    ));
+    app.add_action(&pkcs11_action);
 
     // `+`-knappens innebörd följer kategorin. Egna åtgärder i stället för
     // en förgrening i knappens klickhanterare, så att de också går att nå
@@ -1059,6 +1074,146 @@ fn refresh_list(
                 }
             }
         ));
+        let proxmox_action = gtk::gio::SimpleAction::new("proxmox", None);
+        proxmox_action.connect_activate(clone!(
+            #[strong]
+            store,
+            #[strong]
+            area,
+            #[strong(rename_to = host_id)]
+            h.id,
+            move |_, _| {
+                let host = store
+                    .borrow()
+                    .all()
+                    .iter()
+                    .find(|x| x.id == host_id)
+                    .map(|h| (*h).clone());
+                if let Some(host) = host {
+                    with_resolved_jump(&area, &store, host, clone!(
+                        #[strong]
+                        area,
+                        move |host, jump| {
+                            require_password(&area, host, move |area, host, password| {
+                                open_proxmox_view(area, host, password, jump.clone())
+                            });
+                        }
+                    ));
+                }
+            }
+        ));
+        let truenas_action = gtk::gio::SimpleAction::new("truenas", None);
+        truenas_action.connect_activate(clone!(
+            #[strong]
+            store,
+            #[strong]
+            area,
+            #[strong(rename_to = host_id)]
+            h.id,
+            move |_, _| {
+                let host = store
+                    .borrow()
+                    .all()
+                    .iter()
+                    .find(|x| x.id == host_id)
+                    .map(|h| (*h).clone());
+                if let Some(host) = host {
+                    with_resolved_jump(&area, &store, host, clone!(
+                        #[strong]
+                        area,
+                        move |host, jump| {
+                            require_password(&area, host, move |area, host, password| {
+                                open_truenas_view(area, host, password, jump.clone())
+                            });
+                        }
+                    ));
+                }
+            }
+        ));
+        let unraid_action = gtk::gio::SimpleAction::new("unraid", None);
+        unraid_action.connect_activate(clone!(
+            #[strong]
+            store,
+            #[strong]
+            area,
+            #[strong(rename_to = host_id)]
+            h.id,
+            move |_, _| {
+                let host = store
+                    .borrow()
+                    .all()
+                    .iter()
+                    .find(|x| x.id == host_id)
+                    .map(|h| (*h).clone());
+                if let Some(host) = host {
+                    with_resolved_jump(&area, &store, host, clone!(
+                        #[strong]
+                        area,
+                        move |host, jump| {
+                            require_password(&area, host, move |area, host, password| {
+                                open_unraid_view(area, host, password, jump.clone())
+                            });
+                        }
+                    ));
+                }
+            }
+        ));
+        let cloudflare_action = gtk::gio::SimpleAction::new("cloudflare", None);
+        cloudflare_action.connect_activate(clone!(
+            #[strong]
+            store,
+            #[strong]
+            area,
+            #[strong(rename_to = host_id)]
+            h.id,
+            move |_, _| {
+                let host = store
+                    .borrow()
+                    .all()
+                    .iter()
+                    .find(|x| x.id == host_id)
+                    .map(|h| (*h).clone());
+                if let Some(host) = host {
+                    with_resolved_jump(&area, &store, host, clone!(
+                        #[strong]
+                        area,
+                        move |host, jump| {
+                            require_password(&area, host, move |area, host, password| {
+                                open_cloudflare_view(area, host, password, jump.clone())
+                            });
+                        }
+                    ));
+                }
+            }
+        ));
+        let github_action = gtk::gio::SimpleAction::new("github", None);
+        github_action.connect_activate(clone!(
+            #[strong]
+            store,
+            #[strong]
+            area,
+            #[strong(rename_to = host_id)]
+            h.id,
+            move |_, _| {
+                let host = store
+                    .borrow()
+                    .all()
+                    .iter()
+                    .find(|x| x.id == host_id)
+                    .map(|h| (*h).clone());
+                if let Some(host) = host {
+                    with_resolved_jump(&area, &store, host, clone!(
+                        #[strong]
+                        area,
+                        move |host, jump| {
+                            require_password(&area, host, move |area, host, password| {
+                                open_github_view(area, host, password, jump.clone())
+                            });
+                        }
+                    ));
+                }
+            }
+        ));
         let commands_action = gtk::gio::SimpleAction::new("commands", None);
         commands_action.connect_activate(clone!(
             #[strong]
@@ -1200,6 +1355,11 @@ fn refresh_list(
         action_group.add_action(&dashboard_action);
         action_group.add_action(&docker_action);
         action_group.add_action(&kubernetes_action);
+        action_group.add_action(&proxmox_action);
+        action_group.add_action(&truenas_action);
+        action_group.add_action(&unraid_action);
+        action_group.add_action(&cloudflare_action);
+        action_group.add_action(&github_action);
         action_group.add_action(&commands_action);
         action_group.add_action(&sftp_action);
         action_group.add_action(&forward_action);
@@ -1683,6 +1843,7 @@ fn sidebar_menu() -> gtk::gio::Menu {
     network.append(Some("WireGuard-profiler"), Some("app.wireguard"));
     network.append(Some("S3-anslutningar"), Some("app.s3"));
     network.append(Some("Kända värdar"), Some("app.known-hosts"));
+    network.append(Some("PKCS#11-token (YubiKey, smartkort)"), Some("app.pkcs11"));
     menu.append_section(None, &network);
 
     let app_menu = gtk::gio::Menu::new();
@@ -1710,6 +1871,11 @@ fn gio_menu_for(toggles: &settings::FeatureToggles, mac_address: &Option<String>
     if toggles.show_docker {
         menu.append(Some("Docker"), Some("host.docker"));
         menu.append(Some("Kubernetes"), Some("host.kubernetes"));
+        menu.append(Some("Proxmox"), Some("host.proxmox"));
+        menu.append(Some("TrueNAS"), Some("host.truenas"));
+        menu.append(Some("Unraid"), Some("host.unraid"));
+        menu.append(Some("Cloudflare Tunnel"), Some("host.cloudflare"));
+        menu.append(Some("GitHub"), Some("host.github"));
     }
     if toggles.show_command_library {
         menu.append(Some("Kommandon"), Some("host.commands"));
@@ -1915,6 +2081,13 @@ fn show_host_dialog(
     // dialogen. Motsvarar `Toggle("Favorit", ...)` +
     // `tagsText`-fältet i `App/HostEditView.swift`.
     let favorite_row = adw::SwitchRow::builder().title("Favorit").build();
+    // Undertexten är inte dekoration. Agent-vidarebefordran är den
+    // inställning i hela dialogen som kan kosta dig dina nycklar på andra
+    // maskiner, och risken syns inte av namnet.
+    let forward_agent_row = adw::SwitchRow::builder()
+        .title("Vidarebefordra ssh-agent")
+        .subtitle("Låter dig hoppa vidare med dina nycklar. Den som har root på värden kan använda dem så länge sessionen lever — slå bara på för värdar du litar på.")
+        .build();
     let tags_row = adw::EntryRow::builder().title("Taggar (kommaseparerat)").build();
 
     // Färgmärkning: `host.color_tag` fanns i datamodellen sedan starten men
@@ -2044,6 +2217,7 @@ fn show_host_dialog(
             jump_row.set_selected(idx as u32);
         }
         favorite_row.set_active(h.is_favorite);
+        forward_agent_row.set_active(h.forward_agent);
         if !h.tags.is_empty() {
             tags_row.set_text(&h.tags.join(", "));
         }
@@ -2130,6 +2304,7 @@ fn show_host_dialog(
     group.add(&platform_row);
     group.add(&mac_row);
     group.add(&favorite_row);
+    group.add(&forward_agent_row);
     group.add(&tags_row);
     group.add(&color_row);
     group.add(&auth_row);
@@ -2269,6 +2444,7 @@ fn show_host_dialog(
             // framtida ändring av modellen inte kan panika här.
             let jump_host_id = jump_ids.get(jump_row.selected() as usize).copied().flatten();
             let is_favorite = favorite_row.is_active();
+            let forward_agent = forward_agent_row.is_active();
             // Samma tolkning som Swift-sidans `save()`: dela på komma,
             // trimma, kasta bort tomma segment (t.ex. ett kvarglömt
             // avslutande komma).
@@ -2287,6 +2463,7 @@ fn show_host_dialog(
                 h.mac_address = mac_address;
                 h.color_tag = color_tag;
                 h.is_favorite = is_favorite;
+                h.forward_agent = forward_agent;
                 h.tags = tags;
                 h.jump_host_id = jump_host_id;
                 if !preserve_apple_only_auth {
@@ -2300,6 +2477,7 @@ fn show_host_dialog(
                 h.mac_address = mac_address;
                 h.color_tag = color_tag;
                 h.is_favorite = is_favorite;
+                h.forward_agent = forward_agent;
                 h.tags = tags;
                 h.jump_host_id = jump_host_id;
                 h.auth = new_auth;
@@ -2336,6 +2514,134 @@ async fn run_oauth_login(app: &adw::Application, provider: &oauth::OAuthProvider
     let client = reqwest::Client::new();
     oauth::finish_login(session, &client, provider).await
 }
+/// Laddar och tar bort PKCS#11-tokens i den LOKALA ssh-agenten.
+///
+/// Halva stödet fanns redan utan att synas: en nyckel i agenten når
+/// `HostAuth::AgentDefault`, och en FIDO2-nyckel signeras av agenten med
+/// touch-prompt och allt. Det som saknades var vägen in — `ssh-add -s` —
+/// och något som berättar att möjligheten finns.
+///
+/// Kommandot körs mot den egna maskinen och inte över SSH. Agenten är
+/// lokal; att ladda ett token på fjärrvärden vore fel sak.
+fn show_pkcs11_dialog(app: &adw::Application) {
+    let group = adw::PreferencesGroup::builder()
+        .title("PKCS#11-token")
+        .description(
+            "Laddar tokenets nycklar i din lokala ssh-agent. Välj sedan autentisering \
+             \"ssh-agent\" på de värdar som ska använda det.\n\nFIDO2-nycklar \
+             (ed25519-sk) behöver inte laddas här — de fungerar redan via agenten.",
+        )
+        .build();
+
+    let path_row = adw::EntryRow::builder().title("Sökväg till PKCS#11-modul").build();
+    group.add(&path_row);
+
+    // Hittade moduler blir knappar som fyller i fältet. Sökvägen till en
+    // PKCS#11-modul är inget någon kan utantill, och att kräva den vore
+    // att göra funktionen oanvändbar för de flesta.
+    let found = pkcs11::discover();
+    if found.is_empty() {
+        group.add(
+            &adw::ActionRow::builder()
+                .title("Ingen modul hittad automatiskt")
+                .subtitle("Installera t.ex. opensc-pkcs11, eller skriv in sökvägen för hand")
+                .build(),
+        );
+    } else {
+        for module in &found {
+            let row = adw::ActionRow::builder()
+                .title(&module.label)
+                .subtitle(module.path.display().to_string())
+                .activatable(true)
+                .build();
+            row.connect_activated(clone!(
+                #[weak]
+                path_row,
+                #[strong(rename_to = path)]
+                module.path,
+                move |_| path_row.set_text(&path.display().to_string())
+            ));
+            group.add(&row);
+        }
+    }
+
+    let status = gtk::Label::builder()
+        .wrap(true)
+        .halign(gtk::Align::Start)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_bottom(12)
+        .build();
+
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+
+    let add_button = gtk::Button::with_label("Ladda");
+    add_button.add_css_class("suggested-action");
+    let remove_button = gtk::Button::with_label("Ta bort");
+    let close_button = gtk::Button::with_label("Stäng");
+    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    header.pack_start(&close_button);
+    header.pack_end(&add_button);
+    header.pack_end(&remove_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&page);
+    content.append(&status);
+
+    let win = dialog_window(&app_window(app), "PKCS#11-token", DialogSize::List, &content);
+
+    close_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        move |_| win.close()
+    ));
+
+    let run = {
+        let path_row = path_row.clone();
+        let status = status.clone();
+        move |adding: bool| {
+            let raw = path_row.text().to_string();
+            let path = std::path::PathBuf::from(raw.trim());
+            if path.as_os_str().is_empty() {
+                status.set_text("Ange en sökväg till modulen först.");
+                return;
+            }
+            // Kontrolleras här för att felet ska bli begripligt: `ssh-add`
+            // svarar "Could not add card" oavsett om filen saknas, är fel
+            // sorts fil eller om tokenet inte sitter i.
+            if let Err(e) = pkcs11::check_with(&path, |p| p.exists()) {
+                status.set_text(&e.message(&path));
+                return;
+            }
+            let args = if adding { pkcs11::add_args(&path) } else { pkcs11::remove_args(&path) };
+            match std::process::Command::new("ssh-add").args(&args).output() {
+                Ok(out) => {
+                    // ssh-add skriver sina meddelanden på stderr, även vid
+                    // framgång.
+                    let text = String::from_utf8_lossy(&out.stderr);
+                    status.set_text(&pkcs11::describe_result(out.status.success(), &text, adding));
+                }
+                Err(e) => status.set_text(&format!(
+                    "kunde inte köra ssh-add: {e} — finns OpenSSH-klienten installerad?"
+                )),
+            }
+        }
+    };
+
+    add_button.connect_clicked({
+        let run = run.clone();
+        move |_| run(true)
+    });
+    remove_button.connect_clicked({
+        let run = run.clone();
+        move |_| run(false)
+    });
+
+    win.present();
+}
+
 
 /// Funktioner-inställningar: alla sex av `settings::FeatureToggles`s fält
 /// utom Snippets (`show_snippets` — sidopanelens Snippets-vy finns inte i
@@ -2406,8 +2712,51 @@ fn show_settings_dialog(
     if let Some(pos) = themes.iter().position(|t| t.id == current_theme.id) {
         theme_row.set_selected(pos as u32);
     }
-    let terminal_group = adw::PreferencesGroup::builder().title("Terminal").build();
+    // Typsnittet skrivs som en Pango-beskrivning: namn plus storlek,
+    // t.ex. "JetBrains Mono 11". Tomt betyder systemets monospace.
+    let font_row = adw::EntryRow::builder().title("Terminaltypsnitt").build();
+    if let Some(font) = theme_store.font() {
+        font_row.set_text(&font);
+    }
+
+    // Installerade ligaturtypsnitt blir klickbara förslag. VTE har inget
+    // ligatur-API, så appen kan inte LOVA att `->` blir en pil — den kan
+    // bara se till att man har ett typsnitt som bär ligaturerna, och
+    // säga som det är om resten.
+    let installed = |name: &str| {
+        std::process::Command::new("fc-list")
+            .args(["-q", name])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+    let ligature_fonts = terminal_theme::available_ligature_fonts(installed);
+
+    let terminal_group = adw::PreferencesGroup::builder()
+        .title("Terminal")
+        .description(if ligature_fonts.is_empty() {
+            "Ligaturer kräver ett typsnitt som har dem (t.ex. JetBrains Mono eller Fira Code).              Inget sådant hittades installerat. Om de faktiskt ritas ihop avgörs dessutom av              systemets VTE — appen kan inte slå på det."
+        } else {
+            "Ligaturer kräver ett typsnitt som har dem. Installerade sådana finns som förslag              nedan. Om de faktiskt ritas ihop avgörs av systemets VTE — appen kan inte slå på det."
+        })
+        .build();
     terminal_group.add(&theme_row);
+    terminal_group.add(&font_row);
+    for name in &ligature_fonts {
+        let row = adw::ActionRow::builder()
+            .title(*name)
+            .subtitle("Installerat — klicka för att använda")
+            .activatable(true)
+            .build();
+        row.connect_activated(clone!(
+            #[weak]
+            font_row,
+            #[strong(rename_to = font)]
+            name.to_string(),
+            move |_| font_row.set_text(&format!("{font} 11"))
+        ));
+        terminal_group.add(&row);
+    }
 
     let sync_folder_row = adw::ActionRow::builder()
         .title("Synkmapp")
@@ -2676,6 +3025,37 @@ fn show_settings_dialog(
                 eprintln!("kunde inte spara inställningarna: {e}");
             }
             refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store, &search_query);
+        }
+    ));
+
+    // Typsnittet sparas när fältet lämnas, inte vid varje tangenttryck:
+    // "JetBrains Mo" är inget typsnitt, och att tillämpa halvskrivna namn
+    // hade blinkat fram systemets fallback för varje bokstav.
+    font_row.connect_apply(clone!(
+        #[strong]
+        area,
+        #[strong]
+        theme_store,
+        move |row| {
+            let font = row.text().to_string();
+            if let Err(e) = theme_store.set_font(&font) {
+                eprintln!("kunde inte spara terminaltypsnittet: {e}");
+                return;
+            }
+            // Samma resonemang som för temat: bara redan öppna flikar
+            // behöver uppdateras, nya läser valet vid skapandet.
+            let desc = if font.trim().is_empty() {
+                None
+            } else {
+                Some(gtk::pango::FontDescription::from_string(font.trim()))
+            };
+            let pages = area.tab_view.pages();
+            for i in 0..pages.n_items() {
+                let Some(page) = pages.item(i).and_downcast::<adw::TabPage>() else { continue };
+                for terminal in split::terminals_in(&page.child()) {
+                    terminal.set_font(desc.as_ref());
+                }
+            }
         }
     ));
 
@@ -3143,6 +3523,12 @@ fn new_themed_terminal() -> vte::Terminal {
         .build();
     let store = terminal_theme::TerminalThemeStore::open(terminal_theme::TerminalThemeStore::default_path());
     terminal_theme::apply(&terminal, terminal_theme::theme(store.selected_id().as_deref()));
+    // Inget valt typsnitt betyder systemets monospace, inte ett påhittat
+    // namn: ett typsnitt som inte finns installerat ger en tyst fallback,
+    // och då är det bättre att aldrig ha satt något.
+    if let Some(font) = store.font() {
+        terminal.set_font(Some(&gtk::pango::FontDescription::from_string(&font)));
+    }
     terminal
 }
 
@@ -5695,6 +6081,1190 @@ fn build_kubernetes_row(
     row
 }
 
+/// Proxmox VE-vy: virtuella maskiner, LXC-containrar och lagring.
+///
+/// Tredje integrationen, och byggd som ett PROV på om
+/// `refresh_integration_list` håller. Utfallet: skelettet räckte
+/// oförändrat. Det som skiljer Proxmox från de två andra — tre olika
+/// verktyg i stället för ett, VMID som identifierare i stället för namn,
+/// en gästtyp som avgör vilket kommando som gäller — rymdes helt i
+/// kommandobyggandet och radstängningen.
+///
+/// Ingen namnrymdsväljare, till skillnad från Kubernetes: en Proxmox-nod
+/// har inget motsvarande begrepp. Att skelettet inte kräver en är just
+/// varför den parametern ligger hos anroparen och inte i skelettet.
+fn open_proxmox_view(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    jump: Option<host::Host>,
+) {
+    let vms_list = docker_category_list();
+    let containers_list = docker_category_list();
+    let storage_list = docker_category_list();
+
+    let stack = adw::ViewStack::new();
+    let category = adw::ViewSwitcher::builder()
+        .policy(adw::ViewSwitcherPolicy::Wide)
+        .build();
+    category.set_stack(Some(&stack));
+    stack.add_titled(&docker_category_scroller(&vms_list), Some("vms"), "Virtuella maskiner");
+    stack.add_titled(&docker_category_scroller(&containers_list), Some("containers"), "Containrar");
+    stack.add_titled(&docker_category_scroller(&storage_list), Some("storage"), "Lagring");
+
+    let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
+    refresh_button.set_tooltip_text(Some("Uppdatera"));
+
+    let toolbar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .build();
+    toolbar.append(
+        &gtk::Label::builder()
+            .label(format!("Proxmox: {}", host.alias))
+            .hexpand(true)
+            .halign(gtk::Align::Start)
+            .build(),
+    );
+    toolbar.append(&category);
+    toolbar.append(&refresh_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&toolbar);
+    content.append(&stack);
+
+    let page = area.tab_view.append(&content);
+    page.set_title(&format!("Proxmox: {}", host.alias));
+    area.tab_view.set_selected_page(&page);
+    area.update_placeholder();
+
+    let load_visible = {
+        let area = area.clone();
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let stack = stack.clone();
+        let vms_list = vms_list.clone();
+        let containers_list = containers_list.clone();
+        let storage_list = storage_list.clone();
+        move || {
+            let name = stack.visible_child_name().unwrap_or_else(|| "vms".into());
+            let (list, category) = match name.as_str() {
+                "containers" => (&containers_list, ProxmoxCategory::Containers),
+                "storage" => (&storage_list, ProxmoxCategory::Storage),
+                _ => (&vms_list, ProxmoxCategory::Vms),
+            };
+            refresh_proxmox_category(&area, host.clone(), password.clone(), list, jump.clone(), category);
+        }
+    };
+
+    refresh_button.connect_clicked({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+    stack.connect_visible_child_name_notify({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+
+    load_visible();
+}
+
+/// TrueNAS-vy: pooler, tjänster och larm via `midclt`.
+///
+/// Fjärde integrationen, och fjärde gången `refresh_integration_list`
+/// räckte utan ändring. Det som skiljer TrueNAS från de tre andra —
+/// JSON i stället för kolumner, och åtgärder vars argument måste vara
+/// citerad JSON — rymdes helt i modulen och radstängningen.
+fn open_truenas_view(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    jump: Option<host::Host>,
+) {
+    let pools_list = docker_category_list();
+    let services_list = docker_category_list();
+    let alerts_list = docker_category_list();
+
+    let stack = adw::ViewStack::new();
+    let category = adw::ViewSwitcher::builder()
+        .policy(adw::ViewSwitcherPolicy::Wide)
+        .build();
+    category.set_stack(Some(&stack));
+    stack.add_titled(&docker_category_scroller(&pools_list), Some("pools"), "Pooler");
+    stack.add_titled(&docker_category_scroller(&services_list), Some("services"), "Tjänster");
+    stack.add_titled(&docker_category_scroller(&alerts_list), Some("alerts"), "Larm");
+
+    let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
+    refresh_button.set_tooltip_text(Some("Uppdatera"));
+
+    let toolbar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .build();
+    toolbar.append(
+        &gtk::Label::builder()
+            .label(format!("TrueNAS: {}", host.alias))
+            .hexpand(true)
+            .halign(gtk::Align::Start)
+            .build(),
+    );
+    toolbar.append(&category);
+    toolbar.append(&refresh_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&toolbar);
+    content.append(&stack);
+
+    let page = area.tab_view.append(&content);
+    page.set_title(&format!("TrueNAS: {}", host.alias));
+    area.tab_view.set_selected_page(&page);
+    area.update_placeholder();
+
+    let load_visible = {
+        let area = area.clone();
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let stack = stack.clone();
+        let pools_list = pools_list.clone();
+        let services_list = services_list.clone();
+        let alerts_list = alerts_list.clone();
+        move || {
+            let name = stack.visible_child_name().unwrap_or_else(|| "pools".into());
+            let (list, category) = match name.as_str() {
+                "services" => (&services_list, TrueNasCategory::Services),
+                "alerts" => (&alerts_list, TrueNasCategory::Alerts),
+                _ => (&pools_list, TrueNasCategory::Pools),
+            };
+            refresh_truenas_category(&area, host.clone(), password.clone(), list, jump.clone(), category);
+        }
+    };
+
+    refresh_button.connect_clicked({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+    stack.connect_visible_child_name_notify({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+
+    load_visible();
+}
+
+/// Unraid-vy: array, diskar och delade mappar via `mdcmd`.
+///
+/// Femte integrationen, och femte gången `refresh_integration_list`
+/// räckte oförändrat. Unraid är dessutom den enda som är ren LÄSNING —
+/// arrayen startas och stoppas inte härifrån. Att stoppa en array med
+/// öppna filer är ett driftbeslut som hör hemma i Unraids eget
+/// gränssnitt, där konsekvenserna står utskrivna.
+fn open_unraid_view(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    jump: Option<host::Host>,
+) {
+    let array_list = docker_category_list();
+    let disks_list = docker_category_list();
+    let shares_list = docker_category_list();
+
+    let stack = adw::ViewStack::new();
+    let category = adw::ViewSwitcher::builder()
+        .policy(adw::ViewSwitcherPolicy::Wide)
+        .build();
+    category.set_stack(Some(&stack));
+    stack.add_titled(&docker_category_scroller(&array_list), Some("array"), "Array");
+    stack.add_titled(&docker_category_scroller(&disks_list), Some("disks"), "Diskar");
+    stack.add_titled(&docker_category_scroller(&shares_list), Some("shares"), "Delningar");
+
+    let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
+    refresh_button.set_tooltip_text(Some("Uppdatera"));
+
+    let toolbar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .build();
+    toolbar.append(
+        &gtk::Label::builder()
+            .label(format!("Unraid: {}", host.alias))
+            .hexpand(true)
+            .halign(gtk::Align::Start)
+            .build(),
+    );
+    toolbar.append(&category);
+    toolbar.append(&refresh_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&toolbar);
+    content.append(&stack);
+
+    let page = area.tab_view.append(&content);
+    page.set_title(&format!("Unraid: {}", host.alias));
+    area.tab_view.set_selected_page(&page);
+    area.update_placeholder();
+
+    let load_visible = {
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let stack = stack.clone();
+        let array_list = array_list.clone();
+        let disks_list = disks_list.clone();
+        let shares_list = shares_list.clone();
+        move || {
+            let name = stack.visible_child_name().unwrap_or_else(|| "array".into());
+            let (list, category) = match name.as_str() {
+                "disks" => (&disks_list, UnraidCategory::Disks),
+                "shares" => (&shares_list, UnraidCategory::Shares),
+                _ => (&array_list, UnraidCategory::Array),
+            };
+            refresh_unraid_category(host.clone(), password.clone(), list, jump.clone(), category);
+        }
+    };
+
+    refresh_button.connect_clicked({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+    stack.connect_visible_child_name_notify({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+
+    load_visible();
+}
+
+/// Cloudflare Tunnel-vy: tunnlar och tjänstens tillstånd via `cloudflared`.
+///
+/// Sjätte integrationen, och sjätte gången skelettet räckte oförändrat.
+///
+/// Vyn har två kategorier och inte tre, för det finns bara två frågor:
+/// vilka tunnlar finns och tar de trafik, och kör daemonen. Den andra
+/// förklarar nästan alltid den första när något ser fel ut.
+fn open_cloudflare_view(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    jump: Option<host::Host>,
+) {
+    let tunnels_list = docker_category_list();
+    let service_list = docker_category_list();
+
+    let stack = adw::ViewStack::new();
+    let category = adw::ViewSwitcher::builder()
+        .policy(adw::ViewSwitcherPolicy::Wide)
+        .build();
+    category.set_stack(Some(&stack));
+    stack.add_titled(&docker_category_scroller(&tunnels_list), Some("tunnels"), "Tunnlar");
+    stack.add_titled(&docker_category_scroller(&service_list), Some("service"), "Tjänst");
+
+    let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
+    refresh_button.set_tooltip_text(Some("Uppdatera"));
+
+    let toolbar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .build();
+    toolbar.append(
+        &gtk::Label::builder()
+            .label(format!("Cloudflare: {}", host.alias))
+            .hexpand(true)
+            .halign(gtk::Align::Start)
+            .build(),
+    );
+    toolbar.append(&category);
+    toolbar.append(&refresh_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&toolbar);
+    content.append(&stack);
+
+    let page = area.tab_view.append(&content);
+    page.set_title(&format!("Cloudflare: {}", host.alias));
+    area.tab_view.set_selected_page(&page);
+    area.update_placeholder();
+
+    let load_visible = {
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let stack = stack.clone();
+        let tunnels_list = tunnels_list.clone();
+        let service_list = service_list.clone();
+        move || {
+            let name = stack.visible_child_name().unwrap_or_else(|| "tunnels".into());
+            let (list, category) = match name.as_str() {
+                "service" => (&service_list, CloudflareCategory::Service),
+                _ => (&tunnels_list, CloudflareCategory::Tunnels),
+            };
+            refresh_cloudflare_category(host.clone(), password.clone(), list, jump.clone(), category);
+        }
+    };
+
+    refresh_button.connect_clicked({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+    stack.connect_visible_child_name_notify({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+
+    load_visible();
+}
+
+/// GitHub-vy för ett utcheckat repo på värden, via `gh`.
+///
+/// Sjunde integrationen, och den som prövar skelettet hårdast: den
+/// behöver något inget av de sex andra behövt — en SÖKVÄG, som
+/// användaren måste skriva in. Skelettet räckte ändå oförändrat, för
+/// samma skäl som med Kubernetes namnrymd: extra sammanhang byggs in i
+/// kommandot av anroparen, inte av skelettet.
+///
+/// Frågan vyn svarar på är "vad händer med koden på DEN HÄR servern" —
+/// en byggserver eller deploy-värd har utcheckade repon och ett
+/// inloggat `gh`. Det är körningar och PR:er för det repot, inte för
+/// allt man äger på GitHub.
+fn open_github_view(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    jump: Option<host::Host>,
+) {
+    let runs_list = docker_category_list();
+    let prs_list = docker_category_list();
+    let auth_list = docker_category_list();
+
+    let stack = adw::ViewStack::new();
+    let category = adw::ViewSwitcher::builder()
+        .policy(adw::ViewSwitcherPolicy::Wide)
+        .build();
+    category.set_stack(Some(&stack));
+    stack.add_titled(&docker_category_scroller(&runs_list), Some("runs"), "Körningar");
+    stack.add_titled(&docker_category_scroller(&prs_list), Some("prs"), "Pull requests");
+    stack.add_titled(&docker_category_scroller(&auth_list), Some("auth"), "Inloggning");
+
+    // Sökvägen till repot PÅ VÄRDEN. `gh` läser repot ur katalogen det
+    // körs i, så utan den svarar kommandot om vad som råkar ligga i
+    // hemkatalogen — sällan det man menar.
+    let repo_entry = gtk::Entry::builder()
+        .placeholder_text("Sökväg till repo på värden, t.ex. /srv/bastion")
+        .width_chars(30)
+        .valign(gtk::Align::Center)
+        .build();
+
+    let refresh_button = gtk::Button::from_icon_name("view-refresh-symbolic");
+    refresh_button.set_tooltip_text(Some("Uppdatera"));
+
+    let toolbar = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(8)
+        .build();
+    toolbar.append(
+        &gtk::Label::builder()
+            .label(format!("GitHub: {}", host.alias))
+            .halign(gtk::Align::Start)
+            .build(),
+    );
+    toolbar.append(&repo_entry);
+    toolbar.append(
+        &gtk::Box::builder().hexpand(true).build(),
+    );
+    toolbar.append(&category);
+    toolbar.append(&refresh_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&toolbar);
+    content.append(&stack);
+
+    let page = area.tab_view.append(&content);
+    page.set_title(&format!("GitHub: {}", host.alias));
+    area.tab_view.set_selected_page(&page);
+    area.update_placeholder();
+
+    let load_visible = {
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let stack = stack.clone();
+        let repo_entry = repo_entry.clone();
+        let runs_list = runs_list.clone();
+        let prs_list = prs_list.clone();
+        let auth_list = auth_list.clone();
+        move || {
+            let name = stack.visible_child_name().unwrap_or_else(|| "runs".into());
+            let (list, category) = match name.as_str() {
+                "prs" => (&prs_list, GithubCategory::PullRequests),
+                "auth" => (&auth_list, GithubCategory::Auth),
+                _ => (&runs_list, GithubCategory::Runs),
+            };
+            refresh_github_category(
+                host.clone(),
+                password.clone(),
+                list,
+                jump.clone(),
+                category,
+                repo_entry.text().to_string(),
+            );
+        }
+    };
+
+    refresh_button.connect_clicked({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+    stack.connect_visible_child_name_notify({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+    // Enter i fältet laddar om — samma sak som att trycka på knappen.
+    repo_entry.connect_activate({
+        let load_visible = load_visible.clone();
+        move |_| load_visible()
+    });
+
+    load_visible();
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum GithubCategory {
+    Runs,
+    PullRequests,
+    Auth,
+}
+
+fn refresh_github_category(
+    host: host::Host,
+    password: Option<String>,
+    list: &gtk::ListBox,
+    jump: Option<host::Host>,
+    category: GithubCategory,
+    repo_path: String,
+) {
+    let command = match category {
+        // Inloggningen är repo-oberoende: `gh auth status` svarar likadant
+        // oavsett var man står, och den frågan går att ställa innan man
+        // vet vilket repo man vill titta på.
+        GithubCategory::Auth => Ok(github::auth_status_command()),
+        GithubCategory::Runs => github::runs_command(&repo_path, 20),
+        GithubCategory::PullRequests => github::pull_requests_command(&repo_path, 20),
+    };
+    let empty = (
+        match category {
+            GithubCategory::Runs => "Inga körningar",
+            GithubCategory::PullRequests => "Inga pull requests",
+            GithubCategory::Auth => "Inget svar",
+        },
+        Some("Tomt svar — kontrollera sökvägen, att gh finns på värden och att det är inloggat"),
+    );
+
+    refresh_integration_list(
+        host,
+        password,
+        list,
+        jump,
+        command,
+        empty,
+        move |output: &str, list: &gtk::ListBox| match category {
+            GithubCategory::Runs => {
+                for run in github::parse_runs(output) {
+                    let subtitle = if run.is_running() {
+                        format!("{} · pågår · {}", run.branch, run.status)
+                    } else {
+                        format!("{} · {}", run.branch, run.conclusion)
+                    };
+                    let row = adw::ActionRow::builder().title(&run.name).subtitle(subtitle).build();
+                    // Ikonen skiljer på tre lägen, inte två: pågående är
+                    // varken grönt eller rött, och att måla den som det
+                    // ena hade varit fel halva tiden.
+                    let icon = if run.is_running() {
+                        "content-loading-symbolic"
+                    } else if run.failed() {
+                        "dialog-error-symbolic"
+                    } else {
+                        "object-select-symbolic"
+                    };
+                    row.add_prefix(&gtk::Image::from_icon_name(icon));
+                    list.append(&row);
+                }
+            }
+            GithubCategory::PullRequests => {
+                for pr in github::parse_pull_requests(output) {
+                    // Orsaken står kvar i raden: BLOCKED (checkar inte
+                    // klara) och DIRTY (konflikt) kräver helt olika
+                    // åtgärder, och "kan inte mergas" hade dolt vilken.
+                    let mut subtitle = pr.mergeable.clone();
+                    if pr.is_draft {
+                        subtitle.push_str(" · utkast");
+                    }
+                    if pr.is_ready() {
+                        subtitle.push_str(" · redo att mergas");
+                    }
+                    list.append(
+                        &adw::ActionRow::builder()
+                            .title(format!("#{} {}", pr.number, pr.title))
+                            .subtitle(subtitle)
+                            .build(),
+                    );
+                }
+            }
+            GithubCategory::Auth => {
+                let authenticated = github::is_authenticated(output);
+                let row = adw::ActionRow::builder()
+                    .title(if authenticated { "Inloggad" } else { "Inte inloggad" })
+                    .subtitle(output.trim().lines().next().unwrap_or("inget svar"))
+                    .build();
+                if !authenticated {
+                    row.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
+                }
+                list.append(&row);
+            }
+        },
+    );
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CloudflareCategory {
+    Tunnels,
+    Service,
+}
+
+fn refresh_cloudflare_category(
+    host: host::Host,
+    password: Option<String>,
+    list: &gtk::ListBox,
+    jump: Option<host::Host>,
+    category: CloudflareCategory,
+) {
+    let command = Ok(match category {
+        CloudflareCategory::Tunnels => cloudflare::tunnels_command(),
+        CloudflareCategory::Service => cloudflare::service_status_command(),
+    });
+    let empty = (
+        match category {
+            CloudflareCategory::Tunnels => "Inga tunnlar",
+            CloudflareCategory::Service => "Inget svar",
+        },
+        Some("Tomt svar — kontrollera att cloudflared finns på värden och är inloggat"),
+    );
+
+    refresh_integration_list(
+        host,
+        password,
+        list,
+        jump,
+        command,
+        empty,
+        move |output: &str, list: &gtk::ListBox| match category {
+            CloudflareCategory::Tunnels => {
+                for tunnel in cloudflare::parse_tunnels(output) {
+                    // En tunnel kan finnas, vara rätt konfigurerad och
+                    // ändå inte förmedla trafik. Skillnaden syns bara på
+                    // anslutningarna, så den står i underrubriken.
+                    let subtitle = if tunnel.is_up() {
+                        let colos = tunnel.colos();
+                        format!("uppe · {}", colos.join(", "))
+                    } else {
+                        "⚠ inga aktiva anslutningar — kör cloudflared?".to_string()
+                    };
+                    let row = adw::ActionRow::builder()
+                        .title(&tunnel.name)
+                        .subtitle(subtitle)
+                        .build();
+                    let icon = if tunnel.is_up() {
+                        "network-transmit-receive-symbolic"
+                    } else {
+                        "network-offline-symbolic"
+                    };
+                    row.add_prefix(&gtk::Image::from_icon_name(icon));
+                    list.append(&row);
+                }
+            }
+            CloudflareCategory::Service => {
+                let (state, version) = cloudflare::parse_service_status(output);
+                let row = adw::ActionRow::builder()
+                    .title(format!("cloudflared: {state}"))
+                    .subtitle(match &version {
+                        Some(v) => v.clone(),
+                        None => "ingen version rapporterad".to_string(),
+                    })
+                    .build();
+                if state != "active" {
+                    row.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
+                }
+                list.append(&row);
+            }
+        },
+    );
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum UnraidCategory {
+    Array,
+    Disks,
+    Shares,
+}
+
+fn refresh_unraid_category(
+    host: host::Host,
+    password: Option<String>,
+    list: &gtk::ListBox,
+    jump: Option<host::Host>,
+    category: UnraidCategory,
+) {
+    let command = Ok(match category {
+        UnraidCategory::Shares => unraid::shares_command(),
+        // Array och diskar kommer ur SAMMA svar — `mdcmd status` ger båda,
+        // och två anrop hade varit två round-trips för samma data.
+        _ => unraid::status_command(),
+    });
+    let empty = (
+        match category {
+            UnraidCategory::Array => "Ingen array",
+            UnraidCategory::Disks => "Inga diskar",
+            UnraidCategory::Shares => "Inga delningar",
+        },
+        Some("Tomt svar — kontrollera att värden är en Unraid och att mdcmd finns"),
+    );
+
+    refresh_integration_list(
+        host,
+        password,
+        list,
+        jump,
+        command,
+        empty,
+        move |output: &str, list: &gtk::ListBox| match category {
+            UnraidCategory::Array => {
+                let Some(status) = unraid::parse_status(output) else {
+                    return;
+                };
+                let row = adw::ActionRow::builder()
+                    .title(if status.is_started() { "Arrayen är igång" } else { "Arrayen är stoppad" })
+                    .subtitle(match status.disk_count {
+                        Some(n) => format!("{} · {n} diskar", status.state),
+                        None => status.state.clone(),
+                    })
+                    .build();
+                list.append(&row);
+
+                // En avstängd disk betyder att arrayen kör PÅ PARITET:
+                // data finns kvar, men nästa diskfel är ett datafel.
+                if status.has_disabled_disks() {
+                    let n = status.disabled_count.unwrap_or(0);
+                    let warning = adw::ActionRow::builder()
+                        .title(format!("{n} disk(ar) avstängda"))
+                        .subtitle("Arrayen kör på paritet — nästa diskfel blir ett datafel")
+                        .build();
+                    warning.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
+                    list.append(&warning);
+                }
+
+                if let Some(resync) = &status.resync {
+                    let subtitle = match resync.fraction() {
+                        Some(f) => format!("{:.1} % klart", f * 100.0),
+                        None => "pågår".to_string(),
+                    };
+                    list.append(
+                        &adw::ActionRow::builder()
+                            .title("Paritetskontroll pågår")
+                            .subtitle(subtitle)
+                            .build(),
+                    );
+                }
+            }
+            UnraidCategory::Disks => {
+                for disk in unraid::parse_disks(output) {
+                    list.append(
+                        &adw::ActionRow::builder()
+                            .title(&disk.name)
+                            .subtitle(format!(
+                                "plats {} · {} · tillstånd {}",
+                                disk.slot,
+                                format_bytes(disk.size_bytes() as i64),
+                                disk.state
+                            ))
+                            .build(),
+                    );
+                }
+            }
+            UnraidCategory::Shares => {
+                for share in unraid::parse_shares(output) {
+                    list.append(&adw::ActionRow::builder().title(&share).build());
+                }
+            }
+        },
+    );
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum TrueNasCategory {
+    Pools,
+    Services,
+    Alerts,
+}
+
+fn refresh_truenas_category(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    list: &gtk::ListBox,
+    jump: Option<host::Host>,
+    category: TrueNasCategory,
+) {
+    let command = Ok(match category {
+        TrueNasCategory::Pools => truenas::pools_command(),
+        TrueNasCategory::Services => truenas::services_command(),
+        TrueNasCategory::Alerts => truenas::alerts_command(),
+    });
+    let empty = (
+        match category {
+            TrueNasCategory::Pools => "Inga pooler",
+            TrueNasCategory::Services => "Inga tjänster",
+            TrueNasCategory::Alerts => "Inga larm",
+        },
+        Some("Tomt svar — kontrollera att värden är en TrueNAS och att midclt finns"),
+    );
+
+    refresh_integration_list(
+        host.clone(),
+        password.clone(),
+        list,
+        jump.clone(),
+        command,
+        empty,
+        clone!(
+            #[strong]
+            area,
+            #[strong]
+            host,
+            #[strong]
+            password,
+            #[strong]
+            jump,
+            move |output: &str, list: &gtk::ListBox| {
+                match category {
+                    TrueNasCategory::Pools => {
+                        for pool in truenas::parse_pools(output) {
+                            let mut subtitle = pool.status.clone();
+                            if pool.needs_attention() {
+                                // ONLINE men ohälsosam är det fall som
+                                // annars ser lugnt ut — säg vad som gäller.
+                                subtitle.push_str(if pool.healthy {
+                                    " · ⚠"
+                                } else {
+                                    " · ⚠ inte frisk (resilver, läsfel eller checksummefel)"
+                                });
+                            }
+                            list.append(
+                                &adw::ActionRow::builder().title(&pool.name).subtitle(subtitle).build(),
+                            );
+                        }
+                    }
+                    TrueNasCategory::Alerts => {
+                        for alert in truenas::parse_alerts(output) {
+                            let mut subtitle = alert.level.clone();
+                            if alert.dismissed {
+                                subtitle.push_str(" · avfärdat");
+                            }
+                            let row = adw::ActionRow::builder()
+                                .title(&alert.formatted)
+                                .subtitle(subtitle)
+                                .build();
+                            if alert.is_critical() && !alert.dismissed {
+                                row.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
+                            }
+                            list.append(&row);
+                        }
+                    }
+                    TrueNasCategory::Services => {
+                        for service in truenas::parse_services(output) {
+                            list.append(&build_truenas_service_row(
+                                &area, &host, &password, list, &jump, service,
+                            ));
+                        }
+                    }
+                }
+            }
+        ),
+    );
+}
+
+/// En tjänsterad, med start/stopp/omstart.
+///
+/// Bara tjänster har åtgärder. Pooler och larm är läsning: att avfärda
+/// ett larm eller exportera en pool härifrån vore driftbeslut som hör
+/// hemma i TrueNAS eget gränssnitt, där konsekvenserna förklaras.
+fn build_truenas_service_row(
+    area: &Rc<SessionArea>,
+    host: &host::Host,
+    password: &Option<String>,
+    list: &gtk::ListBox,
+    jump: &Option<host::Host>,
+    service: truenas::Service,
+) -> adw::ActionRow {
+    let mut subtitle = service.state.clone();
+    if service.is_running_but_not_enabled() {
+        subtitle.push_str(" · ⚠ startar inte vid omstart");
+    } else if !service.enabled {
+        subtitle.push_str(" · avstängd vid uppstart");
+    }
+    let row = adw::ActionRow::builder().title(&service.id).subtitle(subtitle).build();
+
+    let run_then_reload = {
+        let area = area.clone();
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let list = list.clone();
+        move |command: Result<String, String>| {
+            let Ok(command) = command else {
+                show_message_dialog(&area, "TrueNAS", "ogiltigt tjänste-id — kommandot byggdes aldrig");
+                return;
+            };
+            let rx = ssh::run_command(host.clone(), password.clone(), command, jump.clone());
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                host,
+                #[strong]
+                password,
+                #[strong]
+                jump,
+                #[weak]
+                list,
+                async move {
+                    match rx.recv().await {
+                        Ok(Ok(_)) => refresh_truenas_category(
+                            &area, host, password, &list, jump, TrueNasCategory::Services,
+                        ),
+                        Ok(Err(e)) => show_message_dialog(&area, "TrueNAS", &e),
+                        Err(_) => show_message_dialog(&area, "TrueNAS", "SSH-anslutningen avbröts oväntat"),
+                    }
+                }
+            ));
+        }
+    };
+
+    let id = service.id.clone();
+    if service.is_running() {
+        let restart = gtk::Button::from_icon_name("view-refresh-symbolic");
+        restart.set_tooltip_text(Some("Starta om"));
+        restart.set_valign(gtk::Align::Center);
+        restart.add_css_class("flat");
+        restart.connect_clicked({
+            let run_then_reload = run_then_reload.clone();
+            let id = id.clone();
+            move |_| run_then_reload(truenas::restart_service_command(&id))
+        });
+        row.add_suffix(&restart);
+
+        // Att stoppa en delningstjänst kopplar ner alla klienter — det
+        // ska bekräftas, till skillnad från en omstart som återställer.
+        let stop = gtk::Button::from_icon_name("media-playback-stop-symbolic");
+        stop.set_tooltip_text(Some("Stoppa"));
+        stop.set_valign(gtk::Align::Center);
+        stop.add_css_class("flat");
+        stop.connect_clicked(clone!(
+            #[strong]
+            area,
+            #[strong]
+            run_then_reload,
+            #[strong]
+            id,
+            move |_| {
+                let dialog = adw::AlertDialog::new(
+                    Some("Stoppa tjänsten"),
+                    Some(&format!(
+                        "Stoppa {id}?\n\nAlla klienter som använder tjänsten kopplas ner. \
+                         En omstart återställer i stället anslutningarna."
+                    )),
+                );
+                dialog.add_response("cancel", "Avbryt");
+                dialog.add_response("stop", "Stoppa");
+                dialog.set_response_appearance("stop", adw::ResponseAppearance::Destructive);
+                dialog.set_default_response(Some("cancel"));
+                dialog.connect_response(
+                    None,
+                    clone!(
+                        #[strong]
+                        run_then_reload,
+                        #[strong]
+                        id,
+                        move |_, response| {
+                            if response == "stop" {
+                                run_then_reload(truenas::stop_service_command(&id));
+                            }
+                        }
+                    ),
+                );
+                dialog.present(Some(&area.overlay));
+            }
+        ));
+        row.add_suffix(&stop);
+    } else {
+        let start = gtk::Button::from_icon_name("media-playback-start-symbolic");
+        start.set_tooltip_text(Some("Starta"));
+        start.set_valign(gtk::Align::Center);
+        start.add_css_class("flat");
+        start.connect_clicked({
+            let run_then_reload = run_then_reload.clone();
+            let id = id.clone();
+            move |_| run_then_reload(truenas::start_service_command(&id))
+        });
+        row.add_suffix(&start);
+    }
+
+    row
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ProxmoxCategory {
+    Vms,
+    Containers,
+    Storage,
+}
+
+fn refresh_proxmox_category(
+    area: &Rc<SessionArea>,
+    host: host::Host,
+    password: Option<String>,
+    list: &gtk::ListBox,
+    jump: Option<host::Host>,
+    category: ProxmoxCategory,
+) {
+    let command = Ok(match category {
+        ProxmoxCategory::Vms => proxmox::vms_command(),
+        ProxmoxCategory::Containers => proxmox::containers_command(),
+        ProxmoxCategory::Storage => proxmox::storage_command(),
+    });
+    let empty = (
+        match category {
+            ProxmoxCategory::Vms => "Inga virtuella maskiner",
+            ProxmoxCategory::Containers => "Inga containrar",
+            ProxmoxCategory::Storage => "Ingen lagring",
+        },
+        Some("Tomt svar — kontrollera att värden är en Proxmox VE-nod och att du har behörighet"),
+    );
+
+    refresh_integration_list(
+        host.clone(),
+        password.clone(),
+        list,
+        jump.clone(),
+        command,
+        empty,
+        clone!(
+            #[strong]
+            area,
+            #[strong]
+            host,
+            #[strong]
+            password,
+            #[strong]
+            jump,
+            move |output: &str, list: &gtk::ListBox| {
+                if category == ProxmoxCategory::Storage {
+                    for s in proxmox::parse_storage(output) {
+                        let mut subtitle = format!("{} · {} använt", s.kind, s.used_percent);
+                        if !s.is_active() {
+                            subtitle.push_str(" · ⚠ inaktiv");
+                        }
+                        list.append(
+                            &adw::ActionRow::builder().title(&s.name).subtitle(subtitle).build(),
+                        );
+                    }
+                    return;
+                }
+                let guests = match category {
+                    ProxmoxCategory::Vms => proxmox::parse_vms(output),
+                    _ => proxmox::parse_containers(output),
+                };
+                for guest in guests {
+                    list.append(&build_proxmox_guest_row(
+                        &area, &host, &password, list, &jump, category, guest,
+                    ));
+                }
+            }
+        ),
+    );
+}
+
+/// En rad för en VM eller container.
+///
+/// Att ren och hård avstängning är SKILDA knappar är hela poängen:
+/// `shutdown` går via gästens OS, `stop` drar ur strömmen. En enda knapp
+/// hade tvingat fram ett val användaren inte fick göra.
+fn build_proxmox_guest_row(
+    area: &Rc<SessionArea>,
+    host: &host::Host,
+    password: &Option<String>,
+    list: &gtk::ListBox,
+    jump: &Option<host::Host>,
+    category: ProxmoxCategory,
+    guest: proxmox::Guest,
+) -> adw::ActionRow {
+    let row = adw::ActionRow::builder()
+        .title(format!("{} ({})", guest.name, guest.vmid))
+        .subtitle(&guest.status)
+        .build();
+
+    let run_then_reload = {
+        let area = area.clone();
+        let host = host.clone();
+        let password = password.clone();
+        let jump = jump.clone();
+        let list = list.clone();
+        move |command: Result<String, String>| {
+            let Ok(command) = command else {
+                show_message_dialog(&area, "Proxmox", "ogiltigt VMID — kommandot byggdes aldrig");
+                return;
+            };
+            let rx = ssh::run_command(host.clone(), password.clone(), command, jump.clone());
+            glib::spawn_future_local(clone!(
+                #[strong]
+                area,
+                #[strong]
+                host,
+                #[strong]
+                password,
+                #[strong]
+                jump,
+                #[weak]
+                list,
+                async move {
+                    match rx.recv().await {
+                        Ok(Ok(_)) => refresh_proxmox_category(
+                            &area, host, password, &list, jump, category,
+                        ),
+                        Ok(Err(e)) => show_message_dialog(&area, "Proxmox", &e),
+                        Err(_) => show_message_dialog(&area, "Proxmox", "SSH-anslutningen avbröts oväntat"),
+                    }
+                }
+            ));
+        }
+    };
+
+    let kind = guest.kind;
+    let vmid = guest.vmid.clone();
+
+    let config = gtk::Button::from_icon_name("dialog-information-symbolic");
+    config.set_tooltip_text(Some("Visa konfiguration"));
+    config.set_valign(gtk::Align::Center);
+    config.add_css_class("flat");
+    config.connect_clicked(clone!(
+        #[strong]
+        area,
+        #[strong]
+        host,
+        #[strong]
+        password,
+        #[strong]
+        jump,
+        #[strong]
+        vmid,
+        #[strong(rename_to = title)]
+        guest.name,
+        move |_| {
+            let Ok(command) = proxmox::status_command(kind, &vmid) else {
+                show_message_dialog(&area, "Proxmox", "ogiltigt VMID");
+                return;
+            };
+            show_command_output(&area, &host, &password, &jump, &format!("config {title}"), command);
+        }
+    ));
+    row.add_suffix(&config);
+
+    if guest.is_running() {
+        let shutdown = gtk::Button::from_icon_name("system-shutdown-symbolic");
+        shutdown.set_tooltip_text(Some("Stäng av (via gästens OS)"));
+        shutdown.set_valign(gtk::Align::Center);
+        shutdown.add_css_class("flat");
+        shutdown.connect_clicked({
+            let run_then_reload = run_then_reload.clone();
+            let vmid = vmid.clone();
+            move |_| run_then_reload(proxmox::shutdown_command(kind, &vmid))
+        });
+        row.add_suffix(&shutdown);
+
+        let stop = gtk::Button::from_icon_name("media-playback-stop-symbolic");
+        stop.set_tooltip_text(Some("Tvinga av (drar ur strömmen)"));
+        stop.set_valign(gtk::Align::Center);
+        stop.add_css_class("flat");
+        stop.connect_clicked(clone!(
+            #[strong]
+            area,
+            #[strong]
+            run_then_reload,
+            #[strong]
+            vmid,
+            #[strong(rename_to = name)]
+            guest.name,
+            move |_| {
+                let dialog = adw::AlertDialog::new(
+                    Some("Tvinga av"),
+                    Some(&format!(
+                        "Stoppa {name} ({vmid}) hårt?\n\nDet motsvarar att dra ur strömmen — \
+                         gästens OS får ingen chans att avsluta, och filsystemet kan ta skada. \
+                         Använd Stäng av i stället om gästen svarar."
+                    )),
+                );
+                dialog.add_response("cancel", "Avbryt");
+                dialog.add_response("stop", "Tvinga av");
+                dialog.set_response_appearance("stop", adw::ResponseAppearance::Destructive);
+                dialog.set_default_response(Some("cancel"));
+                dialog.connect_response(
+                    None,
+                    clone!(
+                        #[strong]
+                        run_then_reload,
+                        #[strong]
+                        vmid,
+                        move |_, response| {
+                            if response == "stop" {
+                                run_then_reload(proxmox::stop_command(kind, &vmid));
+                            }
+                        }
+                    ),
+                );
+                dialog.present(Some(&area.overlay));
+            }
+        ));
+        row.add_suffix(&stop);
+    } else {
+        let start = gtk::Button::from_icon_name("media-playback-start-symbolic");
+        start.set_tooltip_text(Some("Starta"));
+        start.set_valign(gtk::Align::Center);
+        start.add_css_class("flat");
+        start.connect_clicked({
+            let run_then_reload = run_then_reload.clone();
+            let vmid = vmid.clone();
+            move |_| run_then_reload(proxmox::start_command(kind, &vmid))
+        });
+        row.add_suffix(&start);
+    }
+
+    row
+}
+
 /// Vilken Kubernetes-resurs en listning gäller.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum KubernetesCategory {
@@ -6657,6 +8227,61 @@ fn build_dashboard_rows(snap: &dashboard::SystemSnapshot) -> Vec<adw::ActionRow>
         row.add_prefix(&gtk::Image::from_icon_name(icon_name));
         rows.push(row);
     }
+
+    // Temperaturerna slås ihop till EN rad. En värd kan ha ett dussin
+    // thermal_zones, och tolv rader som mest säger "27,8 °C" dränker
+    // resten av översikten. Den varmaste först — det är den man vill se.
+    if !snap.temperatures.is_empty() {
+        let mut temps = snap.temperatures.clone();
+        temps.sort_by(|a, b| b.celsius.partial_cmp(&a.celsius).unwrap_or(std::cmp::Ordering::Equal));
+        let summary: Vec<String> = temps
+            .iter()
+            .take(4)
+            .map(|t| format!("{}: {:.1} °C", t.label, t.celsius))
+            .collect();
+        let mut subtitle = summary.join(" · ");
+        if temps.len() > 4 {
+            subtitle.push_str(&format!(" · +{} till", temps.len() - 4));
+        }
+        rows.push(adw::ActionRow::builder().title("Temperatur").subtitle(subtitle).build());
+    }
+
+    for addr in &snap.addresses {
+        rows.push(
+            adw::ActionRow::builder()
+                .title(addr.address.clone())
+                .subtitle(format!(
+                    "{} · {}",
+                    addr.interface,
+                    if addr.is_ipv6 { "IPv6" } else { "IPv4" }
+                ))
+                .build(),
+        );
+    }
+
+    // Vem KAN logga in. Fingeravtrycket är det som identifierar nyckeln;
+    // kommentaren är bara vad någon råkade skriva och kan vara tom.
+    for key in &snap.authorized_keys {
+        let who = if key.comment.is_empty() { "utan kommentar" } else { key.comment.as_str() };
+        rows.push(
+            adw::ActionRow::builder()
+                .title(who)
+                .subtitle(format!("{} {} bitar · {}", key.algorithm, key.bits, key.fingerprint))
+                .build(),
+        );
+    }
+
+    // Vem ÄR inne just nu. Raden säger varifrån när `who` vet det —
+    // skillnaden mot en lokal inloggning är värd att synas.
+    for user in &snap.active_users {
+        let mut subtitle = format!("{} · sedan {}", user.tty, user.since);
+        match &user.from {
+            Some(from) => subtitle.push_str(&format!(" · från {from}")),
+            None => subtitle.push_str(" · lokalt"),
+        }
+        rows.push(adw::ActionRow::builder().title(user.user.clone()).subtitle(subtitle).build());
+    }
+
     rows
 }
 

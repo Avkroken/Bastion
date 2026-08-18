@@ -1,0 +1,24 @@
+[package]
+name = "bastion-integrations"
+version = "0.1.0"
+edition = "2024"
+# Samma golv som appen, trots att det här paketet inte behöver det: en
+# lägre siffra hade bara varit ett löfte ingen kan lösa in, eftersom
+# paketet aldrig byggs utan appen.
+rust-version = "1.92"
+
+# ETT beroende, och det är hela poängen med gränsen.
+#
+# Jag påstod först att modulerna hade noll beroenden. Det var fel: jag
+# räknade `use`-rader, vilket missar fullt kvalificerade sökvägar, och
+# `docker::parse_compose_projects` anropar `serde_json` direkt (`docker
+# compose ls` svarar med JSON, till skillnad från de andra kommandona som
+# ger kolumner). Bygget sa ifrån direkt.
+#
+# Poängen står ändå: här finns ingen GTK, ingen russh, inget filsystem.
+# Ingenting HINDRADE tidigare nästa integration från att nå in i GUI:t;
+# nu gör paketgränsen det omöjligt. Den som vill anropa en GTK-widget
+# härifrån får ett kompileringsfel, inte en kodgranskning.
+[dependencies]
+serde_json = "1"
+

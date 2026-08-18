@@ -1,5 +1,5 @@
 //! Kubernetes-integration via `kubectl` över SSH. Andra integrationen
-//! bredvid [`crate::docker`], och byggd med samma uppdelning: rena
+//! bredvid [`docker`](crate::docker), och byggd med samma uppdelning: rena
 //! kommandobyggare + parsning här, widgetar i `main.rs`.
 //!
 //! # Varför `--no-headers` och inte `-o json`
