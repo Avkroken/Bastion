@@ -1828,6 +1828,45 @@ fn show_host_dialog(
     let platform_row = adw::ComboRow::builder().title("Fjärrsystem").build();
     let platform_model = gtk::StringList::new(&["Linux/macOS", "Windows (adminkonto)", "Windows (standardkonto)"]);
     platform_row.set_model(Some(&platform_model));
+
+    // Jump-host (ProxyJump). Motorn har kunnat det här sedan `ssh::connect_via_jump`,
+    // och `Host::jump_host_id` har funnits i datamodellen hela tiden — men inget
+    // i Linux-GUI:t kunde SÄTTA fältet, så funktionen gick bara att få via synk
+    // från App/ eller genom att handredigera hosts.json.
+    //
+    // Urvalet kommer från `HostStore::jump_host_candidates`, som delar regler med
+    // `resolve_jump`: aldrig sig själv, och aldrig en värd som själv har en jump
+    // (bara ett hopp stöds). `jump_ids[i]` hör ihop med rad `i` i modellen.
+    let jump_row = adw::ComboRow::builder()
+        .title("Anslut via (jump-host)")
+        .subtitle("ProxyJump — ett hopp")
+        .build();
+    let mut jump_ids: Vec<Option<uuid::Uuid>> = vec![None];
+    let mut jump_labels: Vec<String> = vec!["Ingen".to_string()];
+    {
+        let store_ref = store.borrow();
+        for candidate in store_ref.jump_host_candidates(existing.as_ref().map(|h| h.id)) {
+            jump_labels.push(format!("{} ({}@{})", candidate.alias, candidate.user, candidate.host_name));
+            jump_ids.push(Some(candidate.id));
+        }
+        // En redan sparad jump-host som INTE är en giltig kandidat (borttagen,
+        // eller har hunnit få en egen jump via synk) får inte tyst nollställas
+        // bara för att dialogen öppnas. Den visas i stället som ett eget,
+        // förvalt alternativ med orsaken utskriven — användaren väljer själv
+        // om den ska bytas.
+        if let Some(saved) = existing.as_ref().and_then(|h| h.jump_host_id)
+            && !jump_ids.contains(&Some(saved))
+        {
+            let label = match store_ref.all().into_iter().find(|h| h.id == saved) {
+                Some(h) => format!("{} — ogiltig: har själv en jump-host", h.alias),
+                None => "Okänd värd — borttagen eller inte synkad än".to_string(),
+            };
+            jump_labels.push(label);
+            jump_ids.push(Some(saved));
+        }
+    }
+    let jump_label_refs: Vec<&str> = jump_labels.iter().map(|s| s.as_str()).collect();
+    jump_row.set_model(Some(&gtk::StringList::new(&jump_label_refs)));
     let mac_row = adw::EntryRow::builder()
         .title("MAC-adress (valfritt, Wake-on-LAN, t.ex. AA:BB:CC:DD:EE:FF)")
         .build();
@@ -1968,6 +2007,11 @@ fn show_host_dialog(
         if let Some(mac) = &h.mac_address {
             mac_row.set_text(mac);
         }
+        if let Some(saved_jump) = h.jump_host_id
+            && let Some(idx) = jump_ids.iter().position(|id| *id == Some(saved_jump))
+        {
+            jump_row.set_selected(idx as u32);
+        }
         favorite_row.set_active(h.is_favorite);
         if !h.tags.is_empty() {
             tags_row.set_text(&h.tags.join(", "));
@@ -2051,6 +2095,7 @@ fn show_host_dialog(
     group.add(&host_row);
     group.add(&user_row);
     group.add(&port_row);
+    group.add(&jump_row);
     group.add(&platform_row);
     group.add(&mac_row);
     group.add(&favorite_row);
@@ -2188,6 +2233,10 @@ fn show_host_dialog(
             };
             auth_error_label.set_visible(false);
             let color_tag = color_selection.borrow().clone();
+            // `jump_ids` byggdes parallellt med modellen ovan, så index är
+            // alltid giltigt — men `get` i stället för indexering, så en
+            // framtida ändring av modellen inte kan panika här.
+            let jump_host_id = jump_ids.get(jump_row.selected() as usize).copied().flatten();
             let is_favorite = favorite_row.is_active();
             // Samma tolkning som Swift-sidans `save()`: dela på komma,
             // trimma, kasta bort tomma segment (t.ex. ett kvarglömt
@@ -2208,6 +2257,7 @@ fn show_host_dialog(
                 h.color_tag = color_tag;
                 h.is_favorite = is_favorite;
                 h.tags = tags;
+                h.jump_host_id = jump_host_id;
                 if !preserve_apple_only_auth {
                     h.auth = new_auth;
                 }
@@ -2220,6 +2270,7 @@ fn show_host_dialog(
                 h.color_tag = color_tag;
                 h.is_favorite = is_favorite;
                 h.tags = tags;
+                h.jump_host_id = jump_host_id;
                 h.auth = new_auth;
                 h
             };
