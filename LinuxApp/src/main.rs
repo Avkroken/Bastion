@@ -21,6 +21,7 @@ mod known_hosts;
 mod kubernetes;
 mod oauth;
 mod palette_actions;
+mod pkcs11;
 mod port_forward;
 mod proxmox;
 mod s3;
@@ -417,6 +418,18 @@ fn build_ui(app: &adw::Application) {
         }
     ));
     app.add_action(&known_hosts_action);
+
+    // PKCS#11-token (YubiKey, smartkort). Ligger som en egen åtgärd och
+    // inte i värdlistan: ett token laddas i den LOKALA ssh-agenten och
+    // gäller sedan alla värdar med autentisering "ssh-agent" — det är
+    // inte en egenskap hos en enskild värd.
+    let pkcs11_action = gtk::gio::SimpleAction::new("pkcs11", None);
+    pkcs11_action.connect_activate(clone!(
+        #[strong]
+        app,
+        move |_, _| show_pkcs11_dialog(&app)
+    ));
+    app.add_action(&pkcs11_action);
 
     // `+`-knappens innebörd följer kategorin. Egna åtgärder i stället för
     // en förgrening i knappens klickhanterare, så att de också går att nå
@@ -1713,6 +1726,7 @@ fn sidebar_menu() -> gtk::gio::Menu {
     network.append(Some("WireGuard-profiler"), Some("app.wireguard"));
     network.append(Some("S3-anslutningar"), Some("app.s3"));
     network.append(Some("Kända värdar"), Some("app.known-hosts"));
+    network.append(Some("PKCS#11-token (YubiKey, smartkort)"), Some("app.pkcs11"));
     menu.append_section(None, &network);
 
     let app_menu = gtk::gio::Menu::new();
@@ -2367,6 +2381,134 @@ async fn run_oauth_login(app: &adw::Application, provider: &oauth::OAuthProvider
     let client = reqwest::Client::new();
     oauth::finish_login(session, &client, provider).await
 }
+/// Laddar och tar bort PKCS#11-tokens i den LOKALA ssh-agenten.
+///
+/// Halva stödet fanns redan utan att synas: en nyckel i agenten når
+/// `HostAuth::AgentDefault`, och en FIDO2-nyckel signeras av agenten med
+/// touch-prompt och allt. Det som saknades var vägen in — `ssh-add -s` —
+/// och något som berättar att möjligheten finns.
+///
+/// Kommandot körs mot den egna maskinen och inte över SSH. Agenten är
+/// lokal; att ladda ett token på fjärrvärden vore fel sak.
+fn show_pkcs11_dialog(app: &adw::Application) {
+    let group = adw::PreferencesGroup::builder()
+        .title("PKCS#11-token")
+        .description(
+            "Laddar tokenets nycklar i din lokala ssh-agent. Välj sedan autentisering \
+             \"ssh-agent\" på de värdar som ska använda det.\n\nFIDO2-nycklar \
+             (ed25519-sk) behöver inte laddas här — de fungerar redan via agenten.",
+        )
+        .build();
+
+    let path_row = adw::EntryRow::builder().title("Sökväg till PKCS#11-modul").build();
+    group.add(&path_row);
+
+    // Hittade moduler blir knappar som fyller i fältet. Sökvägen till en
+    // PKCS#11-modul är inget någon kan utantill, och att kräva den vore
+    // att göra funktionen oanvändbar för de flesta.
+    let found = pkcs11::discover();
+    if found.is_empty() {
+        group.add(
+            &adw::ActionRow::builder()
+                .title("Ingen modul hittad automatiskt")
+                .subtitle("Installera t.ex. opensc-pkcs11, eller skriv in sökvägen för hand")
+                .build(),
+        );
+    } else {
+        for module in &found {
+            let row = adw::ActionRow::builder()
+                .title(&module.label)
+                .subtitle(module.path.display().to_string())
+                .activatable(true)
+                .build();
+            row.connect_activated(clone!(
+                #[weak]
+                path_row,
+                #[strong(rename_to = path)]
+                module.path,
+                move |_| path_row.set_text(&path.display().to_string())
+            ));
+            group.add(&row);
+        }
+    }
+
+    let status = gtk::Label::builder()
+        .wrap(true)
+        .halign(gtk::Align::Start)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_bottom(12)
+        .build();
+
+    let page = adw::PreferencesPage::new();
+    page.add(&group);
+
+    let add_button = gtk::Button::with_label("Ladda");
+    add_button.add_css_class("suggested-action");
+    let remove_button = gtk::Button::with_label("Ta bort");
+    let close_button = gtk::Button::with_label("Stäng");
+    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    header.pack_start(&close_button);
+    header.pack_end(&add_button);
+    header.pack_end(&remove_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&page);
+    content.append(&status);
+
+    let win = dialog_window(&app_window(app), "PKCS#11-token", DialogSize::List, &content);
+
+    close_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        move |_| win.close()
+    ));
+
+    let run = {
+        let path_row = path_row.clone();
+        let status = status.clone();
+        move |adding: bool| {
+            let raw = path_row.text().to_string();
+            let path = std::path::PathBuf::from(raw.trim());
+            if path.as_os_str().is_empty() {
+                status.set_text("Ange en sökväg till modulen först.");
+                return;
+            }
+            // Kontrolleras här för att felet ska bli begripligt: `ssh-add`
+            // svarar "Could not add card" oavsett om filen saknas, är fel
+            // sorts fil eller om tokenet inte sitter i.
+            if let Err(e) = pkcs11::check_with(&path, |p| p.exists()) {
+                status.set_text(&e.message(&path));
+                return;
+            }
+            let args = if adding { pkcs11::add_args(&path) } else { pkcs11::remove_args(&path) };
+            match std::process::Command::new("ssh-add").args(&args).output() {
+                Ok(out) => {
+                    // ssh-add skriver sina meddelanden på stderr, även vid
+                    // framgång.
+                    let text = String::from_utf8_lossy(&out.stderr);
+                    status.set_text(&pkcs11::describe_result(out.status.success(), &text, adding));
+                }
+                Err(e) => status.set_text(&format!(
+                    "kunde inte köra ssh-add: {e} — finns OpenSSH-klienten installerad?"
+                )),
+            }
+        }
+    };
+
+    add_button.connect_clicked({
+        let run = run.clone();
+        move |_| run(true)
+    });
+    remove_button.connect_clicked({
+        let run = run.clone();
+        move |_| run(false)
+    });
+
+    win.present();
+}
+
 
 /// Funktioner-inställningar: alla sex av `settings::FeatureToggles`s fält
 /// utom Snippets (`show_snippets` — sidopanelens Snippets-vy finns inte i
