@@ -2992,8 +2992,17 @@ Inget nytt att bygga, bara verifiera/lansera:
   (rot-fil + underkatalog med egen fil) laddas upp och läses tillbaka,
   bevisar både rekursionen och att innehållet överlever hela resan — inte
   bara ett plant enfilsfall. Byggd och körd under Xvfb utan krasch.
-  **Kvar**: flerval för komprimering, förhandsvisning (t.ex. bilder),
-  syntax highlighting (se separat post nedan).
+  **Kvar**: flerval för komprimering, syntax highlighting (se separat post
+  nedan). Förhandsvisning av bilder ✅ (2026-08-17, LinuxApp): en fil vars
+  namn ser ut som en bild öppnas i en `GtkPicture`-dialog i stället för i
+  textredigeraren, där en PNG tidigare hamnade som binärskräp i en
+  textbuffert. Valet är ändelsebaserat med flit — att sniffa innehållet
+  kräver just den nedladdning vi vill undvika innan vyn valts. Storleken
+  kontrolleras FÖRE hämtningen (`read` läser hela filen till minne, och en
+  fjärrkatalog kan innehålla flergigabytesfiler); över
+  `sftp::PREVIEW_MAX_BYTES` visas en förklaring i stället. Gissar ändelsen
+  fel visar GDK ett fel i dialogen — ingen återgång till editorn, eftersom
+  binärt innehåll i en textbuffert är sämre än ett tydligt felmeddelande.
 - Inbyggd editor med syntax highlighting
 - Plugin-system (Proxmox, TrueNAS, Unraid, Cloudflare, GitHub, Kubernetes)
 - **Agent Forwarding**: ✅ agent-PROTOKOLLKLIENTEN klar (2026-07-07,

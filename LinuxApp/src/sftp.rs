@@ -281,6 +281,65 @@ fn reply_error(cmd: Command, message: &str) {
     }
 }
 
+/// Största fil vi hämtar hem för förhandsvisning. En SFTP-katalog kan
+/// innehålla flergigabytes-filer, och `read` läser HELA filen till minne
+/// innan något ritas — utan tak skulle ett felklick på en diskavbild
+/// kunna dra ner appen. Bilder som är större än så här är i praktiken
+/// aldrig något man vill ögna igenom över en SSH-länk ändå.
+pub const PREVIEW_MAX_BYTES: u64 = 25 * 1024 * 1024;
+
+/// Ser filnamnet ut som en bild GTK kan rita? Avgör om en fil öppnas som
+/// förhandsvisning eller i textredigeraren.
+///
+/// Ändelsebaserat med flit: alternativet vore att hämta hem filen först
+/// och sniffa innehållet, alltså exakt den nedladdning vi vill undvika för
+/// att kunna välja rätt vy. Gissar vi fel visar GDK ett fel i dialogen i
+/// stället för att krascha — förhandsvisningen faller inte tillbaka till
+/// editorn, eftersom en binärfil i en textbuffert är sämre än ett tydligt
+/// felmeddelande.
+pub fn looks_like_image(name: &str) -> bool {
+    // Formaten GdkPixbuf laddar utan extra loaders på en typisk
+    // GNOME-installation. TIFF och ICO ingår, SVG gör det INTE (kräver
+    // librsvg som separat pixbuf-loader — utelämnad hellre än att lova
+    // något som saknas på minimala system).
+    const IMAGE_EXTENSIONS: [&str; 8] = ["png", "jpg", "jpeg", "gif", "bmp", "webp", "tif", "tiff"];
+    let Some((_, ext)) = name.rsplit_once('.') else {
+        return false;
+    };
+    // Filnamn som ".png" är en dold fil utan ändelse, inte en bild.
+    if name.starts_with('.') && name.matches('.').count() == 1 {
+        return false;
+    }
+    IMAGE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str())
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+
+    #[test]
+    fn recognises_common_image_extensions_case_insensitively() {
+        for name in ["bild.png", "FOTO.JPG", "a.jpeg", "x.GIF", "y.webp", "z.tiff"] {
+            assert!(looks_like_image(name), "{name} borde räknas som bild");
+        }
+    }
+
+    #[test]
+    fn rejects_non_images_and_extensionless_names() {
+        for name in ["config.yaml", "Dockerfile", "skript.sh", "arkiv.tar.gz", "namn.pngx"] {
+            assert!(!looks_like_image(name), "{name} borde INTE räknas som bild");
+        }
+    }
+
+    /// En dotfil utan ändelse (`.png` som filnamn) är en dold textfil, inte
+    /// en bild — ändelsedelningen får inte tolka namnet som sin egen ändelse.
+    #[test]
+    fn a_dotfile_named_like_an_extension_is_not_an_image() {
+        assert!(!looks_like_image(".png"));
+        assert!(looks_like_image(".dolt.png"), "dold fil MED ändelse är fortfarande en bild");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
