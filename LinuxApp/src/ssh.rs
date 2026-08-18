@@ -91,6 +91,49 @@ pub(crate) struct ClientHandler {
 impl client::Handler for ClientHandler {
     type Error = ConnectError;
 
+    /// Serverns sida av agent-vidarebefordran.
+    ///
+    /// När fjärrvärden vill använda vår agent öppnar den en kanal av typen
+    /// `auth-agent@openssh.com` mot oss. Vi accepterar den och kopplar
+    /// ihop den med den LOKALA agentens unix-socket — bytes in, bytes ut,
+    /// utan att tolka agentprotokollet. Det är precis vad OpenSSH gör, och
+    /// det är hela anledningen till att nycklarna aldrig lämnar maskinen:
+    /// bara signaturförfrågningar färdas över kanalen.
+    ///
+    /// Motsvarande stöd saknas på Swift-sidan — `NIOSSH` exponerar ingen
+    /// väg att ta emot en serveröppnad kanal av godtycklig typ, vilket
+    /// ROADMAP dokumenterar som arkitektoniskt blockerat. Den slutsatsen
+    /// gäller NIOSSH, inte russh, och därför finns funktionen här.
+    ///
+    /// Saknas `$SSH_AUTH_SOCK` accepteras kanalen ändå och stängs direkt.
+    /// Alternativet vore att avvisa den, men då får fjärrsidan ett
+    /// protokollfel i stället för ett tomt svar — och en `ssh-add -l` som
+    /// säger "inga identiteter" är begripligare än en bruten session.
+    async fn server_channel_open_agent_forward(
+        &mut self,
+        channel: Channel<Msg>,
+        reply: client::ChannelOpenHandle,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        reply.accept().await;
+        let socket = std::env::var("SSH_AUTH_SOCK").ok();
+        tokio::spawn(async move {
+            let Some(socket) = socket else {
+                return; // ingen agent lokalt — kanalen stängs när den droppas
+            };
+            let Ok(mut local) = tokio::net::UnixStream::connect(&socket).await else {
+                return;
+            };
+            let mut remote = channel.into_stream();
+            // Samma brygga som port_forward och socks_proxy använder.
+            // Agentprotokollet är längdprefixade meddelanden i båda
+            // riktningar, så en rå kopiering räcker — inget behöver
+            // ramas om på vägen.
+            let _ = tokio::io::copy_bidirectional(&mut local, &mut remote).await;
+        });
+        Ok(())
+    }
+
     async fn check_server_key(&mut self, server_public_key: &PublicKey) -> Result<bool, Self::Error> {
         let key_string = format!(
             "{} {}",
@@ -423,19 +466,34 @@ async fn run_command_once(
     jump: Option<Host>,
 ) -> Result<String, String> {
     let session = connect(&host, password, known_hosts_path_override, jump).await?;
-    tokio::time::timeout(COMMAND_TIMEOUT, run_command_on_session(&session, &command))
-        .await
-        .map_err(|_| format!("kommandot svarade inte inom {}s", COMMAND_TIMEOUT.as_secs()))?
+    tokio::time::timeout(
+        COMMAND_TIMEOUT,
+        run_command_on_session(&session, &command, host.forward_agent),
+    )
+    .await
+    .map_err(|_| format!("kommandot svarade inte inom {}s", COMMAND_TIMEOUT.as_secs()))?
 }
 
 async fn run_command_on_session(
     session: &Handle<ClientHandler>,
     command: &str,
+    forward_agent: bool,
 ) -> Result<String, String> {
     let mut channel = session
         .channel_open_session()
         .await
         .map_err(|e| format!("kunde inte öppna kanal: {e}"))?;
+    // Även ett engångskommando kan behöva agenten — `git pull` eller
+    // `ssh vidare-värd` på fjärrsidan använder den precis som en
+    // interaktiv session gör. Begäran måste ligga före `exec`, av samma
+    // skäl som före `request_shell`: servern sätter $SSH_AUTH_SOCK när
+    // kommandot startar.
+    if forward_agent {
+        channel
+            .agent_forward(false)
+            .await
+            .map_err(|e| format!("kunde inte begära agent-vidarebefordran: {e}"))?;
+    }
     channel
         .exec(true, command.as_bytes())
         .await
@@ -505,6 +563,21 @@ async fn run(
         .channel_open_session()
         .await
         .map_err(|e| format!("kunde inte öppna kanal: {e}"))?;
+    // Agent-vidarebefordran begärs FÖRE pty och shell, precis som
+    // OpenSSH gör: begäran gäller kanalen, och servern sätter
+    // $SSH_AUTH_SOCK i miljön när shellen startar. Efteråt vore för sent.
+    //
+    // Ett nekat svar är inte ett fel som ska avbryta anslutningen —
+    // många servrar har `AllowAgentForwarding no`, och då ska sessionen
+    // öppnas ändå, bara utan agenten. Därför `false` (want_reply) och
+    // inget felkast: vi ber, och accepterar att svaret kan bli nej.
+    if host.forward_agent {
+        channel
+            .agent_forward(false)
+            .await
+            .map_err(|e| format!("kunde inte begära agent-vidarebefordran: {e}"))?;
+    }
+
     channel
         .request_pty(false, "xterm-256color", cols, rows, 0, 0, &[])
         .await
@@ -1071,7 +1144,7 @@ mod tests {
         let session = connect(&target_host, None, None, Some(jump_host))
             .await
             .expect("anslutning genom jump-hosten misslyckades");
-        let output = run_command_on_session(&session, "echo bastion-proxyjump-ok")
+        let output = run_command_on_session(&session, "echo bastion-proxyjump-ok", false)
             .await
             .expect("kommandot över den tunnlade sessionen misslyckades");
         assert_eq!(output.trim(), "bastion-proxyjump-ok");
@@ -1393,4 +1466,47 @@ mod tests {
         );
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    /// Agent-vidarebefordran mot en RIKTIG sshd med en RIKTIG ssh-agent.
+    ///
+    /// Testet finns för att ROADMAP dokumenterar agent forwarding som
+    /// "arkitektoniskt blockerad". Det gäller NIOSSH på Swift-sidan, som
+    /// inte exponerar någon väg att ta emot en serveröppnad kanal av
+    /// godtycklig typ. russh har både `Channel::agent_forward` och
+    /// `Handler::server_channel_open_agent_forward`, och det här visar att
+    /// de faktiskt räcker hela vägen.
+    ///
+    /// Beviset är `ssh-add -l` PÅ FJÄRRSIDAN: den listar nycklarna ur den
+    /// LOKALA agenten, vilket bara är möjligt om kanalen kopplats ihop med
+    /// vår unix-socket. Att bara kontrollera att `$SSH_AUTH_SOCK` är satt
+    /// hade räckt för att servern accepterade begäran — inte för att
+    /// bryggan fungerar.
+    #[test]
+    #[ignore = "kräver en riktig localhost-sshd, en nyckel i authorized_keys och en körande ssh-agent"]
+    fn forwarded_agent_is_reachable_from_the_remote_side() {
+        let key_path = std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
+        assert!(
+            std::env::var("SSH_AUTH_SOCK").is_ok(),
+            "testet kräver en körande ssh-agent (SSH_AUTH_SOCK)"
+        );
+
+        let mut host = Host::new("agent-forward-test".into(), "127.0.0.1".into(), crate::test_support::test_user());
+        host.auth = HostAuth::KeyFile(key_path);
+        host.forward_agent = true;
+
+        let rx = run_command(host, None, "ssh-add -l 2>&1".to_string(), None);
+        let output = rx
+            .recv_blocking()
+            .expect("kanalen stängdes utan svar")
+            .expect("kommandot misslyckades");
+
+        // Nycklarna kommer från VÅR agent. Hade bryggan inte fungerat
+        // skulle `ssh-add` svara "Could not open a connection to your
+        // authentication agent" eller "The agent has no identities".
+        assert!(
+            output.contains("SHA256:"),
+            "fjärrsidan såg inga nycklar genom den vidarebefordrade agenten, fick: {output:?}"
+        );
+    }
+
 }

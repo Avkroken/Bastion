@@ -1960,6 +1960,13 @@ fn show_host_dialog(
     // dialogen. Motsvarar `Toggle("Favorit", ...)` +
     // `tagsText`-fältet i `App/HostEditView.swift`.
     let favorite_row = adw::SwitchRow::builder().title("Favorit").build();
+    // Undertexten är inte dekoration. Agent-vidarebefordran är den
+    // inställning i hela dialogen som kan kosta dig dina nycklar på andra
+    // maskiner, och risken syns inte av namnet.
+    let forward_agent_row = adw::SwitchRow::builder()
+        .title("Vidarebefordra ssh-agent")
+        .subtitle("Låter dig hoppa vidare med dina nycklar. Den som har root på värden kan använda dem så länge sessionen lever — slå bara på för värdar du litar på.")
+        .build();
     let tags_row = adw::EntryRow::builder().title("Taggar (kommaseparerat)").build();
 
     // Färgmärkning: `host.color_tag` fanns i datamodellen sedan starten men
@@ -2089,6 +2096,7 @@ fn show_host_dialog(
             jump_row.set_selected(idx as u32);
         }
         favorite_row.set_active(h.is_favorite);
+        forward_agent_row.set_active(h.forward_agent);
         if !h.tags.is_empty() {
             tags_row.set_text(&h.tags.join(", "));
         }
@@ -2175,6 +2183,7 @@ fn show_host_dialog(
     group.add(&platform_row);
     group.add(&mac_row);
     group.add(&favorite_row);
+    group.add(&forward_agent_row);
     group.add(&tags_row);
     group.add(&color_row);
     group.add(&auth_row);
@@ -2314,6 +2323,7 @@ fn show_host_dialog(
             // framtida ändring av modellen inte kan panika här.
             let jump_host_id = jump_ids.get(jump_row.selected() as usize).copied().flatten();
             let is_favorite = favorite_row.is_active();
+            let forward_agent = forward_agent_row.is_active();
             // Samma tolkning som Swift-sidans `save()`: dela på komma,
             // trimma, kasta bort tomma segment (t.ex. ett kvarglömt
             // avslutande komma).
@@ -2332,6 +2342,7 @@ fn show_host_dialog(
                 h.mac_address = mac_address;
                 h.color_tag = color_tag;
                 h.is_favorite = is_favorite;
+                h.forward_agent = forward_agent;
                 h.tags = tags;
                 h.jump_host_id = jump_host_id;
                 if !preserve_apple_only_auth {
@@ -2345,6 +2356,7 @@ fn show_host_dialog(
                 h.mac_address = mac_address;
                 h.color_tag = color_tag;
                 h.is_favorite = is_favorite;
+                h.forward_agent = forward_agent;
                 h.tags = tags;
                 h.jump_host_id = jump_host_id;
                 h.auth = new_auth;

@@ -167,6 +167,16 @@ pub struct Host {
     pub jump_host_id: Option<Uuid>,
     #[serde(default)]
     pub mac_address: Option<String>,
+    /// Vidarebefordra den lokala ssh-agenten till värden (OpenSSH:s
+    /// `ForwardAgent`).
+    ///
+    /// FALSKT som förval, och det är ett säkerhetsval snarare än ett
+    /// bekvämlighetsval. Med agenten vidarebefordrad kan vem som helst
+    /// med root på fjärrvärden använda DINA nycklar så länge sessionen
+    /// lever — utan att kunna läsa dem, men utan att du märker något
+    /// heller. OpenSSH har samma förval av samma skäl.
+    #[serde(default)]
+    pub forward_agent: bool,
     pub modified_at: ReferenceDate,
 }
 
@@ -190,6 +200,7 @@ impl Host {
             startup_command: None,
             jump_host_id: None,
             mac_address: None,
+            forward_agent: false,
             modified_at: ReferenceDate::now(),
         }
     }
