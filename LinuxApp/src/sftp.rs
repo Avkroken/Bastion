@@ -352,7 +352,7 @@ mod tests {
     #[ignore = "kräver en riktig localhost-sshd + en nyckel förberedd i authorized_keys, se ROADMAP.md"]
     fn full_round_trip_against_a_real_sftp_server() {
         let key_path = std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
-        let user = std::env::var("USER").expect("USER måste vara satt");
+        let user = crate::test_support::test_user();
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
 
@@ -393,7 +393,7 @@ mod tests {
     #[ignore = "kräver en riktig localhost-sshd + en nyckel förberedd i authorized_keys, se ROADMAP.md"]
     fn chmod_and_chown_apply_on_a_real_sftp_server() {
         let key_path = std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
-        let user = std::env::var("USER").expect("USER måste vara satt");
+        let user = crate::test_support::test_user();
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
 
@@ -422,7 +422,7 @@ mod tests {
     #[ignore = "kräver en riktig localhost-sshd + en nyckel förberedd i authorized_keys, se ROADMAP.md"]
     fn compress_then_extract_round_trips_real_file_content() {
         let key_path = std::env::var("BASTION_TEST_SSH_KEY").expect("BASTION_TEST_SSH_KEY måste sättas");
-        let user = std::env::var("USER").expect("USER måste vara satt");
+        let user = crate::test_support::test_user();
         let mut host = Host::new("test".into(), "127.0.0.1".into(), user);
         host.auth = HostAuth::KeyFile(key_path);
 
@@ -576,6 +576,6 @@ mod tests {
     }
 
     fn whoami_user() -> String {
-        std::env::var("USER").unwrap_or_else(|_| "test".into())
+        crate::test_support::test_user()
     }
 }
