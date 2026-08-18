@@ -7,6 +7,7 @@ use vte::prelude::*;
 
 mod archive;
 mod bitwarden;
+mod bookmarks;
 mod command_library;
 mod dashboard;
 mod docker;
@@ -573,10 +574,35 @@ fn build_ui(app: &adw::Application) {
     ));
     app.add_action(&close_pane_action);
 
+    // Log-bokmärken. Två åtgärder och inte en: att SÄTTA ett bokmärke ska
+    // gå utan att något öppnas — man trycker mitt i en körning man tittar
+    // på — medan att hitta tillbaka kräver listan.
+    let bookmark_add_action = gtk::gio::SimpleAction::new("bookmark-add", None);
+    bookmark_add_action.connect_activate(clone!(
+        #[strong]
+        area,
+        move |_, _| bookmark_focused_pane(&area)
+    ));
+    app.add_action(&bookmark_add_action);
+
+    let bookmark_list_action = gtk::gio::SimpleAction::new("bookmark-list", None);
+    bookmark_list_action.connect_activate(clone!(
+        #[strong]
+        area,
+        move |_, _| show_bookmarks_dialog(&area)
+    ));
+    app.add_action(&bookmark_list_action);
+
     // Rutåtgärderna betyder ingenting utan en öppen session. I stället
     // för att tyst inte göra något gråas de ut i menyn, vilket GTK sköter
     // självt så fort åtgärden är avstängd.
-    let session_actions = vec![split_right_action, split_down_action, close_pane_action];
+    let session_actions = vec![
+        split_right_action,
+        split_down_action,
+        close_pane_action,
+        bookmark_add_action,
+        bookmark_list_action,
+    ];
     let set_session_actions_enabled = move |enabled: bool| {
         for action in &session_actions {
             action.set_enabled(enabled);
@@ -640,6 +666,11 @@ fn build_ui(app: &adw::Application) {
     app.set_accels_for_action("app.split-right", &["<Ctrl><Shift>e"]);
     app.set_accels_for_action("app.split-down", &["<Ctrl><Shift>o"]);
     app.set_accels_for_action("app.close-pane", &["<Ctrl><Shift>x"]);
+    // `D` för att sätta ett bokmärke och `B` för att lista dem. `Ctrl+B`
+    // utan Shift är tmux prefixtangent och `Ctrl+D` skickar EOF — båda
+    // hade tagits från skalet, samma resonemang som ovan.
+    app.set_accels_for_action("app.bookmark-add", &["<Ctrl><Shift>d"]);
+    app.set_accels_for_action("app.bookmark-list", &["<Ctrl><Shift>b"]);
     app.set_accels_for_action("app.settings", &["<Ctrl>comma"]);
     for number in 1..=9 {
         app.set_accels_for_action(
@@ -1602,6 +1633,11 @@ fn sidebar_menu() -> gtk::gio::Menu {
     panes.append(Some("Dela nedåt"), Some("app.split-down"));
     panes.append(Some("Stäng ruta"), Some("app.close-pane"));
     menu.append_section(None, &panes);
+
+    let marks = gtk::gio::Menu::new();
+    marks.append(Some("Sätt bokmärke"), Some("app.bookmark-add"));
+    marks.append(Some("Bokmärken i loggen"), Some("app.bookmark-list"));
+    menu.append_section(None, &marks);
 
     let connections = gtk::gio::Menu::new();
     connections.append(Some("Telnet"), Some("app.telnet"));
@@ -2756,6 +2792,10 @@ fn show_settings_dialog(
 /// olöst för gamla SwiftCrossUI-Linux, se project-bastion-linuxapp-touchscreen-goal).
 struct SessionArea {
     overlay: gtk::Overlay,
+    /// Kortlivad återkoppling ovanpå sessionerna. En modal dialog vore
+    /// fel verktyg för "bokmärke satt": den avbryter precis den körning
+    /// man tittade på när man tryckte.
+    toasts: adw::ToastOverlay,
     tab_view: adw::TabView,
     tab_bar: adw::TabBar,
     placeholder: adw::StatusPage,
@@ -2775,8 +2815,14 @@ impl SessionArea {
             .hexpand(true)
             .build();
 
+        // Toast-lagret ligger MELLAN överlägget och flikvyn: `overlay`
+        // förblir det dialoger presenteras på och det platshållaren
+        // ritas över, medan toasts hamnar ovanpå sessionsinnehållet.
+        let toasts = adw::ToastOverlay::new();
+        toasts.set_child(Some(&tab_view));
+
         let overlay = gtk::Overlay::new();
-        overlay.set_child(Some(&tab_view));
+        overlay.set_child(Some(&toasts));
         overlay.add_overlay(&placeholder);
 
         let swipe = gtk::GestureSwipe::new();
@@ -2798,6 +2844,7 @@ impl SessionArea {
 
         let area = Rc::new(SessionArea {
             overlay,
+            toasts,
             tab_view,
             tab_bar,
             placeholder,
@@ -3002,7 +3049,16 @@ fn prompt_password_then(
 /// (SSH/Telnet/Seriell) i stället för att var och en läser
 /// `TerminalThemeStore` och sätter färger separat.
 fn new_themed_terminal() -> vte::Terminal {
-    let terminal = vte::Terminal::builder().vexpand(true).hexpand(true).build();
+    let terminal = vte::Terminal::builder()
+        .vexpand(true)
+        .hexpand(true)
+        // VTE:s förval är 512 rader. Det räcker inte för det appen är
+        // till för — en `apt upgrade` eller ett bygge skrollar förbi det
+        // långt innan man hunnit läsa, och log-bokmärken pekar in i
+        // just den här bufferten (se `bookmarks`), så taket är också
+        // gränsen för hur långt tillbaka ett bokmärke kan peka.
+        .scrollback_lines(SCROLLBACK_LINES)
+        .build();
     let store = terminal_theme::TerminalThemeStore::open(terminal_theme::TerminalThemeStore::default_path());
     terminal_theme::apply(&terminal, terminal_theme::theme(store.selected_id().as_deref()));
     terminal
@@ -3078,7 +3134,30 @@ enum PaneSource {
     },
 }
 
+/// Hur många rader terminalens skrollbuffert håller. Se
+/// `new_themed_terminal` och `bookmarks`-modulens kommentar om glidning.
+const SCROLLBACK_LINES: u32 = 100_000;
+
 const PANE_SOURCE_KEY: &str = "bastion-pane-source";
+
+const BOOKMARKS_KEY: &str = "bastion-bookmarks";
+
+/// Rutans bokmärkeslista, skapad vid första anropet.
+///
+/// Listan hänger på widgeten och inte i en central tabell av samma skäl
+/// som `PaneSource`: en ruta som stängs tar med sig sina bokmärken, utan
+/// att något måste komma ihåg att städa. Se `bookmarks`-modulen för
+/// varför de inte sparas till disk.
+fn pane_bookmarks(terminal: &vte::Terminal) -> Rc<RefCell<bookmarks::BookmarkList>> {
+    unsafe {
+        if let Some(ptr) = terminal.data::<Rc<RefCell<bookmarks::BookmarkList>>>(BOOKMARKS_KEY) {
+            return ptr.as_ref().clone();
+        }
+        let list = Rc::new(RefCell::new(bookmarks::BookmarkList::new()));
+        terminal.set_data(BOOKMARKS_KEY, list.clone());
+        list
+    }
+}
 
 fn set_pane_source(terminal: &vte::Terminal, source: PaneSource) {
     unsafe {
@@ -3206,6 +3285,226 @@ fn split_focused_pane(area: &Rc<SessionArea>, orientation: gtk::Orientation) {
         }
         PaneSource::Telnet { host, port } => start_telnet_session(area, host, port, target),
     }
+}
+
+/// Sätter ett bokmärke vid den rad som ligger överst i rutan med fokus.
+///
+/// Gör ingenting utan en terminalruta — Docker-, SFTP- och tunnelflikar
+/// har ingen skrollbuffert att peka in i.
+fn bookmark_focused_pane(area: &Rc<SessionArea>) {
+    let Some(pane) = focused_pane(area) else {
+        return;
+    };
+    use chrono::Timelike as _;
+    let now = chrono::Local::now();
+    let label = bookmarks::default_label(now.hour(), now.minute(), now.second());
+    let row = pane.vadjustment().map(|adj| adj.value()).unwrap_or(0.0);
+    pane_bookmarks(&pane).borrow_mut().add(row, label.clone());
+    area.toasts
+        .add_toast(adw::Toast::new(&format!("Bokmärke satt: {label}")));
+}
+
+/// Terminalrutan med fokus i den valda fliken, om fliken har någon.
+fn focused_pane(area: &Rc<SessionArea>) -> Option<vte::Terminal> {
+    split::focused_terminal(&area.tab_view.selected_page()?.child())
+}
+
+/// Sen bindning av "rita om listan" till sig själv: raderna behöver kunna
+/// utlösa en ombyggnad, men de skapas AV ombyggnaden, så stängningen kan
+/// inte fånga sig själv utan att gå via en cell som fylls i efteråt.
+type Rebuild = Rc<RefCell<Option<Box<dyn Fn()>>>>;
+
+/// Listan över rutans bokmärken, med hopp, omdöpning och borttagning.
+///
+/// Byggs om från listan varje gång något ändras (`rebuild`) i stället för
+/// att raderna uppdateras på plats: en omdöpning kan flytta ingenting,
+/// men en borttagning ändrar vilka rader som finns, och två vägar att
+/// hålla vyn i synk är en väg för mycket.
+fn show_bookmarks_dialog(area: &Rc<SessionArea>) {
+    let Some(pane) = focused_pane(area) else {
+        return;
+    };
+    let list = pane_bookmarks(&pane);
+
+    let rows = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .css_classes(["boxed-list"])
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(12)
+        .margin_bottom(12)
+        .build();
+    let scrolled = gtk::ScrolledWindow::builder()
+        .child(&rows)
+        .min_content_height(280)
+        .vexpand(true)
+        .build();
+
+    // Har skrollbufferten svämmat över pekar bokmärkena på senare rader
+    // än de sattes vid. Att säga det rakt ut är hela poängen — se
+    // `bookmarks`-modulens kommentar.
+    let (rows_in_buffer, visible) = match pane.vadjustment() {
+        Some(adj) => (adj.upper(), adj.page_size()),
+        None => (0.0, 0.0),
+    };
+    let drift_banner = adw::Banner::builder()
+        .title(
+            "Skrollbufferten är full — äldre rader har fallit ur, så \
+             bokmärkena kan peka en bit fel.",
+        )
+        .revealed(bookmarks::positions_may_have_drifted(
+            rows_in_buffer,
+            f64::from(SCROLLBACK_LINES) + visible,
+        ))
+        .build();
+
+    let close_button = gtk::Button::with_label("Klar");
+    let header = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    header.pack_start(&close_button);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&drift_banner);
+    content.append(&scrolled);
+
+    let win = dialog_window(&session_window(area), "Bokmärken", DialogSize::List, &content);
+
+    let rebuild: Rebuild = Rc::new(RefCell::new(None));
+    let build = {
+        let rows = rows.clone();
+        let list = list.clone();
+        let pane = pane.clone();
+        let win = win.clone();
+        let rebuild = rebuild.clone();
+        move || {
+            while let Some(child) = rows.first_child() {
+                rows.remove(&child);
+            }
+            if list.borrow().is_empty() {
+                let empty = adw::ActionRow::builder()
+                    .title("Inga bokmärken")
+                    .subtitle("Ctrl+Shift+D sätter ett vid raden överst i rutan")
+                    .build();
+                rows.append(&empty);
+                return;
+            }
+            for bookmark in list.borrow().all() {
+                let row = adw::ActionRow::builder()
+                    .title(&bookmark.label)
+                    .subtitle(format!("rad {}", bookmark.row.round() as i64))
+                    .activatable(true)
+                    .build();
+
+                let rename = gtk::Button::builder()
+                    .icon_name("document-edit-symbolic")
+                    .tooltip_text("Byt namn")
+                    .valign(gtk::Align::Center)
+                    .css_classes(["flat"])
+                    .build();
+                let remove = gtk::Button::builder()
+                    .icon_name("user-trash-symbolic")
+                    .tooltip_text("Ta bort")
+                    .valign(gtk::Align::Center)
+                    .css_classes(["flat"])
+                    .build();
+                row.add_suffix(&rename);
+                row.add_suffix(&remove);
+
+                // Att aktivera raden hoppar dit OCH stänger dialogen: den
+                // fanns bara för att hitta tillbaka, och att lämna den
+                // öppen skymmer det man just hoppade till.
+                let target = bookmark.row;
+                row.connect_activated(clone!(
+                    #[weak]
+                    pane,
+                    #[weak]
+                    win,
+                    move |_| {
+                        if let Some(adj) = pane.vadjustment() {
+                            adj.set_value(target);
+                        }
+                        win.close();
+                    }
+                ));
+
+                let id = bookmark.id;
+                remove.connect_clicked(clone!(
+                    #[strong]
+                    list,
+                    #[strong]
+                    rebuild,
+                    move |_| {
+                        list.borrow_mut().remove(id);
+                        if let Some(again) = rebuild.borrow().as_ref() {
+                            again();
+                        }
+                    }
+                ));
+
+                let current = bookmark.label.clone();
+                rename.connect_clicked(clone!(
+                    #[strong]
+                    list,
+                    #[strong]
+                    rebuild,
+                    #[weak]
+                    win,
+                    move |_| {
+                        let entry = gtk::Entry::builder().text(&current).build();
+                        let dialog = adw::AlertDialog::new(Some("Byt namn"), None);
+                        dialog.set_extra_child(Some(&entry));
+                        dialog.add_response("cancel", "Avbryt");
+                        dialog.add_response("save", "Spara");
+                        dialog.set_response_appearance(
+                            "save",
+                            adw::ResponseAppearance::Suggested,
+                        );
+                        dialog.set_default_response(Some("save"));
+                        dialog.connect_response(
+                            None,
+                            clone!(
+                                #[strong]
+                                list,
+                                #[strong]
+                                rebuild,
+                                #[weak]
+                                entry,
+                                move |_, response| {
+                                    if response != "save" {
+                                        return;
+                                    }
+                                    let label = entry.text().trim().to_string();
+                                    // Ett tomt namn vore sämre än det
+                                    // gamla: raden blir omöjlig att skilja
+                                    // från grannen.
+                                    if label.is_empty() {
+                                        return;
+                                    }
+                                    list.borrow_mut().rename(id, label);
+                                    if let Some(again) = rebuild.borrow().as_ref() {
+                                        again();
+                                    }
+                                }
+                            ),
+                        );
+                        dialog.present(Some(&win));
+                    }
+                ));
+
+                rows.append(&row);
+            }
+        }
+    };
+    build();
+    *rebuild.borrow_mut() = Some(Box::new(build));
+
+    close_button.connect_clicked(clone!(
+        #[weak]
+        win,
+        move |_| win.close()
+    ));
+
+    win.present();
 }
 
 /// Stänger rutan med fokus. Ett kortkommando för den som har en hängd
