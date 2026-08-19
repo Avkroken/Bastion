@@ -520,7 +520,13 @@ public final class SSHSession {
                     self.endChildOp()
                     completeOnce.run { resultPromise.fail(SSHError.channelFailed(String(describing: e))) }
                 case .success(let sshHandler):
-                    let handler = ShellHandler(term: term, cols: cols, rows: rows, continuation: continuation)
+                    // Delas mellan handlern (som räknar upp vid varje svar
+                    // från servern) och shellen (som läser räknaren för att
+                    // avgöra om anslutningen fortfarande lever).
+                    let liveness = NIOLockedValueBox(0)
+                    let handler = ShellHandler(
+                        term: term, cols: cols, rows: rows,
+                        continuation: continuation, liveness: liveness)
                     let childPromise = channel.eventLoop.makePromise(of: Channel.self)
                     // Först här är operationen faktiskt klar: childPromise är
                     // den promise som lever på event loop-gruppen och som
@@ -537,7 +543,9 @@ public final class SSHSession {
                             case .failure(let e):
                                 resultPromise.fail(SSHError.channelFailed(String(describing: e)))
                             case .success(let child):
-                                resultPromise.succeed(SSHShell(channel: child, output: stream, cols: cols, rows: rows))
+                                resultPromise.succeed(SSHShell(
+                                    channel: child, output: stream,
+                                    cols: cols, rows: rows, liveness: liveness))
                             }
                         }
                         // Kom kanalen efter att `fatal`/`closeFuture` redan

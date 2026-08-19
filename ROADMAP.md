@@ -2723,8 +2723,31 @@ Inget nytt att bygga, bara verifiera/lansera:
     samma PR. 3 nya tester mot en riktig `LoopbackServer` (periodiska
     sändningar sker, `stopKeepAlive` stoppar dem faktiskt, `resize()`
     uppdaterar storleken keep-alive återanvänder).
-    **Täcker bara "håll NAT-mappningen varm"** på Swift-sidan —
-    dead-connection-detektering och återanslutning saknades där helt.
+    **Död-detektering, SSHCore (Swift)**: ✅ klart (2026-08-19,
+    `SSHShell.swift`). Fönsterändringen ensam kan per definition ALDRIG
+    upptäcka något: `WindowChangeRequest.wantReply` är hårdkodad `false` i
+    swift-nio-ssh (`ChildChannelUserEvents.swift`), så det finns inget
+    uteblivet svar att sakna. `startKeepAlive` skickar därför även en
+    `EnvironmentRequest` med `wantReply: true` bredvid; svaret kommer in som
+    `ChannelSuccessEvent`/`ChannelFailureEvent` i barnkanalens pipeline och
+    räknas av `ShellHandler`. Uteblir svaret `maxMissed` gånger i rad är
+    anslutningen död: `onConnectionLost` anropas och kanalen stängs.
+    `App/TerminalView.swift` skriver en gul varningsrad direkt i terminalen
+    — inte via `onSessionEnded`, som stänger vyn innan användaren hinner se
+    något.
+    **Två saker verifierade i stället för antagna**: (1) swift-nio-ssh
+    svarar INTE automatiskt på kanalförfrågningar den förstår — bara okända
+    får ett automatiskt failure — så `LoopbackServer` fick svara själv,
+    annars hade testservern varit den enda motpart som inte gör det.
+    (2) En riktig OpenSSH-sshd svarar `SSH_MSG_CHANNEL_SUCCESS` på en
+    `env`-begäran med `want_reply` skickad EFTER `shell` — empiriskt
+    provkört, inte läst ur RFC 4254. (Källkodsläsning av OpenSSH:s
+    `session.c` gav gissningen FAILURE eftersom kanalen inte längre är
+    `LARVAL`; fel gissning, men irrelevant — båda svaren duger som
+    livstecken.)
+    Två tester med kontroll: en server som TYSTNAR (slutar svara, håller
+    anslutningen öppen) ska rapporteras, och en som fortsätter svara ska
+    INTE rapporteras hur många intervall som än passerar.
   - **Död-detektering + återanslutning, LinuxApp (Rust)**: ✅ klart
     (2026-08-19, `LinuxApp/src/ssh.rs` + `main.rs`). LinuxApp hade
     ingenting av det här — varken keep-alive eller död-detektering
