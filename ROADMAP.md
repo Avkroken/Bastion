@@ -31,7 +31,7 @@ delvis andra, av konkreta skäl:
 | Misslyckad auth utan att hänga | ✅ testad |
 | Interaktiv shell + PTY (stdin/stdout, resize) | ✅ testad end-to-end |
 | known_hosts / TOFU (SHA256-fingeravtryck, MITM-skydd) | ✅ testad, `~/.bastion/known_hosts` |
-| ssh-config-parsing (`Host`-alias, jokertecken, `IdentityFile`, `Include`) | ✅ testad, CLI slår upp alias — `Include` i BÅDE LinuxApp Rust och `SSHConfig.swift` (2026-08-19) |
+| ssh-config-parsing (`Host`, jokertecken, `IdentityFile`, `Include`, `Match`) | ✅ testad, CLI slår upp alias — `Include` och `Match` i BÅDE LinuxApp Rust och `SSHConfig.swift` (2026-08-19). `Match` stöder `all` och `host`; övriga kriterier (`exec`/`user`/`originalhost`/`localuser`/`tagged`/`final`/`canonical`) lämnar blocket INAKTIVT, aldrig aktivt |
 | Host-databas (JSON, taggar, CRUD) | ✅ testad, `~/.bastion/hosts.json` |
 | Dashboard-data (last/minne/disk/uptime/OS/Docker via SSH) | ✅ parser testad, ett kommando — App/-UI (Xcode-only) — ✅ (2026-08-05) LinuxApp Rust (`dashboard.rs`), egen flik, auto-poll var 15:e sekund (se "Klart") |
 | Docker-åtgärder (lista/start/stopp/omstart/logg) | ✅ testad, injektionssäker referens |

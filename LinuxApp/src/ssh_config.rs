@@ -2,8 +2,9 @@
 //! av `Sources/SSHCore/SSHConfig.swift`. Stöder `Host`-block med
 //! jokertecken (`*`, `?`) och negation (`!`), `Include`, samt de
 //! vanligaste nycklarna. Semantik enligt OpenSSH: **första värdet vinner**
-//! per nyckel. `Match`-block hoppas medvetet över (ännu ej stött) — samma
-//! avgränsning som Swift-sidan.
+//! per nyckel. `Match` stöds för de kriterier som går att avgöra utan en
+//! pågående anslutning (`all`, `host`); allt annat lämnar blocket
+//! inaktivt — se [`match_is_active`].
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedHost {
@@ -16,6 +17,10 @@ pub struct ResolvedHost {
 
 enum Entry {
     Host(Vec<String>),
+    /// Ett `Match`-block, med kriterieraden bevarad rå. Utvärderas först i
+    /// `resolve`, eftersom `host`-kriteriet beror på vilket alias som slås
+    /// upp — till skillnad från `Host`, vars mönster står i posten.
+    Match(String),
     Setting(String, String),
 }
 
@@ -82,6 +87,7 @@ impl SSHConfig {
         for entry in &self.entries {
             match entry {
                 Entry::Host(patterns) => active = host_matches(patterns, alias),
+                Entry::Match(criteria) => active = match_is_active(criteria, alias),
                 Entry::Setting(key, value) => {
                     if active {
                         found.entry(key.clone()).or_insert_with(|| value.clone());
@@ -97,6 +103,63 @@ impl SSHConfig {
             proxy_jump: found.get("proxyjump").cloned(),
         }
     }
+}
+
+/// Avgör om ett `Match`-blocks kriterier gäller för `alias`.
+///
+/// OpenSSH kräver att ALLA kriterier på raden är uppfyllda. Här kan bara
+/// två av dem avgöras: `all` (alltid) och `host <mönster>` (samma
+/// jokertecken- och negationsregler som `Host`). Resten — `exec`, `user`,
+/// `originalhost`, `localuser`, `tagged`, `final`, `canonical` — beror på
+/// en pågående anslutning, en kommandokörning eller en andra
+/// upplösningsomgång, inget av det finns här.
+///
+/// Ett okänt eller oavgörbart kriterium gör blocket INAKTIVT, aldrig
+/// aktivt. Det är den enda riktning som är säker: ett block som felaktigt
+/// hoppas över ger samma resultat som innan `Match` stöddes alls, medan ett
+/// block som felaktigt aktiveras tyst byter ut användarens värdnamn,
+/// användare eller nyckel mot någon annans.
+///
+/// `Match exec "..."` kommer aldrig att köras härifrån. Att köra ett
+/// godtyckligt skalkommando för att avgöra en konfigurationsrad är inte en
+/// funktion som saknas, det är en vi inte vill ha.
+fn match_is_active(criteria: &str, alias: &str) -> bool {
+    // Delas BARA på blanksteg här. Ett `host`-kriterium tar en
+    // kommaseparerad mönsterlista (`Match host *.internal,!hemlig.internal`),
+    // och delas kommatecknen redan här blir listans andra mönster ett eget,
+    // okänt kriterium — vilket tyst gjorde varje negation till en
+    // avaktivering av hela blocket.
+    let tokens: Vec<&str> = criteria
+        .split([' ', '\t'])
+        .filter(|s| !s.is_empty())
+        .collect();
+    if tokens.is_empty() {
+        return false;
+    }
+
+    let mut i = 0;
+    let mut matched_something = false;
+    while i < tokens.len() {
+        match tokens[i].to_lowercase().as_str() {
+            "all" => {
+                matched_something = true;
+                i += 1;
+            }
+            "host" => {
+                // Kriteriet tar ett argument. Saknas det är raden trasig.
+                let Some(patterns) = tokens.get(i + 1) else { return false };
+                let patterns: Vec<String> = patterns.split(',').map(String::from).collect();
+                if !host_matches(&patterns, alias) {
+                    return false;
+                }
+                matched_something = true;
+                i += 2;
+            }
+            // Allt annat: vi kan inte avgöra det, alltså gäller blocket inte.
+            _ => return false,
+        }
+    }
+    matched_something
 }
 
 /// Byter ut ett ledande `~` mot hemkatalogen — samma effekt som Swifts
@@ -136,11 +199,7 @@ fn collect_entries(
                     .collect();
                 out.push(Entry::Host(patterns));
             }
-            "match" => {
-                // Ej stött — tomt mönster matchar aldrig, så blockets
-                // nycklar ignoreras.
-                out.push(Entry::Host(Vec::new()));
-            }
+            "match" => out.push(Entry::Match(value)),
             "include" => {
                 let Some(base_dir) = base_dir else { continue };
                 if depth >= MAX_INCLUDE_DEPTH {
@@ -568,5 +627,110 @@ Host nouser
         let dir = std::env::temp_dir().join(format!("bastion-include-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    // MARK: Match
+
+    /// `Match host` är den enda formen som går att avgöra utan en pågående
+    /// anslutning, och den beter sig som `Host` — samma jokertecken, samma
+    /// negation. Tidigare ignorerades hela blocket, så inställningarna i
+    /// det försvann tyst.
+    #[test]
+    fn match_host_applies_its_settings_just_like_a_host_block() {
+        let config = SSHConfig::parse(
+            "Match host *.internal\n  User admin\n  Port 2200\n\nHost *\n  User fallback\n",
+        );
+        let inner = config.resolve("db.internal");
+        assert_eq!(inner.user.as_deref(), Some("admin"));
+        assert_eq!(inner.port, 2200);
+
+        let outer = config.resolve("db.example.com");
+        assert_eq!(outer.user.as_deref(), Some("fallback"), "blocket ska inte gälla utanför mönstret");
+        assert_eq!(outer.port, 22);
+    }
+
+    /// `Match all` gäller alltid — men bara EFTER sin egen rad, så det
+    /// fungerar som en catch-all i slutet av filen.
+    #[test]
+    fn match_all_applies_to_every_alias() {
+        let config = SSHConfig::parse("Match all\n  User alla\n");
+        assert_eq!(config.resolve("vadsomhelst").user.as_deref(), Some("alla"));
+    }
+
+    /// Kärnan i avgränsningen. Ett kriterium vi inte kan avgöra måste göra
+    /// blocket INAKTIVT, aldrig aktivt — ett felaktigt aktiverat block byter
+    /// tyst ut användarens värdnamn eller nyckel mot någon annans, medan ett
+    /// felaktigt överhoppat block bara ger samma resultat som innan `Match`
+    /// stöddes.
+    ///
+    /// `exec` är det viktigaste fallet: att köra ett godtyckligt skalkommando
+    /// för att avgöra en konfigurationsrad är inte en funktion som saknas.
+    #[test]
+    fn criteria_we_cannot_evaluate_leave_the_block_inactive() {
+        for criteria in [
+            "exec \"test -f /tmp/x\"",
+            "user root",
+            "originalhost jump",
+            "localuser anders",
+            "final",
+            "canonical",
+            "tagged arbete",
+        ] {
+            let config = SSHConfig::parse(&format!(
+                "Match {criteria}\n  User skulle-inte-synas\n\nHost *\n  User riktig\n"
+            ));
+            assert_eq!(
+                config.resolve("nagon-vard").user.as_deref(),
+                Some("riktig"),
+                "kriteriet {criteria:?} går inte att avgöra och blocket ska då inte gälla"
+            );
+        }
+    }
+
+    /// Alla kriterier på raden måste hålla, precis som i OpenSSH. Står ett
+    /// avgörbart och ett oavgörbart kriterium tillsammans räcker det inte att
+    /// det första stämmer.
+    #[test]
+    fn every_criterion_on_the_line_must_hold_not_just_the_first() {
+        let config = SSHConfig::parse(
+            "Match host server user root\n  Port 9999\n\nHost *\n  User a\n",
+        );
+        assert_eq!(
+            config.resolve("server").port, 22,
+            "host stämmer men user går inte att avgöra — blocket gäller inte"
+        );
+    }
+
+    /// Negation fungerar i `Match host` precis som i `Host`.
+    #[test]
+    fn match_host_supports_negation() {
+        let config = SSHConfig::parse(
+            "Match host *.internal,!secret.internal\n  User admin\n\nHost *\n  User a\n",
+        );
+        assert_eq!(config.resolve("db.internal").user.as_deref(), Some("admin"));
+        assert_eq!(
+            config.resolve("secret.internal").user.as_deref(),
+            Some("a"),
+            "negationen ska undanta värden"
+        );
+    }
+
+    /// En `Match`-rad utan kriterier är trasig och ska inte aktivera något.
+    /// `host` utan mönster likaså.
+    #[test]
+    fn a_match_line_without_usable_criteria_never_activates() {
+        for line in ["Match\n", "Match host\n"] {
+            let config = SSHConfig::parse(&format!("{line}  User skulle-inte-synas\n\nHost *\n  User riktig\n"));
+            assert_eq!(config.resolve("x").user.as_deref(), Some("riktig"), "rad: {line:?}");
+        }
+    }
+
+    /// `Match`-block får aldrig bidra med värdalias till importen. De
+    /// beskriver villkor, inte värdar — ett alias därifrån skulle skapa en
+    /// post för något som inte är en server.
+    #[test]
+    fn match_blocks_contribute_no_host_aliases() {
+        let config = SSHConfig::parse("Match host produktion\n  User a\n\nHost riktig\n  User b\n");
+        assert_eq!(config.host_aliases(), vec!["riktig".to_string()]);
     }
 }
