@@ -2679,6 +2679,14 @@ Inget nytt att bygga, bara verifiera/lansera:
     tror att trafiken går genom proxyn. Kräver en
     SOCKS5-handskakningshandler före `NIOSSHHandler` i pipelinen,
     motsvarande `socks_proxy.rs`.
+    **Skriv den för hand, dra INTE in `swift-nio-extras` för `NIOSOCKS`.**
+    Kontrollerat 2026-08-19: paketet finns inte i beroendeträdet i dag, och
+    `swift-nio` är EXAKT pinnad till 2.101.3 p.g.a. apple/swift-nio#3647 (se
+    kommentaren i `Package.swift` — 74 raka misslyckade Windows-byggen innan
+    pinningen, och en Renovate-bump som återinförde exakt den bugg som just
+    fixats). Ett nytt paket ur samma familj måste vara versionskompatibelt
+    med den pinningen och kan dra tillbaka samma problem. Handskakningen är
+    ~120 rader och redan skriven en gång i Rust.
     Samma sak gäller `forwardAgent` på Apple, men av en HÅRDARE orsak:
     agent-forwarding till fjärrserver är blockerad i swift-nio-ssh (se
     statustabellen), så där handlar det inte om arbete som återstår utan
