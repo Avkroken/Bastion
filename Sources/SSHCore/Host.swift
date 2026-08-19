@@ -109,6 +109,18 @@ public struct Host: Codable, Identifiable, Sendable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case id, alias, hostName, user, port, tags, auth, isFavorite, colorTag, platform, startupCommand, jumpHostID, macAddress, forwardAgent, modifiedAt
+        /// LinuxApp skrev fältet som `jumpHostId` (serdes `camelCase` av
+        /// `jump_host_id`) medan den här sidan alltid skrivit `jumpHostID`
+        /// (Apples konvention versaliserar initialförkortningar). Nycklarna
+        /// matchade alltså inte, och både `Codable` och serde släpper okända
+        /// nycklar TYST — följden var att en ProxyJump-koppling försvann i
+        /// båda riktningarna så fort tillståndet synkades mellan en Linux-
+        /// och en Apple-enhet. Värst tänkbara fält att tappa: målet är ofta
+        /// bara nåbart genom hoppet.
+        ///
+        /// Båda sidor skriver nu `jumpHostID`. Den här nyckeln finns kvar för
+        /// att LÄSA redan sparade filer, aldrig för att skriva.
+        case legacyJumpHostID = "jumpHostId"
     }
 
     /// Egen init(from:) — isFavorite/colorTag/platform/startupCommand/
@@ -130,9 +142,33 @@ public struct Host: Codable, Identifiable, Sendable, Equatable {
         platform = try c.decodeIfPresent(RemotePlatform.self, forKey: .platform) ?? .posix
         startupCommand = try c.decodeIfPresent(String.self, forKey: .startupCommand)
         jumpHostID = try c.decodeIfPresent(UUID.self, forKey: .jumpHostID)
+            ?? c.decodeIfPresent(UUID.self, forKey: .legacyJumpHostID)
         macAddress = try c.decodeIfPresent(String.self, forKey: .macAddress)
         forwardAgent = try c.decodeIfPresent(Bool.self, forKey: .forwardAgent) ?? false
         modifiedAt = try c.decode(Date.self, forKey: .modifiedAt)
+    }
+
+    /// Egen `encode(to:)` av ETT skäl: den syntetiserade varianten skriver ut
+    /// varje `CodingKey`, och `legacyJumpHostID` finns bara för att LÄSA gamla
+    /// filer. Utan den här skulle varje sparning skriva båda stavningarna, och
+    /// nästa läsare få två källor till samma sanning.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(alias, forKey: .alias)
+        try c.encode(hostName, forKey: .hostName)
+        try c.encode(user, forKey: .user)
+        try c.encode(port, forKey: .port)
+        try c.encode(tags, forKey: .tags)
+        try c.encode(auth, forKey: .auth)
+        try c.encode(isFavorite, forKey: .isFavorite)
+        try c.encodeIfPresent(colorTag, forKey: .colorTag)
+        try c.encode(platform, forKey: .platform)
+        try c.encodeIfPresent(startupCommand, forKey: .startupCommand)
+        try c.encodeIfPresent(jumpHostID, forKey: .jumpHostID)
+        try c.encodeIfPresent(macAddress, forKey: .macAddress)
+        try c.encode(forwardAgent, forKey: .forwardAgent)
+        try c.encode(modifiedAt, forKey: .modifiedAt)
     }
 
     /// Anslutningsmål för `SSHSession`.

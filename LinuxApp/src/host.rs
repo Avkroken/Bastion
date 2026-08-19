@@ -163,7 +163,19 @@ pub struct Host {
     pub platform: RemotePlatform,
     #[serde(default)]
     pub startup_command: Option<String>,
-    #[serde(default)]
+    /// Stavningen är ett KONTRAKT mot Swift-sidan, inte en intern detalj.
+    /// `rename_all = "camelCase"` skulle ge `jumpHostId`, men Swifts
+    /// `CodingKeys` stavar den `jumpHostID` (Apples namnkonvention
+    /// versaliserar initialförkortningar). Nycklarna matchade alltså inte,
+    /// och `Codable`/serde släpper okända nycklar tyst — följden var att en
+    /// ProxyJump-koppling FÖRSVANN i båda riktningarna så fort tillståndet
+    /// synkades mellan en Linux- och en Apple-enhet. Värst tänkbara fält att
+    /// tappa: målet är ofta bara nåbart genom hoppet, så anslutningen slutar
+    /// fungera helt.
+    ///
+    /// `alias` läser den gamla stavningen så att redan sparade
+    /// `hosts.json`-filer inte tappar sin koppling vid uppgraderingen.
+    #[serde(default, rename = "jumpHostID", alias = "jumpHostId")]
     pub jump_host_id: Option<Uuid>,
     #[serde(default)]
     pub mac_address: Option<String>,
@@ -728,5 +740,52 @@ mod tests {
             Some(true),
             "nyckeln måste heta forwardAgent — Swift-sidans CodingKeys stavar den så"
         );
+    }
+
+    /// Låser HELA JSON-formen för `Host`, inte bara ett fält.
+    ///
+    /// Två fältnamn har redan tyst gått isär mellan Rust och Swift
+    /// (`forwardAgent` saknades helt på ena sidan, `jumpHostID` stavades
+    /// `jumpHostId` på den andra), och båda gångerna var symptomet
+    /// dataförlust vid synk utan ett enda felmeddelande. Ett test som bara
+    /// kollar de fält man råkar tänka på hittar inte nästa. Det här kräver
+    /// att nyckeluppsättningen är EXAKT den förväntade — lägger någon till
+    /// ett fält faller testet, och då är frågan "har Swift-sidan samma
+    /// stavning?" omöjlig att glömma.
+    #[test]
+    fn the_json_shape_of_host_is_exactly_what_the_other_platforms_expect() {
+        let host = Host::new("h".into(), "10.0.0.1".into(), "a".into());
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&host).unwrap()).unwrap();
+        let mut keys: Vec<String> = json.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+
+        let mut expected = vec![
+            "alias", "auth", "colorTag", "forwardAgent", "hostName", "id", "isFavorite",
+            "jumpHostID", "macAddress", "modifiedAt", "platform", "port", "startupCommand",
+            "tags", "user",
+        ];
+        expected.sort();
+        assert_eq!(
+            keys, expected,
+            "JSON-formen ändrades. Uppdatera Swift-sidans CodingKeys i samma veva, \
+             annars släpps det nya fältet tyst vid synk."
+        );
+    }
+
+    /// En `hosts.json` skriven före namnbytet ska INTE tappa sin
+    /// ProxyJump-koppling vid uppgraderingen.
+    #[test]
+    fn the_old_jump_host_spelling_is_still_read() {
+        let id = Uuid::new_v4();
+        let json = format!(
+            r#"{{"id":"{}","alias":"a","hostName":"h","user":"u","port":22,"tags":[],
+                 "auth":{{"agentDefault":{{}}}},"modifiedAt":789000000.0,
+                 "jumpHostId":"{}"}}"#,
+            Uuid::new_v4(),
+            id
+        );
+        let host: Host = serde_json::from_str(&json).expect("gammal fil ska gå att läsa");
+        assert_eq!(host.jump_host_id, Some(id), "den gamla stavningen måste fortfarande läsas");
     }
 }

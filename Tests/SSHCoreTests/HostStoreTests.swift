@@ -294,4 +294,75 @@ final class HostStoreTests: XCTestCase {
         XCTAssertNil(SSHConfig.proxyJumpAlias("none"))
         XCTAssertNil(SSHConfig.proxyJumpAlias(""))
     }
+
+    // MARK: - Trådformatet mot de andra plattformarna
+
+    /// Låser HELA JSON-formen för `Host`, inte bara ett fält.
+    ///
+    /// Två fältnamn har redan tyst gått isär mellan den här sidan och
+    /// LinuxApp: `forwardAgent` saknades helt här, och `jumpHostID` stavades
+    /// `jumpHostId` där. Båda gångerna var symptomet dataförlust vid synk
+    /// utan ett enda felmeddelande. Ett test som bara kollar de fält man
+    /// råkar tänka på hittar inte nästa — det här kräver att
+    /// nyckeluppsättningen är EXAKT den förväntade, så att den som lägger
+    /// till ett fält tvingas svara på om Rust-sidan stavar det likadant.
+    ///
+    /// Värden fylls i helt och hållet: `encodeIfPresent` utelämnar nil, så en
+    /// halvfylld värd skulle dölja precis de valfria fälten som är lättast
+    /// att stava fel.
+    func testTheJSONShapeOfHostIsExactlyWhatTheOtherPlatformsExpect() throws {
+        var h = Host(alias: "a", hostName: "h", user: "u")
+        h.colorTag = "blue"
+        h.startupCommand = "tmux"
+        h.jumpHostID = UUID()
+        h.macAddress = "AA:BB:CC:DD:EE:FF"
+        h.forwardAgent = true
+
+        let obj = try JSONSerialization.jsonObject(
+            with: try JSONEncoder().encode(h)) as! [String: Any]
+        XCTAssertEqual(
+            obj.keys.sorted(),
+            [
+                "alias", "auth", "colorTag", "forwardAgent", "hostName", "id", "isFavorite",
+                "jumpHostID", "macAddress", "modifiedAt", "platform", "port", "startupCommand",
+                "tags", "user",
+            ].sorted(),
+            "JSON-formen ändrades. Uppdatera LinuxApps serde-attribut i samma veva, annars "
+                + "släpps det nya fältet tyst vid synk.")
+    }
+
+    /// Den gamla stavningen fanns bara i filer skrivna av LinuxApp. Den ska
+    /// LÄSAS så att ingen tappar sin ProxyJump-koppling vid uppgraderingen —
+    /// men aldrig skrivas, för då skulle nästa läsare få två källor till
+    /// samma sanning.
+    func testTheOldJumpHostSpellingIsReadButNeverWritten() throws {
+        let jumpID = UUID()
+        var obj = try JSONSerialization.jsonObject(
+            with: try JSONEncoder().encode(Host(alias: "a", hostName: "h", user: "u")))
+            as! [String: Any]
+        obj["jumpHostId"] = jumpID.uuidString   // gammal stavning, som LinuxApp skrev
+        let decoded = try JSONDecoder().decode(
+            Host.self, from: try JSONSerialization.data(withJSONObject: obj))
+        XCTAssertEqual(decoded.jumpHostID, jumpID, "den gamla stavningen måste fortfarande läsas")
+
+        let reencoded = try JSONSerialization.jsonObject(
+            with: try JSONEncoder().encode(decoded)) as! [String: Any]
+        XCTAssertNil(reencoded["jumpHostId"], "den gamla stavningen får aldrig skrivas tillbaka")
+        XCTAssertEqual(reencoded["jumpHostID"] as? String, jumpID.uuidString)
+    }
+
+    /// Står båda stavningarna i samma fil vinner den nya. Kan bara inträffa
+    /// i en fil skriven under övergången, men tystnad är fel svar på
+    /// tvetydighet.
+    func testTheNewSpellingWinsWhenBothArePresent() throws {
+        let newID = UUID()
+        var h = Host(alias: "a", hostName: "h", user: "u")
+        h.jumpHostID = newID
+        var obj = try JSONSerialization.jsonObject(
+            with: try JSONEncoder().encode(h)) as! [String: Any]
+        obj["jumpHostId"] = UUID().uuidString
+        let decoded = try JSONDecoder().decode(
+            Host.self, from: try JSONSerialization.data(withJSONObject: obj))
+        XCTAssertEqual(decoded.jumpHostID, newID)
+    }
 }
