@@ -82,9 +82,28 @@ final class SSHTerminalController {
                 guard !isStopped else { shell.close(); return }
                 self.shell = shell
                 // Håller anslutningen vaken genom NAT/brandväggars idle-timeout
-                // (se SSHShell.startKeepAlive) — stoppas automatiskt av
-                // shell.close() i stop().
-                shell.startKeepAlive()
+                // OCH upptäcker att den dött (se SSHShell.startKeepAlive) —
+                // stoppas automatiskt av shell.close() i stop().
+                //
+                // Skriver den gula varningsraden i terminalen SJÄLV innan
+                // `shell.close()` river strömmen: går det via `onSessionEnded`
+                // har vyn redan hunnit stängas och användaren ser ingenting
+                // alls, vilket är precis det tysta försvinnande den här
+                // funktionen finns för att få bort.
+                shell.startKeepAlive { [weak self] in
+                    // Återanropet körs på keep-alive-Task:ens kontext, inte
+                    // på main — och hela den här klassen är @MainActor. Utan
+                    // hoppet vore varje läsning av `isStopped`/`onData` en
+                    // isoleringsöverträdelse.
+                    Task { @MainActor in
+                        guard let self, !self.isStopped else { return }
+                        let notice = "\r\n\u{1b}[33m[bastion] Anslutningen bröts oväntat — "
+                            + "servern slutade svara. Den shell som kördes är borta och går "
+                            + "inte att återuppta där den slutade. Sessionen måste startas "
+                            + "om.\u{1b}[0m\r\n"
+                        self.onData?(ArraySlice(Array(notice.utf8)))
+                    }
+                }
                 if let cmd = initialCommand { shell.send(cmd + "\n") }
                 for try await chunk in shell.output {
                     guard !isStopped else { break }

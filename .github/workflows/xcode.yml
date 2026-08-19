@@ -10,6 +10,16 @@ on:
     branches: [main, dev]
   workflow_dispatch:
 
+# Den DYRASTE workflowen i repot — tre macOS-jobb, och macOS-runners är
+# den knappaste resursen GitHub delar ut. Utan den här gruppen köade varje
+# ny push ett HELT NYTT bygge medan de gamla fortsatte köra: sex körningar
+# från samma gren låg samtidigt och konkurrerade om samma runners, så en
+# PR som var klar i övrigt fick vänta på bygget av commits ingen längre
+# brydde sig om. Samma mönster som swiftpm-linux.yml redan använder.
+concurrency:
+  group: xcode-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 

@@ -47,6 +47,11 @@ final class ServerExecHandler: ChannelDuplexHandler, RemovableChannelHandler {
     /// bara att den anropar en lokal metod. `nil` (default) i alla test
     /// som inte bryr sig, för att inte röra befintliga testers beteende.
     private let observedWindowChanges: NIOLockedValueBox<[(cols: Int, rows: Int)]>?
+    /// Sätts till `true` för att låta servern TYSTNA: den slutar svara på
+    /// kanalförfrågningar men håller anslutningen öppen. Det är så en död
+    /// motpart ser ut från klientens håll, och det enda sättet att testa
+    /// död-detektering utan att faktiskt dra ur en nätverkskabel.
+    private let silent: NIOLockedValueBox<Bool>?
 
     /// `realExec`: `false` (default) — den ursprungliga fejkade
     /// "ran: <kommando>\n"-ekot, vad de flesta exec-tester (`SSHCoreTests`,
@@ -58,11 +63,13 @@ final class ServerExecHandler: ChannelDuplexHandler, RemovableChannelHandler {
     /// rätt kommandosträng skickades.
     init(
         sftpRoot: String, realExec: Bool = false,
-        observedWindowChanges: NIOLockedValueBox<[(cols: Int, rows: Int)]>? = nil
+        observedWindowChanges: NIOLockedValueBox<[(cols: Int, rows: Int)]>? = nil,
+        silent: NIOLockedValueBox<Bool>? = nil
     ) {
         self.sftpRoot = sftpRoot
         self.realExec = realExec
         self.observedWindowChanges = observedWindowChanges
+        self.silent = silent
     }
 
     func handlerAdded(context: ChannelHandlerContext) {
@@ -122,6 +129,18 @@ final class ServerExecHandler: ChannelDuplexHandler, RemovableChannelHandler {
         } else if let windowChange = event as? SSHChannelRequestEvent.WindowChangeRequest {
             observedWindowChanges?.withLockedValue {
                 $0.append((cols: windowChange.terminalCharacterWidth, rows: windowChange.terminalRowHeight))
+            }
+        } else if let env = event as? SSHChannelRequestEvent.EnvironmentRequest {
+            // swift-nio-ssh svarar INTE automatiskt på förfrågningar den
+            // förstår — den fyrar bara händelsen in i pipelinen och lämnar
+            // svaret till applikationen (`SSHChildChannel.handleInbound
+            // ChannelRequest`: bara OKÄNDA förfrågningar får ett automatiskt
+            // failure). En riktig sshd svarar; utan raden nedan skulle den
+            // här testservern vara den enda motpart i världen som inte gör
+            // det, och `SSHShell`s livlighetssond skulle se varje session
+            // som död.
+            if env.wantReply, silent?.withLockedValue({ $0 }) != true {
+                context.triggerUserOutboundEvent(ChannelSuccessEvent(), promise: nil)
             }
         }
         // PseudoTerminalRequest ignoreras (accepteras implicit).
@@ -589,6 +608,9 @@ struct LoopbackServer {
     let observedDirectTCPIPTargets: NIOLockedValueBox<[(host: String, port: Int)]>
     /// `nil` om `start(...)` inte bad om det (default) — se `ServerExecHandler`.
     let observedWindowChanges: NIOLockedValueBox<[(cols: Int, rows: Int)]>?
+    /// `nil` om `start(silenceable:)` inte bad om det. Sätt till `true` för
+    /// att låta servern sluta svara utan att stänga anslutningen.
+    let silent: NIOLockedValueBox<Bool>?
     var port: Int { channel.localAddress?.port ?? 0 }
 
     /// `realDirectTCPIPForwarding`: `false` (default) ekar bara tillbaka
@@ -601,7 +623,7 @@ struct LoopbackServer {
     /// (t.ex. `SSHShell.startKeepAlive`-tester).
     static func start(
         password: String, realDirectTCPIPForwarding: Bool = false, realExec: Bool = false,
-        trackWindowChanges: Bool = false
+        trackWindowChanges: Bool = false, silenceable: Bool = false
     ) throws -> LoopbackServer {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         let hostKey = NIOSSHPrivateKey(ed25519Key: .init())
@@ -610,6 +632,7 @@ struct LoopbackServer {
         let observedDirectTCPIPTargets = NIOLockedValueBox<[(host: String, port: Int)]>([])
         let observedWindowChanges: NIOLockedValueBox<[(cols: Int, rows: Int)]>? =
             trackWindowChanges ? NIOLockedValueBox([]) : nil
+        let silent: NIOLockedValueBox<Bool>? = silenceable ? NIOLockedValueBox(false) : nil
         let realForwarder = makeRealDirectTCPIPForwarder(group: group)
         let bootstrap = ServerBootstrap(group: group)
             .childChannelInitializer { channel in
@@ -634,7 +657,8 @@ struct LoopbackServer {
                                 return child.pipeline.addHandler(
                                     ServerExecHandler(
                                         sftpRoot: sftpRoot, realExec: realExec,
-                                        observedWindowChanges: observedWindowChanges))
+                                        observedWindowChanges: observedWindowChanges,
+                                        silent: silent))
                             }
                         }))
             }
@@ -642,7 +666,8 @@ struct LoopbackServer {
         return LoopbackServer(
             group: group, channel: channel, sftpRoot: sftpRoot,
             observedDirectTCPIPTargets: observedDirectTCPIPTargets,
-            observedWindowChanges: observedWindowChanges)
+            observedWindowChanges: observedWindowChanges,
+            silent: silent)
     }
 
     func shutdown() {

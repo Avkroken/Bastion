@@ -1937,11 +1937,29 @@ fn show_ssh_config_import_dialog(
     header.pack_end(&import_button);
     header.set_title_widget(Some(&adw::WindowTitle::new(
         "Importera ssh-config",
-        "Klistra in innehållet från din ~/.ssh/config",
+        "Läs ~/.ssh/config direkt, eller klistra in innehållet",
     )));
+
+    // Att läsa filen är INTE bara bekvämare än att klistra in — det är
+    // enda vägen som kan följa `Include`. En huvudconfig som bara består
+    // av `Include ~/.ssh/config.d/*` (så 1Password, Colima och OrbStack
+    // säger åt användaren att lägga upp sin) innehåller inte en enda
+    // `Host`-rad, så inklistrad text ger noll importerade värdar utan att
+    // något ser trasigt ut. Därför är den här knappen förvald handling och
+    // inklistring reserven, inte tvärtom.
+    let read_file_button = gtk::Button::with_label("Läs ~/.ssh/config");
+    let read_file_row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_start(12)
+        .margin_end(12)
+        .margin_top(12)
+        .build();
+    read_file_row.append(&read_file_button);
 
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.append(&header);
+    content.append(&read_file_row);
     content.append(&text_scrolled);
     content.append(&status_label);
 
@@ -1956,6 +1974,48 @@ fn show_ssh_config_import_dialog(
         #[weak]
         win,
         move |_| win.close()
+    ));
+    read_file_button.connect_clicked(clone!(
+        #[strong]
+        app,
+        #[strong]
+        store,
+        #[weak]
+        list,
+        #[strong]
+        area,
+        #[strong]
+        settings_store,
+        #[strong]
+        snippet_store,
+        #[strong]
+        search_query,
+        #[strong]
+        status_label,
+        #[weak]
+        win,
+        move |_| {
+            let Some(home) = dirs::home_dir() else {
+                status_label.set_label("Hittade ingen hemkatalog.");
+                return;
+            };
+            let path = home.join(".ssh").join("config");
+            if !path.exists() {
+                status_label.set_label(&format!("{} finns inte.", path.display()));
+                return;
+            }
+            match store.borrow_mut().import_ssh_config_file(&path) {
+                Ok(n) => {
+                    refresh_list(&list, &store, &app, &area, &settings_store, &snippet_store, &search_query);
+                    if n > 0 {
+                        win.close();
+                    } else {
+                        status_label.set_label("Inga nya värdar hittades (redan importerade, eller inget alias hade en användare angiven).");
+                    }
+                }
+                Err(e) => status_label.set_label(&format!("Kunde inte läsa {}: {e}", path.display())),
+            }
+        }
     ));
     import_button.connect_clicked(clone!(
         #[strong]

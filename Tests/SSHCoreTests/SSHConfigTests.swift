@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import SSHCore
 
@@ -76,5 +77,101 @@ final class SSHConfigTests: XCTestCase {
         XCTAssertFalse(SSHConfig.glob("h??t", "hot"))
         XCTAssertFalse(SSHConfig.glob("*.internal", "internal"))
         XCTAssertTrue(SSHConfig.glob("*", "anything"))
+    }
+
+    // MARK: - Include
+
+    private func makeConfigDir() -> String {
+        let dir = NSTemporaryDirectory() + "bastion-include-\(UUID().uuidString)"
+        try! FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func write(_ text: String, to path: String) {
+        try! text.write(toFile: path, atomically: true, encoding: .utf8)
+    }
+
+    /// Utan `Include` läses NOLL värdar ur en modern config, utan att något
+    /// ser trasigt ut. Testet speglar exakt det upplägg 1Password och OrbStack
+    /// instruerar användaren att skapa: en huvudfil som bara pekar vidare, och
+    /// inte en enda `Host`-rad i den.
+    func testHostsBehindAnIncludeAreFoundAndWouldNotBeWithoutIt() {
+        let dir = makeConfigDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        try! FileManager.default.createDirectory(
+            atPath: dir + "/config.d", withIntermediateDirectories: true)
+        write("Include config.d/work\n", to: dir + "/config")
+        write(
+            "Host kund\n  HostName kund.example\n  User anders\n  Port 2222\n",
+            to: dir + "/config.d/work")
+
+        let config = SSHConfig.load(path: dir + "/config")
+        XCTAssertEqual(config.hostAliases, ["kund"])
+        let resolved = config.resolve("kund")
+        XCTAssertEqual(resolved.hostName, "kund.example")
+        XCTAssertEqual(resolved.user, "anders")
+        XCTAssertEqual(resolved.port, 2222)
+
+        // Kontrollen: samma text utan filsystemet ger ingenting. Utan den här
+        // raden bevisar testet inte att det var Include som gjorde jobbet.
+        let text = try! String(contentsOfFile: dir + "/config", encoding: .utf8)
+        XCTAssertTrue(
+            SSHConfig(text: text).hostAliases.isEmpty,
+            "utan Include-upplösning finns ingen värd i huvudfilen — det är felet som fixas")
+    }
+
+    /// `Include ~/.ssh/config.d/*` är det vanligaste sättet raden skrivs.
+    /// Ordningen måste vara sorterad: första värdet vinner per nyckel, så en
+    /// ostabil läsordning skulle ge olika resultat mellan körningar på samma
+    /// filer.
+    func testAWildcardIncludeReadsEveryMatchInSortedOrder() {
+        let dir = makeConfigDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        try! FileManager.default.createDirectory(
+            atPath: dir + "/config.d", withIntermediateDirectories: true)
+        write("Include config.d/*\n", to: dir + "/config")
+        write("Host alfa\n  User a\n", to: dir + "/config.d/10-a")
+        write("Host beta\n  User b\n", to: dir + "/config.d/20-b")
+        write("Host gamma\n  User c\n", to: dir + "/config.d/30-c")
+
+        XCTAssertEqual(SSHConfig.load(path: dir + "/config").hostAliases, ["alfa", "beta", "gamma"])
+    }
+
+    /// En config som inkluderar sig själv ska ge en trunkerad läsning, inte
+    /// hänga sig. Utan djupgränsen är det här inte ett långsamt test utan ett
+    /// test som aldrig återvänder.
+    func testASelfIncludingConfigStopsInsteadOfLoopingForever() {
+        let dir = makeConfigDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        write("Include config\nHost slut\n  User a\n", to: dir + "/config")
+
+        XCTAssertTrue(SSHConfig.load(path: dir + "/config").hostAliases.contains("slut"))
+    }
+
+    /// En Include som pekar på en fil som inte finns får inte ta med sig
+    /// resten av configen i fallet. Ett avinstallerat verktyg lämnar precis
+    /// en sådan rad efter sig.
+    func testAMissingIncludeTargetDoesNotDiscardTheRestOfTheConfig() {
+        let dir = makeConfigDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        write(
+            "Include config.d/finns-inte\nHost kvar\n  HostName kvar.example\n  User a\n",
+            to: dir + "/config")
+
+        XCTAssertEqual(SSHConfig.load(path: dir + "/config").hostAliases, ["kvar"])
+    }
+
+    /// Poster ur en inkluderad fil måste hamna på include-radens PLATS, inte
+    /// sist. Annars ändras vilket värde som vinner — OpenSSH tar det första,
+    /// så en omflyttning byter tyst ut användarens inställningar.
+    func testIncludedSettingsLandWhereTheIncludeLineStood() {
+        let dir = makeConfigDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        write("Host server\n  User fran-huvudfilen\nInclude senare\n", to: dir + "/config")
+        write("Host server\n  User fran-included\n", to: dir + "/senare")
+
+        XCTAssertEqual(
+            SSHConfig.load(path: dir + "/config").resolve("server").user, "fran-huvudfilen",
+            "första värdet vinner — den inkluderade filen stod EFTER och ska inte skriva över")
     }
 }

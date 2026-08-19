@@ -1,10 +1,12 @@
+import NIOConcurrencyHelpers
 import XCTest
 @testable import SSHCore
 
-/// `SSHShell.startKeepAlive` — täcker bara "håll NAT-mappningen varm"-delen
-/// av ROADMAP.md "Anslutnings-resiliens" (se kommentaren i SSHShell.swift
-/// för varför en fönsterändring, inte ett riktigt `keepalive@openssh.com`,
-/// är mekanismen: swift-nio-ssh exponerar ingen generisk global request).
+/// `SSHShell.startKeepAlive` — både "håll NAT-mappningen varm" (den
+/// periodiska fönsterändringen) och död-detekteringen (den svar-bärande
+/// sonden bredvid den). Se kommentarerna i SSHShell.swift för varför det
+/// krävs två meddelanden: `WindowChangeRequest.wantReply` är hårdkodad
+/// `false` i swift-nio-ssh, så den ensam kan aldrig sakna ett svar.
 ///
 /// Väntar via polling mot ett generöst timeout i stället för en fast
 /// `Task.sleep` + exakt förväntat antal ticks — en riktig CI-runner under
@@ -112,5 +114,75 @@ final class SSHShellKeepAliveTests: XCTestCase {
         // den nya storleken.
         XCTAssertTrue(seen.contains { $0.cols == 200 && $0.rows == 60 }, "fick \(seen)")
         XCTAssertTrue(seen.allSatisfy { $0.cols == 200 && $0.rows == 60 }, "väntade bara 200x60 efter resize, fick \(seen)")
+    }
+
+    /// Själva död-detekteringen. Servern slutar svara men håller
+    /// anslutningen ÖPPEN — det är så en tappad motpart ser ut härifrån,
+    /// och exakt det fall TCP inte upptäcker av sig självt.
+    ///
+    /// Kontrollen finns i testet under: en server som fortsätter svara får
+    /// INTE utlösa återanropet. Utan den kunde det här testet inte skilja
+    /// "sonden märkte tystnaden" från "återanropet utlöses alltid".
+    func testKeepAliveReportsAPeerThatStopsAnswering() async throws {
+        let server = try LoopbackServer.start(password: "hunter2", silenceable: true)
+        defer { server.shutdown() }
+
+        let session = SSHSession(
+            target: SSHTarget(host: "127.0.0.1", port: server.port, username: "tester"),
+            auth: .password("hunter2"), knownHosts: KnownHosts(path: nil))
+        try await session.connect()
+        let shell = try await session.openShell(cols: 80, rows: 24)
+
+        let lost = NIOLockedValueBox(false)
+        shell.startKeepAlive(interval: .milliseconds(50), maxMissed: 2) {
+            lost.withLockedValue { $0 = true }
+        }
+
+        // Låt sonden bevisligen få svar först, annars mäter testet bara en
+        // anslutning som aldrig kom upp.
+        try? await Task.sleep(for: .milliseconds(200))
+        XCTAssertFalse(
+            lost.withLockedValue { $0 },
+            "servern svarar fortfarande — ingenting ska ha rapporterats än")
+
+        server.silent?.withLockedValue { $0 = true }
+        await waitUntil { lost.withLockedValue { $0 } }
+
+        XCTAssertTrue(
+            lost.withLockedValue { $0 },
+            "en motpart som slutade svara ska rapporteras — det är hela död-detekteringen")
+
+        shell.stopKeepAlive()
+        shell.close()
+        await session.close()
+    }
+
+    /// Kontrollen till testet ovan: så länge servern svarar ska ingenting
+    /// rapporteras, hur många intervall som än passerar. Ett återanrop som
+    /// utlöses här skulle stänga fungerande sessioner mitt i arbetet.
+    func testKeepAliveStaysQuietWhileThePeerKeepsAnswering() async throws {
+        let server = try LoopbackServer.start(password: "hunter2", silenceable: true)
+        defer { server.shutdown() }
+
+        let session = SSHSession(
+            target: SSHTarget(host: "127.0.0.1", port: server.port, username: "tester"),
+            auth: .password("hunter2"), knownHosts: KnownHosts(path: nil))
+        try await session.connect()
+        let shell = try await session.openShell(cols: 80, rows: 24)
+
+        let lost = NIOLockedValueBox(false)
+        shell.startKeepAlive(interval: .milliseconds(20), maxMissed: 2) {
+            lost.withLockedValue { $0 = true }
+        }
+
+        // 500ms med 20ms-intervall är ~25 varv — långt mer än maxMissed: 2.
+        try? await Task.sleep(for: .milliseconds(500))
+        XCTAssertFalse(
+            lost.withLockedValue { $0 },
+            "servern svarade hela tiden; ingen anslutning gick förlorad")
+
+        shell.stopKeepAlive()
+        shell.close()
+        await session.close()
     }
 }
