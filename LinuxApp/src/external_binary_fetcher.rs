@@ -30,12 +30,22 @@ pub enum ExternalBinaryError {
     DownloadFailed(String),
     ChecksumMismatch { expected: String, actual: String },
     CacheWriteFailed(String),
+    /// Arkivet gick att läsa men innehöll inte filen vi bad om. Eget fall
+    /// i stället för `DownloadFailed`: nedladdningen lyckades och
+    /// checksumman stämde, så felet ligger i vad vi LETADE efter — ett
+    /// namn som ändrats mellan versioner, inte ett nätverksproblem.
+    EntryNotFound(String),
+    ExtractFailed(String),
 }
 
 impl std::fmt::Display for ExternalBinaryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ExternalBinaryError::DownloadFailed(e) => write!(f, "nedladdningen misslyckades: {e}"),
+            ExternalBinaryError::EntryNotFound(name) => {
+                write!(f, "arkivet innehöll ingen fil som heter {name:?}")
+            }
+            ExternalBinaryError::ExtractFailed(e) => write!(f, "uppackningen misslyckades: {e}"),
             ExternalBinaryError::ChecksumMismatch { expected, actual } => {
                 write!(f, "fel checksumma: förväntade {expected}, fick {actual}")
             }
@@ -88,12 +98,24 @@ pub async fn fetch(
         return Err(ExternalBinaryError::ChecksumMismatch { expected, actual });
     }
 
+    write_executable_atomically(&data, cache_dir, binary_name)?;
+    Ok(destination)
+}
+
+/// Skriver `data` som en körbar fil på `cache_dir/name`.
+///
+/// Går via en temporär fil i SAMMA katalog och byter sedan namn: en process
+/// som läser målet mitt under en nedladdning ska aldrig kunna se en
+/// halvskriven fil, och `rename` inom samma filsystem är atomärt.
+fn write_executable_atomically(
+    data: &[u8],
+    cache_dir: &std::path::Path,
+    name: &str,
+) -> Result<std::path::PathBuf, ExternalBinaryError> {
     std::fs::create_dir_all(cache_dir).map_err(|e| ExternalBinaryError::CacheWriteFailed(e.to_string()))?;
-    // Skriv till en temporär fil i SAMMA katalog, byt sedan namn — en
-    // process som läser `destination` mitt under en nedladdning ska
-    // aldrig kunna se en halvskriven fil.
-    let tmp = cache_dir.join(format!(".{binary_name}.{}.tmp", uuid::Uuid::new_v4()));
-    std::fs::write(&tmp, &data).map_err(|e| ExternalBinaryError::CacheWriteFailed(e.to_string()))?;
+    let destination = cache_dir.join(name);
+    let tmp = cache_dir.join(format!(".{name}.{}.tmp", uuid::Uuid::new_v4()));
+    std::fs::write(&tmp, data).map_err(|e| ExternalBinaryError::CacheWriteFailed(e.to_string()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -103,8 +125,58 @@ pub async fn fetch(
     }
     let _ = std::fs::remove_file(&destination);
     std::fs::rename(&tmp, &destination).map_err(|e| ExternalBinaryError::CacheWriteFailed(e.to_string()))?;
-
     Ok(destination)
+}
+
+/// Packar upp EN namngiven fil ur ett `.tar.gz` och skriver den körbar i
+/// `cache_dir`.
+///
+/// Behövs för att `fetch` ensam inte räcker för alla verktyg: Tailscale
+/// levererar en `.tgz` med binärerna i en versionsnamngiven mapp
+/// (`tailscale_1.102.2_amd64/tailscale`), inte en naken binär. Utan det här
+/// steget skulle cachen innehålla en körbarhetsmarkerad tarball.
+///
+/// # Sökvägssäkerhet
+///
+/// Bara SISTA komponenten i varje arkiventry jämförs, och bara den
+/// efterfrågade filen skrivs — till en sökväg vi själva bygger. Ett entry
+/// som heter `../../.ssh/authorized_keys` eller `/etc/passwd` kan därför
+/// aldrig styra vart något hamnar, oavsett vad arkivet påstår. Det är ett
+/// medvetet val framför `Archive::unpack`, som packar upp ALLT och vars
+/// skydd man får lita på i stället för att äga.
+pub fn extract_file_from_tar_gz(
+    archive: &[u8],
+    wanted_file_name: &str,
+    cache_dir: &std::path::Path,
+) -> Result<std::path::PathBuf, ExternalBinaryError> {
+    use std::io::Read as _;
+
+    let decoder = flate2::read::GzDecoder::new(archive);
+    let mut tar = tar::Archive::new(decoder);
+    let entries = tar
+        .entries()
+        .map_err(|e| ExternalBinaryError::ExtractFailed(e.to_string()))?;
+
+    for entry in entries {
+        let mut entry = entry.map_err(|e| ExternalBinaryError::ExtractFailed(e.to_string()))?;
+        let path = entry
+            .path()
+            .map_err(|e| ExternalBinaryError::ExtractFailed(e.to_string()))?
+            .into_owned();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name != wanted_file_name {
+            continue;
+        }
+        let mut data = Vec::new();
+        entry
+            .read_to_end(&mut data)
+            .map_err(|e| ExternalBinaryError::ExtractFailed(e.to_string()))?;
+        return write_executable_atomically(&data, cache_dir, wanted_file_name);
+    }
+
+    Err(ExternalBinaryError::EntryNotFound(wanted_file_name.to_string()))
 }
 
 #[cfg(test)]
@@ -223,5 +295,175 @@ mod tests {
         let data = std::fs::read(&path).unwrap();
         assert_eq!(sha256_hex(&data), SAMPLE_SHA256);
         std::fs::remove_dir_all(cache_dir).ok();
+    }
+
+    /// Bygger ett riktigt `.tar.gz` i minnet, med samma form Tailscale
+    /// använder: binärerna ligger i en versionsnamngiven mapp, inte i roten.
+    fn tar_gz_with(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        for (path, data) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder.append_data(&mut header, path, *data).unwrap();
+        }
+        let tar_bytes = builder.into_inner().unwrap();
+        use std::io::Write as _;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(&tar_bytes).unwrap();
+        gz.finish().unwrap()
+    }
+
+    /// Grundfallet: rätt fil ur en versionsnamngiven mapp, körbar efteråt.
+    /// Utan uppackningssteget skulle cachen innehålla en körbarhetsmarkerad
+    /// tarball, vilket ser ut att ha lyckats ända tills något försöker köra
+    /// den.
+    #[test]
+    fn the_wanted_file_is_extracted_from_inside_a_versioned_directory() {
+        let archive = tar_gz_with(&[
+            ("tailscale_1.102.2_amd64/tailscale", b"BINAR-INNEHALL"),
+            ("tailscale_1.102.2_amd64/tailscaled", b"ANNAT"),
+        ]);
+        let dir = fresh_cache_dir();
+        let path = extract_file_from_tar_gz(&archive, "tailscale", &dir).unwrap();
+
+        assert_eq!(path, dir.join("tailscale"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"BINAR-INNEHALL");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o755, "en uppackad binär måste vara körbar");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Bygger tar-headern FÖR HAND, 512 byte enligt ustar-formatet.
+    ///
+    /// `tar::Builder` vägrar skriva ett entry vars sökväg innehåller `..` —
+    /// vilket är bra av den, men gör den oanvändbar för att BYGGA det
+    /// skadliga arkiv vi måste försvara oss mot. Ett angripares arkiv går
+    /// inte genom vår builder. Utan den här funktionen skulle testet nedan
+    /// bara bevisa att `tar`-crate:n är säker, inte att vår kod är det.
+    fn tar_gz_with_raw_path(path: &str, data: &[u8]) -> Vec<u8> {
+        let mut header = [0u8; 512];
+        let name = path.as_bytes();
+        header[..name.len()].copy_from_slice(name);
+        header[100..107].copy_from_slice(b"0000644");           // mode
+        header[108..115].copy_from_slice(b"0000000");           // uid
+        header[116..123].copy_from_slice(b"0000000");           // gid
+        let size = format!("{:011o}", data.len());
+        header[124..135].copy_from_slice(size.as_bytes());      // size
+        header[136..147].copy_from_slice(b"00000000000");       // mtime
+        header[156] = b'0';                                     // typeflag: vanlig fil
+        header[257..263].copy_from_slice(b"ustar\0");
+        header[263..265].copy_from_slice(b"00");
+        // Checksumman räknas med checksummefältet fyllt av blanksteg.
+        header[148..156].copy_from_slice(b"        ");
+        let sum: u32 = header.iter().map(|&b| b as u32).sum();
+        let sum_field = format!("{sum:06o}\0 ");
+        header[148..156].copy_from_slice(sum_field.as_bytes());
+
+        let mut tar_bytes = header.to_vec();
+        tar_bytes.extend_from_slice(data);
+        tar_bytes.resize(tar_bytes.len().div_ceil(512) * 512, 0);
+        tar_bytes.extend_from_slice(&[0u8; 1024]); // två tomma block = slut
+
+        use std::io::Write as _;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(&tar_bytes).unwrap();
+        gz.finish().unwrap()
+    }
+
+    /// Ett arkiv kan påstå vad som helst om vart dess filer hör hemma. Bara
+    /// sista namnkomponenten används, och målsökvägen byggs av OSS — så ett
+    /// entry som pekar utanför cachen kan inte styra vart något hamnar.
+    ///
+    /// Det här är skälet till att `Archive::unpack` inte används: den packar
+    /// upp allt och man får lita på dess skydd i stället för att äga det.
+    #[test]
+    fn an_entry_that_points_outside_the_cache_cannot_escape_it() {
+        let dir = fresh_cache_dir();
+        let outside = dir.parent().unwrap().join("bastion-skulle-inte-skrivas");
+        std::fs::remove_file(&outside).ok();
+
+        for evil in [
+            "../../bastion-skulle-inte-skrivas",
+            "/tmp/bastion-skulle-inte-skrivas",
+            "mapp/../../bastion-skulle-inte-skrivas",
+        ] {
+            let archive = tar_gz_with_raw_path(evil, b"OND");
+            let path = extract_file_from_tar_gz(&archive, "bastion-skulle-inte-skrivas", &dir)
+                .unwrap_or_else(|e| panic!("uppackning av {evil:?} gav {e}"));
+            assert_eq!(
+                path,
+                dir.join("bastion-skulle-inte-skrivas"),
+                "filen ska hamna i cachen, inte där arkivet pekade ({evil})"
+            );
+            assert!(!outside.exists(), "arkivet skrev utanför cachen via {evil}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Ett namn som ändrats mellan versioner är inte ett nätverksfel, och
+    /// felet ska säga vad vi letade efter.
+    #[test]
+    fn a_missing_entry_is_its_own_error_naming_what_was_sought() {
+        let archive = tar_gz_with(&[("mapp/tailscaled", b"x")]);
+        let dir = fresh_cache_dir();
+        match extract_file_from_tar_gz(&archive, "tailscale", &dir) {
+            Err(ExternalBinaryError::EntryNotFound(name)) => assert_eq!(name, "tailscale"),
+            other => panic!("förväntade EntryNotFound, fick {other:?}"),
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_gzip_archive_is_an_error_not_a_panic() {
+        let dir = fresh_cache_dir();
+        assert!(matches!(
+            extract_file_from_tar_gz(b"det har ar inte en tarball", "tailscale", &dir),
+            Err(ExternalBinaryError::ExtractFailed(_))
+        ));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// HELA kedjan mot de skarpa tjänsterna: lös upp utgåvan, hämta dess
+    /// publicerade checksumma, ladda ner tarballen, verifiera den och packa
+    /// upp den riktiga `tailscale`-binären.
+    ///
+    /// Varje länk är testad var för sig ovan. Det här beviset att de faktiskt
+    /// passar ihop — och att den binär som kommer ut är en riktig körbar fil,
+    /// inte en tarball som råkade få körbarhetsbiten satt.
+    #[tokio::test]
+    #[ignore = "laddar ner ~30 MB från pkgs.tailscale.com"]
+    async fn the_whole_chain_produces_a_real_tailscale_binary() {
+        use crate::tool_release::{Channel, parse_checksum, tailscale_index_url, tailscale_release};
+
+        let client = reqwest::Client::new();
+        let Some(arch) = crate::tool_release::host_arch() else {
+            eprintln!("hoppar: Tailscale bygger inte för {}", std::env::consts::ARCH);
+            return;
+        };
+        let index = client.get(tailscale_index_url(Channel::Stable)).send().await
+            .expect("nådde inte pkgs.tailscale.com").text().await.unwrap();
+        let release = tailscale_release(&index, Channel::Stable, arch).unwrap();
+
+        let sum_body = client.get(&release.checksum_url).send().await.unwrap().text().await.unwrap();
+        let expected = parse_checksum(&sum_body).unwrap();
+
+        let dir = fresh_cache_dir();
+        let tarball = fetch(&client, &release.download_url, &expected, &dir, "tailscale.tgz")
+            .await
+            .expect("nedladdning + checksummekontroll misslyckades");
+
+        let data = std::fs::read(&tarball).unwrap();
+        let binary = extract_file_from_tar_gz(&data, "tailscale", &dir).unwrap();
+
+        // ELF-magin bevisar att det är en binär, inte en tarball.
+        let head = std::fs::read(&binary).unwrap();
+        assert_eq!(&head[..4], b"\x7fELF", "det uppackade ska vara en riktig körbar fil");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

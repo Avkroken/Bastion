@@ -2616,8 +2616,25 @@ Inget nytt att bygga, bara verifiera/lansera:
     verifierad mot den skarpa tjänsten (fixtur i `Tests/fixtures/`, plus
     ett `#[ignore]`-märkt test som går mot riktiga nätet), inte läst i
     dokumentation. Kanalvalet finns med eftersom VISION-punkten uttryckligen
-    vill kunna fästa en version. Kvar: UI-lagret som anropar
-    `tool_release` + `external_binary_fetcher`) vid första användning
+    vill kunna fästa en version.
+
+    `external_binary_fetcher` packar dessutom upp arkivet:
+    Tailscale levererar en `.tgz` med binärerna i en versionsnamngiven
+    mapp, inte en naken binär, så utan det steget hade cachen innehållit
+    en körbarhetsmarkerad tarball. Uppackningen tar BARA sista
+    namnkomponenten och skriver till en sökväg vi själva bygger — ett
+    entry som heter `../../.ssh/authorized_keys` kan alltså inte styra
+    vart något hamnar. Medvetet valt framför `Archive::unpack`, som
+    packar upp allt och vars skydd man får lita på i stället för att äga.
+
+    **Hela kedjan bevisad mot de skarpa tjänsterna** (`#[ignore]`-märkt,
+    laddar ner ~30 MB): lös upp utgåvan → hämta publicerad checksumma →
+    ladda ner → verifiera → packa upp → kontrollera att resultatet
+    verkligen är en ELF-binär och inte tarballen som råkat få
+    körbarhetsbiten satt.
+
+    Kvar: UI-lagret som anropar `tool_release` + `external_binary_fetcher`,
+    och att faktiskt STARTA `tailscaled` med rätt tillstånd/rättigheter) vid första användning
     eller på begäran, verifiera checksum/signatur mot projektens egna
     publicerade värden (leverantörskedjesäkerhet — vi kör en nedladdad
     binär, samma tillitsnivå som ett `curl | sudo bash`-installations-
