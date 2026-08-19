@@ -2633,8 +2633,33 @@ Inget nytt att bygga, bara verifiera/lansera:
     verkligen är en ELF-binär och inte tarballen som råkat få
     körbarhetsbiten satt.
 
-    Kvar: UI-lagret som anropar `tool_release` + `external_binary_fetcher`,
-    och att faktiskt STARTA `tailscaled` med rätt tillstånd/rättigheter) vid första användning
+    **Hur `tailscaled` ska köras, verifierat mot binären 1.102.2 (inte
+    läst i dokumentation):** `--tun=userspace-networking` kör HELT utan
+    TUN-gränssnitt, och `--socks5-server=[ip]:port` exponerar då hela
+    tailnet:et som en SOCKS5-proxy. `--socket`, `--statedir` och `--state`
+    pekar alla om till skrivbara sökvägar, så inget behöver ligga i
+    `/var/run` eller `/var/lib`. Det är exakt rätt form för Bastion, som
+    bara behöver sina EGNA anslutningar över tailnet:et — inte att
+    dirigera om hela systemets trafik.
+    **Inte bevisat här:** att det faktiskt räcker med icke-root. Försöket
+    föll på att den här sandlådan inte låter `nobody` skriva någonstans
+    alls, inte på att `tailscaled` krävde root — men det är en skillnad
+    som måste mätas på en riktig maskin innan den skrivs som ett faktum.
+    Som root startade den rent i userspace-läge utan TUN.
+
+    **SOCKS5-KLIENT byggd** (`LinuxApp/src/socks_proxy.rs`,
+    `connect_via_socks5`): för att nyttja proxyn ovan måste Bastion kunna
+    ringa UT genom en SOCKS5-proxy, och modulen hade bara serversidan
+    (`-D`). Värdnamn skickas som DOMÄN så uppslagningen sker i proxyn —
+    `min-server.tailnet.ts.net` betyder ingenting för en lokal resolver.
+    Bevisad genom att gå mot Bastions EGEN SOCKS5-server, genom en riktig
+    SSH-tunnel, till en riktig ekoserver; felvägarna (autentiseringskrav,
+    varje svarskod, alla tre adresstyperna i svaret, för långt värdnamn)
+    mot en stubbserver, eftersom vår egen server aldrig svarar så.
+
+    Kvar: ett `Host`-fält för proxyadressen (med UI, synk och
+    trådformatsvakt), UI-lagret som anropar `tool_release` +
+    `external_binary_fetcher`, och att faktiskt starta `tailscaled`) vid första användning
     eller på begäran, verifiera checksum/signatur mot projektens egna
     publicerade värden (leverantörskedjesäkerhet — vi kör en nedladdad
     binär, samma tillitsnivå som ett `curl | sudo bash`-installations-

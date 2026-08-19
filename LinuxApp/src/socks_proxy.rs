@@ -210,6 +210,153 @@ async fn negotiate(stream: &mut TcpStream) -> Result<(String, u16), SocksError> 
     Ok((host, port))
 }
 
+
+// MARK: SOCKS5-KLIENT
+//
+// Motsatt riktning mot resten av modulen: här är Bastion den som ANSLUTER
+// genom någon annans proxy, i stället för att vara proxyn.
+//
+// Behövs för VISION.md "Native WireGuard/Tailscale — inget externt beroende".
+// `tailscaled --tun=userspace-networking --socks5-server=<adress>` exponerar
+// hela tailnet:et som en SOCKS5-proxy UTAN att kräva root eller ett
+// TUN-gränssnitt (flaggorna verifierade direkt mot binären 1.102.2). Det är
+// exakt rätt form för Bastion, som bara behöver sina EGNA anslutningar över
+// tailnet:et — inte att dirigera om hela systemets trafik. Men för att nyttja
+// det måste vi kunna ringa UT genom en SOCKS5-proxy, och det kunde vi inte.
+
+/// Öppnar en TCP-anslutning till `target_host:target_port` GENOM en
+/// SOCKS5-proxy på `proxy_addr`.
+///
+/// Bara CONNECT och "ingen autentisering" — samma avgränsning som modulens
+/// serversida, och allt `tailscaled` erbjuder.
+///
+/// Målet skickas som DOMÄNNAMN (ATYP 0x03) när det inte är en IP-adress, så
+/// namnuppslagningen sker i PROXYN. Det är hela poängen med en tailnet-proxy:
+/// `min-server.tailnet.ts.net` betyder ingenting för vår lokala resolver, men
+/// allt för den i andra änden. Slår vi upp namnet själva först får vi ett fel
+/// i stället för en anslutning.
+// `dead_code`: klienten är byggd och bevisad mot vår egen server, men ingen
+// anslutningsväg VÄLJER den än — det kräver ett fält på `Host` för
+// proxyadressen, med allt vad det innebär av UI, synk och trådformatsvakt.
+// Samma medvetna ordning som `external_binary_fetcher`/`tool_release`:
+// bevisa mekaniken först, koppla in den sedan. Se ROADMAP.md.
+#[allow(dead_code)]
+pub async fn connect_via_socks5(
+    proxy_addr: &str,
+    target_host: &str,
+    target_port: u16,
+) -> Result<TcpStream, String> {
+    let mut stream = TcpStream::connect(proxy_addr)
+        .await
+        .map_err(|e| format!("kunde inte nå SOCKS5-proxyn {proxy_addr}: {e}"))?;
+
+    // Greeting: version 5, en metod, "ingen autentisering".
+    stream
+        .write_all(&[0x05, 0x01, 0x00])
+        .await
+        .map_err(|e| format!("kunde inte skicka SOCKS5-hälsning: {e}"))?;
+    let mut choice = [0u8; 2];
+    stream
+        .read_exact(&mut choice)
+        .await
+        .map_err(|e| format!("proxyn svarade inte på hälsningen: {e}"))?;
+    if choice[0] != 0x05 {
+        return Err(format!("proxyn talar inte SOCKS5 (version {})", choice[0]));
+    }
+    if choice[1] != 0x00 {
+        // 0xFF = ingen godtagbar metod. Vanligaste orsaken är att proxyn
+        // kräver användarnamn/lösenord, vilket vi medvetet inte stöder.
+        return Err(format!(
+            "proxyn godtog ingen autentiseringsmetod vi kan (fick {:#04x});              Bastion stöder bara proxys utan autentisering",
+            choice[1]
+        ));
+    }
+
+    // CONNECT-begäran.
+    let mut request = vec![0x05, 0x01, 0x00];
+    match target_host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => {
+            request.push(0x01);
+            request.extend_from_slice(&ip.octets());
+        }
+        Ok(std::net::IpAddr::V6(ip)) => {
+            request.push(0x04);
+            request.extend_from_slice(&ip.octets());
+        }
+        Err(_) => {
+            let bytes = target_host.as_bytes();
+            // Längden är EN byte i protokollet — ett längre namn går inte
+            // att uttrycka, och att klippa det vore att tyst ansluta någon
+            // annanstans.
+            let len = u8::try_from(bytes.len())
+                .map_err(|_| format!("värdnamnet är för långt för SOCKS5 (max 255 tecken): {target_host}"))?;
+            request.push(0x03);
+            request.push(len);
+            request.extend_from_slice(bytes);
+        }
+    }
+    request.extend_from_slice(&target_port.to_be_bytes());
+    stream
+        .write_all(&request)
+        .await
+        .map_err(|e| format!("kunde inte skicka SOCKS5-begäran: {e}"))?;
+
+    let mut reply = [0u8; 4];
+    stream
+        .read_exact(&mut reply)
+        .await
+        .map_err(|e| format!("proxyn svarade inte på begäran: {e}"))?;
+    if reply[1] != 0x00 {
+        return Err(format!(
+            "proxyn avvisade anslutningen till {target_host}:{target_port}: {}",
+            socks5_reply_text(reply[1])
+        ));
+    }
+
+    // Svarets bundna adress måste läsas bort även om vi inte bryr oss om
+    // den — annars ligger den kvar i strömmen och blir de första byten
+    // SSH-handskakningen tror är serverns versionssträng.
+    match reply[3] {
+        0x01 => drain(&mut stream, 4 + 2).await?,
+        0x04 => drain(&mut stream, 16 + 2).await?,
+        0x03 => {
+            let mut len = [0u8; 1];
+            stream.read_exact(&mut len).await.map_err(|e| e.to_string())?;
+            drain(&mut stream, len[0] as usize + 2).await?;
+        }
+        other => return Err(format!("proxyn svarade med okänd adresstyp {other:#04x}")),
+    }
+
+    Ok(stream)
+}
+
+#[allow(dead_code)]
+async fn drain(stream: &mut TcpStream, n: usize) -> Result<(), String> {
+    let mut buf = vec![0u8; n];
+    stream
+        .read_exact(&mut buf)
+        .await
+        .map_err(|e| format!("kunde inte läsa proxyns svarsadress: {e}"))
+        .map(|_| ())
+}
+
+/// RFC 1928 §6. Ett nummer säger användaren ingenting; "Connection refused"
+/// och "Host unreachable" kräver olika åtgärder.
+#[allow(dead_code)]
+fn socks5_reply_text(code: u8) -> &'static str {
+    match code {
+        0x01 => "allmänt serverfel",
+        0x02 => "anslutningen tillåts inte av proxyns regeluppsättning",
+        0x03 => "nätverket är inte nåbart",
+        0x04 => "värden är inte nåbar",
+        0x05 => "anslutningen nekades",
+        0x06 => "TTL gick ut",
+        0x07 => "kommandot stöds inte",
+        0x08 => "adresstypen stöds inte",
+        _ => "okänd felkod",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,5 +519,192 @@ mod tests {
 
     fn whoami_user() -> String {
         crate::test_support::test_user()
+    }
+
+    // MARK: SOCKS5-klienten
+
+    /// Startar en SOCKS5-stubbserver som svarar EXAKT det testet ber om.
+    /// Behövs för felvägarna: Bastions egen server svarar aldrig "fel
+    /// version" eller "autentisering krävs", så de grenarna går inte att nå
+    /// genom den.
+    ///
+    /// `greeting_reply` skickas efter hälsningen; `connect_reply` efter
+    /// CONNECT. Sedan ekar den allt.
+    fn spawn_socks_stub(greeting_reply: Vec<u8>, connect_reply: Vec<u8>) -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let Ok((mut sock, _)) = listener.accept() else { return };
+            // Hälsning: 2 byte huvud + nmethods.
+            let mut head = [0u8; 2];
+            if sock.read_exact(&mut head).is_err() { return; }
+            let mut methods = vec![0u8; head[1] as usize];
+            let _ = sock.read_exact(&mut methods);
+            if sock.write_all(&greeting_reply).is_err() { return; }
+            if greeting_reply.get(1) != Some(&0x00) { return; }
+
+            // CONNECT: 4 byte huvud, sedan adress efter typ, sedan port.
+            let mut req = [0u8; 4];
+            if sock.read_exact(&mut req).is_err() { return; }
+            let addr_len = match req[3] {
+                0x01 => 4,
+                0x04 => 16,
+                0x03 => {
+                    let mut l = [0u8; 1];
+                    if sock.read_exact(&mut l).is_err() { return; }
+                    l[0] as usize
+                }
+                _ => return,
+            };
+            let mut rest = vec![0u8; addr_len + 2];
+            let _ = sock.read_exact(&mut rest);
+            if sock.write_all(&connect_reply).is_err() { return; }
+
+            let mut buf = [0u8; 1024];
+            while let Ok(n) = sock.read(&mut buf) {
+                if n == 0 || sock.write_all(&buf[..n]).is_err() { return; }
+            }
+        });
+        port
+    }
+
+    /// Kärnan: vår EGEN klient mot vår EGEN server, genom en riktig SSH-tunnel
+    /// till en riktig ekoserver. Båda halvorna talar RFC 1928, och det här är
+    /// enda sättet att bevisa att de talar SAMMA RFC 1928.
+    ///
+    /// Motsvarar hur Bastion kommer nå en tailnet-värd: `tailscaled` kör med
+    /// `--socks5-server`, och vi ringer ut genom den.
+    #[tokio::test]
+    async fn the_client_reaches_a_real_echo_server_through_our_own_socks5_server() {
+        let Some(sshd) = TestSshd::start() else {
+            eprintln!("hoppar: kunde inte starta en test-sshd i den här miljön");
+            return;
+        };
+        let echo_port = spawn_echo_server();
+
+        let mut host = Host::new("socks-klient".into(), "127.0.0.1".into(), whoami_user());
+        host.port = sshd.port as i64;
+        host.auth = HostAuth::KeyFile(sshd.client_key_path());
+
+        let rx = spawn_dynamic_forward(host, None, "127.0.0.1".into(), 0, None);
+        let forward = rx.recv().await.unwrap().expect("forward misslyckades starta");
+        let proxy = format!("127.0.0.1:{}", forward.actual_bind_port);
+
+        let mut stream = connect_via_socks5(&proxy, "127.0.0.1", echo_port)
+            .await
+            .expect("klienten kom inte igenom vår egen proxy");
+
+        stream.write_all(b"tur-och-retur").await.unwrap();
+        let mut buf = [0u8; 64];
+        let n = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut buf))
+            .await
+            .expect("timeout väntade på eko")
+            .expect("läsfel");
+        assert_eq!(
+            &buf[..n], b"tur-och-retur",
+            "svarsadressen måste läsas bort helt — annars blir dess byte det första \
+             en SSH-handskakning tror är serverns versionssträng"
+        );
+
+        forward.stop();
+    }
+
+    /// Ett värdnamn ska skickas som DOMÄN (0x03) och slås upp i PROXYN.
+    /// Slår vi upp det själva först får vi ett fel för varje tailnet-namn,
+    /// eftersom `min-server.tailnet.ts.net` inte betyder något lokalt.
+    #[tokio::test]
+    async fn a_host_name_is_sent_as_a_domain_for_the_proxy_to_resolve() {
+        let port = spawn_socks_stub(vec![0x05, 0x00], vec![0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+        let mut stream = connect_via_socks5(
+            &format!("127.0.0.1:{port}"),
+            "namn-som-inte-gar-att-sla-upp.invalid",
+            22,
+        )
+        .await
+        .expect("ett ouppslagsbart namn ska ändå gå att BEGÄRA — proxyn avgör");
+        stream.write_all(b"x").await.unwrap();
+        let mut buf = [0u8; 1];
+        stream.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"x");
+    }
+
+    /// Svarets bundna adress varierar i längd med adresstypen. Läses fel
+    /// antal byte bort hamnar resten i strömmen och förgiftar allt efteråt —
+    /// det syns som en obegriplig SSH-handskakning, inte som ett SOCKS-fel.
+    #[tokio::test]
+    async fn every_reply_address_type_is_consumed_completely() {
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("IPv4", vec![0x05, 0x00, 0x00, 0x01, 1, 2, 3, 4, 0, 22]),
+            ("IPv6", {
+                let mut r = vec![0x05, 0x00, 0x00, 0x04];
+                r.extend_from_slice(&[0u8; 16]);
+                r.extend_from_slice(&[0, 22]);
+                r
+            }),
+            ("domän", {
+                let mut r = vec![0x05, 0x00, 0x00, 0x03, 3];
+                r.extend_from_slice(b"abc");
+                r.extend_from_slice(&[0, 22]);
+                r
+            }),
+        ];
+        for (name, reply) in cases {
+            let port = spawn_socks_stub(vec![0x05, 0x00], reply);
+            let mut stream = connect_via_socks5(&format!("127.0.0.1:{port}"), "1.2.3.4", 22)
+                .await
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            stream.write_all(b"P").await.unwrap();
+            let mut buf = [0u8; 1];
+            stream.read_exact(&mut buf).await.unwrap();
+            assert_eq!(&buf, b"P", "{name}: svarsadressen lästes inte bort helt");
+        }
+    }
+
+    /// Felkoderna ska bli begripliga meddelanden. "Nekades" och "inte nåbar"
+    /// kräver olika åtgärder av användaren; ett nummer kräver en sökmotor.
+    #[tokio::test]
+    async fn a_rejected_connection_explains_which_rejection_it_was() {
+        for (code, expected) in [(0x05u8, "nekades"), (0x04, "inte nåbar"), (0x02, "regeluppsättning")] {
+            let port = spawn_socks_stub(vec![0x05, 0x00], vec![0x05, code, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+            let err = connect_via_socks5(&format!("127.0.0.1:{port}"), "1.2.3.4", 22)
+                .await
+                .expect_err("en icke-noll svarskod är ett fel");
+            assert!(err.contains(expected), "kod {code:#04x} gav {err:?}");
+        }
+    }
+
+    /// En proxy som kräver autentisering ska ge ett fel som SÄGER det, inte
+    /// en hängd anslutning eller ett obegripligt protokollfel längre fram.
+    #[tokio::test]
+    async fn a_proxy_demanding_authentication_says_so() {
+        let port = spawn_socks_stub(vec![0x05, 0xFF], vec![]);
+        let err = connect_via_socks5(&format!("127.0.0.1:{port}"), "1.2.3.4", 22)
+            .await
+            .expect_err("0xFF betyder ingen godtagbar metod");
+        assert!(err.contains("autentisering"), "fick {err:?}");
+    }
+
+    /// Något som inte är en SOCKS5-proxy alls.
+    #[tokio::test]
+    async fn a_server_that_is_not_socks5_is_reported_as_such() {
+        let port = spawn_socks_stub(vec![0x04, 0x00], vec![]);
+        let err = connect_via_socks5(&format!("127.0.0.1:{port}"), "1.2.3.4", 22)
+            .await
+            .expect_err("version 4 är inte SOCKS5");
+        assert!(err.contains("SOCKS5"), "fick {err:?}");
+    }
+
+    /// Längden på ett domännamn är EN byte i protokollet. Ett längre namn går
+    /// inte att uttrycka, och att klippa det vore att tyst ansluta till en
+    /// annan värd än den användaren bad om.
+    #[tokio::test]
+    async fn a_host_name_too_long_for_the_protocol_is_refused_not_truncated() {
+        let port = spawn_socks_stub(vec![0x05, 0x00], vec![0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]);
+        let long = "a".repeat(256);
+        let err = connect_via_socks5(&format!("127.0.0.1:{port}"), &long, 22)
+            .await
+            .expect_err("256 tecken ryms inte i en längdbyte");
+        assert!(err.contains("för långt"), "fick {err:?}");
     }
 }
