@@ -326,7 +326,12 @@ mod tests {
         handle.input.send_blocking(b"echo\n".to_vec()).expect("kunde inte skicka");
         let mut read_buf = [0u8; 64];
         let mut total = 0;
-        for _ in 0..50 {
+        // 150 × 20 ms = 3 s. Var 1 s, vilket räckte i isolering men INTE när
+        // hela sviten kör parallellt: testet sågs falla en gång med total = 0
+        // och gick igenom direkt vid omkörning. Budgeten säger bara hur länge
+        // vi väntar — kravet nedan är fortfarande exakt `echo\n`, så en
+        // långsam maskin ger inte ett svagare test, bara ett tåligare.
+        for _ in 0..150 {
             match master.read(&mut read_buf) {
                 Ok(n) if n > 0 => {
                     total = n;
