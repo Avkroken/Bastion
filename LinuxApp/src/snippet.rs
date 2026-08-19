@@ -232,4 +232,41 @@ mod tests {
         );
         std::fs::remove_dir_all(dir).ok();
     }
+
+    /// Låser JSON-formen för `Snippet`, som Swift-sidan avkodar ur samma
+    /// `SyncState`.
+    ///
+    /// `Host` fick den här vakten efter att TVÅ fält gått isär tyst mellan
+    /// plattformarna — `forwardAgent` saknades helt på ena sidan och
+    /// `jumpHostID` stavades `jumpHostId` på den andra. Snippet råkade vara
+    /// oskadd, men hade ingen vakt alls: nästa fält någon lägger till kunde
+    /// gå isär precis lika tyst, och symptomet är en synk som slutar
+    /// överföra en inställning utan ett enda felmeddelande.
+    ///
+    /// Kravet är EXAKT nyckeluppsättning, inte "innehåller". Ett test som
+    /// bara kollar de fält man råkar tänka på hittar inte nästa.
+    #[test]
+    fn the_json_shape_of_snippet_is_exactly_what_the_other_platforms_expect() {
+        let snippet = Snippet::new("namn".into(), "docker restart {{tjanst}}".into());
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&snippet).unwrap()).unwrap();
+        let mut keys: Vec<String> = json.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+
+        let mut expected = vec!["id", "modifiedAt", "name", "template"];
+        expected.sort();
+        assert_eq!(
+            keys, expected,
+            "JSON-formen ändrades. Uppdatera Swift-sidans Snippet i samma veva, \
+             annars släpps det nya fältet tyst vid synk."
+        );
+
+        // Datumet är Apples referensdatum (2001), inte Unix-epok. Går de isär
+        // blir varje snippet från den ena plattformen 31 år äldre än den
+        // andras, och LWW-mergen väljer alltid fel sida.
+        assert!(
+            json["modifiedAt"].is_number(),
+            "modifiedAt måste vara ett tal (sekunder sedan 2001), inte en textsträng"
+        );
+    }
 }
