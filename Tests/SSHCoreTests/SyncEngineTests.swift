@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import SSHCore
 
@@ -80,5 +81,46 @@ final class SyncEngineTests: XCTestCase {
         try deviceB.sync(with: provider)
         try deviceA.sync(with: provider)                 // A hämtar raderingen
         XCTAssertNil(deviceA.get(h.id))
+    }
+
+    /// `tombstones` är ett handskrivet kontrakt mot LinuxApp. Den här sidan
+    /// kodar `[UUID: Date]` som en PLATT array av omväxlande nycklar och
+    /// värden — inte som ett JSON-objekt — eftersom `UUID` inte är
+    /// `CodingKeyRepresentable`. LinuxApp har egna `Serialize`/`Deserialize`
+    /// vars enda syfte är att härma just det.
+    ///
+    /// Går formen isär tappas gravstenarna, och en tappad gravsten betyder
+    /// att en RADERAD värd återuppstår vid nästa synk. Det ser ut som ett
+    /// spöke i gränssnittet och aldrig som ett serialiseringsproblem.
+    ///
+    /// LinuxApp läser samma fil i
+    /// `host::tests::the_shared_sync_state_fixture_decodes_to_the_expected_state`.
+    func testTheSharedSyncStateFixtureDecodesIdentically() throws {
+        let fixture = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()      // SSHCoreTests
+            .deletingLastPathComponent()      // Tests
+            .appendingPathComponent("fixtures/sync-state-wire-format.json")
+        let state = try JSONDecoder().decode(SyncState.self, from: Data(contentsOf: fixture))
+
+        XCTAssertEqual(state.hosts.count, 1)
+        XCTAssertEqual(state.hosts.first?.alias, "synk")
+        XCTAssertEqual(state.tombstones.count, 2, "den platta arrayen ska ge TVÅ gravstenar")
+
+        let first = try XCTUnwrap(UUID(uuidString: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"))
+        let second = try XCTUnwrap(UUID(uuidString: "99999999-8888-7777-6666-555555555555"))
+        XCTAssertEqual(
+            state.tombstones[first]?.timeIntervalSinceReferenceDate ?? -1, 780_000_000,
+            accuracy: 0.001)
+        XCTAssertEqual(
+            state.tombstones[second]?.timeIntervalSinceReferenceDate ?? -1, 785_000_000,
+            accuracy: 0.001)
+
+        // Det vi SKRIVER måste ha samma platta form, annars kan LinuxApp inte
+        // läsa det vi just bevisat att vi kan läsa.
+        let written = try JSONSerialization.jsonObject(
+            with: try JSONEncoder().encode(state)) as! [String: Any]
+        let flat = try XCTUnwrap(written["tombstones"] as? [Any])
+        XCTAssertEqual(flat.count, 4, "två gravstenar = fyra element, inte ett objekt")
+        XCTAssertTrue(flat[0] is String, "nyckel, värde, nyckel, värde")
     }
 }

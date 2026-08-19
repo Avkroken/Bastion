@@ -827,6 +827,60 @@ mod tests {
         assert_eq!(round_tripped.forward_agent, host.forward_agent);
     }
 
+    /// `tombstones` är det ANDRA handskrivna kontraktet mot Swift-sidan.
+    /// Swift kodar `[UUID: Date]` som en PLATT array av omväxlande nycklar
+    /// och värden — inte som ett JSON-objekt — eftersom `UUID` inte är
+    /// `CodingKeyRepresentable`. Rust-sidans egna `Serialize`/`Deserialize`
+    /// finns bara för att härma det.
+    ///
+    /// Går formen isär tappas gravstenarna, och en gravsten som tappas
+    /// betyder att en RADERAD värd återuppstår vid nästa synk. Det är den
+    /// sortens fel som ser ut som ett spöke i gränssnittet och aldrig som
+    /// ett serialiseringsproblem.
+    ///
+    /// Swift-sidan läser samma fil i
+    /// `SyncEngineTests.testTheSharedSyncStateFixtureDecodesIdentically`.
+    #[test]
+    fn the_shared_sync_state_fixture_decodes_to_the_expected_state() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../Tests/fixtures/sync-state-wire-format.json");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("kunde inte läsa {}: {e}", path.display()));
+        let state: SyncState = serde_json::from_str(&text).expect("fixturen ska gå att avkoda");
+
+        assert_eq!(state.hosts.len(), 1);
+        assert_eq!(state.hosts[0].alias, "synk");
+        assert_eq!(state.tombstones.len(), 2, "den platta arrayen ska ge TVÅ gravstenar");
+
+        let first = Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap();
+        let second = Uuid::parse_str("99999999-8888-7777-6666-555555555555").unwrap();
+        assert_eq!(state.tombstones.get(&first).map(|d| d.0), Some(780_000_000.0));
+        assert_eq!(state.tombstones.get(&second).map(|d| d.0), Some(785_000_000.0));
+
+        // Det vi SKRIVER måste ha samma platta form, annars kan Swift-sidan
+        // inte läsa det vi just bevisat att vi kan läsa.
+        let written: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        let flat = written["tombstones"].as_array().expect("tombstones ska vara en array");
+        assert_eq!(flat.len(), 4, "två gravstenar = fyra element, inte ett objekt");
+        assert!(flat[0].is_string() && flat[1].is_number(), "nyckel, värde, nyckel, värde");
+
+        let round_tripped: SyncState =
+            serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        assert_eq!(round_tripped.tombstones.len(), 2);
+    }
+
+    /// En udda array är trasig data, inte "sista gravstenen utan datum" —
+    /// att tyst slänga den sista skulle återuppliva en raderad värd.
+    #[test]
+    fn an_odd_length_tombstone_array_is_an_error_not_a_silent_truncation() {
+        let json = r#"{"hosts":[],"tombstones":["aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"]}"#;
+        assert!(
+            serde_json::from_str::<SyncState>(json).is_err(),
+            "udda antal element måste vara ett fel"
+        );
+    }
+
     /// En `hosts.json` skriven före namnbytet ska INTE tappa sin
     /// ProxyJump-koppling vid uppgraderingen.
     #[test]
