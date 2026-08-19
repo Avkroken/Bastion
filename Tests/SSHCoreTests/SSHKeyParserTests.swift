@@ -42,8 +42,8 @@ pH+sdBSRKUOebwNIybbi+aULdNrWLUFAwet8o=
 -----END OPENSSH PRIVATE KEY-----
 """
 
-    /// `ssh-keygen -t ecdsa -N ""` — giltig nyckel, men inte en typ
-    /// parsern hanterar.
+    /// `ssh-keygen -t ecdsa -N ""` — P256, en av de tre kurvor parsern
+    /// faktiskt stöder.
     private static let ecdsaPEM = """
 -----BEGIN OPENSSH PRIVATE KEY-----
 b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAaAAAABNlY2RzYS
@@ -56,7 +56,41 @@ b24BAg==
 -----END OPENSSH PRIVATE KEY-----
 """
 
-    /// Den enda vägen som ska lyckas — och den ska ge exakt rätt
+    /// `ssh-keygen -t rsa -b 2048 -N "" -C parser@bastion` — giltig
+    /// nyckel av en typ parsern medvetet INTE hanterar (se ROADMAP.md
+    /// "Uppskjutet med avsikt"). Engångsnyckel, aldrig använd mot någon
+    /// server.
+    private static let rsaPEM = """
+-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAABFwAAAAdzc2gtcn
+NhAAAAAwEAAQAAAQEAvdRhixD4HEFQ2rPp02zyiEUmGYwOymaSo82dg1Cvb0+JUJi1QpU+
+uHku3TFp9suIob16txec2qVXluykDuJ5U28vSdjylde4Huk1QrE+r8jWIyrgbycUJpZAbD
+FyKp4UueuM85gCRPdz2v19n9XbsGmdXtGie0sc0y0wiKaa2abZN6ZOMIachIEEoDNZ2f/c
+fm3A2qNCCYLTY1RyHzcXJIeYPeeVbCkn98jNDHbRinDaHEFrGy+1WfY8H9bY/PDHyGlLDh
+KhhHWTt9eQNXoSAYaLGrFn3eqwoDQA6FvyhDngELm0d62DrsPmQIqUO8pfJu3k579eI3Ec
+wD2LR9QlvwAAA8idU/SrnVP0qwAAAAdzc2gtcnNhAAABAQC91GGLEPgcQVDas+nTbPKIRS
+YZjA7KZpKjzZ2DUK9vT4lQmLVClT64eS7dMWn2y4ihvXq3F5zapVeW7KQO4nlTby9J2PKV
+17ge6TVCsT6vyNYjKuBvJxQmlkBsMXIqnhS564zzmAJE93Pa/X2f1duwaZ1e0aJ7SxzTLT
+CIpprZptk3pk4whpyEgQSgM1nZ/9x+bcDao0IJgtNjVHIfNxckh5g955VsKSf3yM0MdtGK
+cNocQWsbL7VZ9jwf1tj88MfIaUsOEqGEdZO315A1ehIBhosasWfd6rCgNADoW/KEOeAQub
+R3rYOuw+ZAipQ7yl8m7eTnv14jcRzAPYtH1CW/AAAAAwEAAQAAAQA1pkJzJTaZ9bO+O77H
+7DCXZsOf0L+VYGvtM31i0Xjjgp0SVDZWPQve4xDlnsON5nQVEhIOkPPZr4UTuImdU1Bqzi
++VNWVKCA+XXN2anbFTyPUMN1/6yhad2TUX3tmfRdIhwXqylbF+gFkT+TR56d0O/KpnU+QR
+6GabIFhpJnz5Kfvt5cCfu/YxUAZr6q2Jn022LG9x6+3Togs/tT9FMBh62efBQNAaIcn/ZP
+kX8UUjZ8LFW9rfEkIbadG6zhp+hOybPAfoDj1kmetaGZCm06F4TNrhI4Z2DSatcO5tQBEt
+o3edC3nBJAE2UlTf2x8WlnS85aofCY0b5Wyw9VBoEO6xAAAAgQDEC20sW+Ljx7ZV1fzlFj
+VR5CLZDojfsQ04zqamQwm2VbwybRY9xzgNWm56xnzjjgz+FQ9jZemxGK2RrXOShuEwKweF
+6+DQIsTG6+vbmwTW/l3ox8Fe4BfwMapyXSTx7CbwSVk3EyrMeOYPElRd0LfPrqcn1a7AQD
+dnOp2rQTZrEgAAAIEA4s/zWBthjgPVsx5w7+QqA6r4lbcQyLd48uacmB3Y91KADFD8BXDV
+qZ8dtXFS8pykZdkHqVYqsARaKPSQrVGSTfr4K10aTwSOBbv9IpYuQK+XcyjkodJzYrWxHw
+gjaqOULg1Ph96dDhILfYZoNBvkWbhMAhMPYvIO7RlO7SCqgg0AAACBANZCFOR7MaKYWyhu
+M2XINoz7O9ChqN45BgzNUVarGm6Bo43fQbvkogZjTCHndPW5kafNC0IvbcVRdtoT+TkDJJ
+qVrXPHjVosNivhFRNrGkcUUEwGDnVcfhEX/TQcVkvQVD4LcZldI1WnEKfxjuNZWLh0tU4M
+K8qTrImDd2Ahj2/7AAAADnBhcnNlckBiYXN0aW9uAQIDBA==
+-----END OPENSSH PRIVATE KEY-----
+"""
+
+    /// Den ska ge exakt rätt nyckelmaterial — och den ska ge exakt rätt
     /// nyckelmaterial, inte bara något som ser ut som en nyckel.
     func testParsesAnUnencryptedEd25519KeyToTheExactSeed() throws {
         let auth = try OpenSSHPrivateKey.parse(Self.ed25519PEM)
@@ -79,14 +113,30 @@ b24BAg==
         }
     }
 
-    /// En ECDSA-nyckel är fullt giltig — den stöds bara inte här. Felet
-    /// ska säga vilken typ det var, så meddelandet blir användbart.
+    /// ECDSA STÖDS — och ska ge rätt kurva, inte bara "någon ECDSA-nyckel".
+    /// Landar den på fel kurva blir skalären fel längd och signaturen
+    /// obrukbar, vilket för användaren ser ut som ett avvisat lösenord.
+    func testAnEcdsaKeyParsesToTheCurveItWasGeneratedOn() throws {
+        let auth = try OpenSSHPrivateKey.parse(Self.ecdsaPEM)
+        guard case .ecdsa(let curve, let scalar) = auth else {
+            return XCTFail("förväntade .ecdsa, fick \(auth)")
+        }
+        XCTAssertEqual(curve, .p256, "nyckeln genererades med ssh-keygen -t ecdsa (P256)")
+        XCTAssertEqual(scalar.count, 32, "P256-skalären är alltid 32 byte efter utfyllnad")
+        // Skalären ska gå att använda — inte bara ha rätt längd.
+        XCTAssertNoThrow(try P256.Signing.PrivateKey(rawRepresentation: scalar))
+    }
+
+    /// RSA är den typ som faktiskt inte hanteras (medvetet, se ROADMAP.md
+    /// "Uppskjutet med avsikt"). Felet ska säga VILKEN typ det var — utan
+    /// det står användaren med en nyckel som inte fungerar och ingen
+    /// ledtråd om varför.
     func testAnUnsupportedKeyTypeNamesTheTypeItFound() {
-        XCTAssertThrowsError(try OpenSSHPrivateKey.parse(Self.ecdsaPEM)) { error in
+        XCTAssertThrowsError(try OpenSSHPrivateKey.parse(Self.rsaPEM)) { error in
             guard case .unsupportedKeyType(let type)? = error as? SSHKeyError else {
                 return XCTFail("förväntade .unsupportedKeyType, fick \(error)")
             }
-            XCTAssertTrue(type.contains("ecdsa"), "typen ska stå i felet: \(type)")
+            XCTAssertTrue(type.contains("rsa"), "typen ska stå i felet: \(type)")
         }
     }
 
