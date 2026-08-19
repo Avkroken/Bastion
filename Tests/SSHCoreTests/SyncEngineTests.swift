@@ -104,7 +104,15 @@ final class SyncEngineTests: XCTestCase {
             .deletingLastPathComponent()      // SSHCoreTests
             .deletingLastPathComponent()      // Tests
             .appendingPathComponent("fixtures/sync-state-wire-format.json")
-        let state = try JSONDecoder().decode(SyncState.self, from: Data(contentsOf: fixture))
+        let data = try Data(contentsOf: fixture)
+        let state = try JSONDecoder().decode(SyncState.self, from: data)
+
+        // Toppnivåns nycklar är ett kontrakt precis som postens egna. Går de
+        // isär avvisas eller tappas HELA synken, inte bara ett fält.
+        let raw = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        XCTAssertEqual(
+            raw.keys.sorted(), ["hosts", "snippets", "tombstones"],
+            "SyncStates toppnivå ändrades. Uppdatera LinuxApps serde-kod i samma veva.")
 
         XCTAssertEqual(state.hosts.count, 1)
         XCTAssertEqual(state.hosts.first?.alias, "synk")

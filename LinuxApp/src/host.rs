@@ -914,6 +914,17 @@ mod tests {
             .unwrap_or_else(|e| panic!("kunde inte läsa {}: {e}", path.display()));
         let state: SyncState = serde_json::from_str(&text).expect("fixturen ska gå att avkoda");
 
+        // Toppnivåns nycklar är ett kontrakt precis som postens egna. Går de
+        // isär avvisas eller tappas HELA synken, inte bara ett fält.
+        let raw: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let mut keys: Vec<String> = raw.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec!["hosts".to_string(), "snippets".to_string(), "tombstones".to_string()],
+            "SyncStates toppnivå ändrades. Uppdatera Swift-sidans CodingKeys i samma veva."
+        );
+
         assert_eq!(state.hosts.len(), 1);
         assert_eq!(state.hosts[0].alias, "synk");
         assert_eq!(state.snippets.len(), 1, "snippets ingår i tillståndet");
