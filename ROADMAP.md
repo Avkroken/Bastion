@@ -2597,9 +2597,27 @@ Inget nytt att bygga, bara verifiera/lansera:
     redan fristående här, `.deb`/`.rpm`/direktnedladdning — se "Paketering"
     nedan): ladda ner OFFICIELLA, plattforms-/arkitekturmatchade
     förbyggda binärer (`wireguard-go` — WireGuards egen userspace Go-
-    implementation, INGEN kärnmodul krävs, finns för i princip alla
-    plattformar som EN binär — samt `tailscale`/`tailscaled`, som
-    Tailscale själva distribuerar på samma sätt) vid första användning
+    implementation, INGEN kärnmodul krävs — samt `tailscale`/`tailscaled`).
+
+    **RÄTTELSE (2026-08-19, mätt mot de riktiga tjänsterna):** påståendet
+    ovan att `wireguard-go` "finns för i princip alla plattformar som EN
+    binär" STÄMMER INTE. Projektet publicerar bara KÄLLKODSTARBALLS
+    (`wireguard-go-<datum>.tar.xz` från git.zx2c4.com) och har inga
+    binärsläpp alls. En färdig binär kräver därför antingen en
+    Go-verktygskedja på användarens maskin eller ett tredjepartsbygge vi
+    skulle få lita på — två helt andra tillitsfrågor än "hämta och
+    verifiera mot projektets egen checksumma", och skälet till att
+    WireGuard-delen fortfarande är öppen.
+
+    **Tailscale går däremot att hämta verifierat idag**, och den delen är
+    byggd: `LinuxApp/src/tool_release.rs` löser upp
+    `https://pkgs.tailscale.com/{stable,unstable}/?mode=json` → arkitektur
+    → filnamn → nedladdnings-URL + `<filnamn>.sha256`. Formen är
+    verifierad mot den skarpa tjänsten (fixtur i `Tests/fixtures/`, plus
+    ett `#[ignore]`-märkt test som går mot riktiga nätet), inte läst i
+    dokumentation. Kanalvalet finns med eftersom VISION-punkten uttryckligen
+    vill kunna fästa en version. Kvar: UI-lagret som anropar
+    `tool_release` + `external_binary_fetcher`) vid första användning
     eller på begäran, verifiera checksum/signatur mot projektens egna
     publicerade värden (leverantörskedjesäkerhet — vi kör en nedladdad
     binär, samma tillitsnivå som ett `curl | sudo bash`-installations-

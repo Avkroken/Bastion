@@ -34,6 +34,7 @@ mod socks_proxy;
 mod split;
 mod ssh;
 mod tab_title;
+mod tool_release;
 #[cfg(test)]
 mod test_support;
 mod ssh_config;
