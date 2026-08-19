@@ -31,13 +31,13 @@ delvis andra, av konkreta skäl:
 | Misslyckad auth utan att hänga | ✅ testad |
 | Interaktiv shell + PTY (stdin/stdout, resize) | ✅ testad end-to-end |
 | known_hosts / TOFU (SHA256-fingeravtryck, MITM-skydd) | ✅ testad, `~/.bastion/known_hosts` |
-| ssh-config-parsing (`Host`-alias, jokertecken, `IdentityFile`) | ✅ testad, CLI slår upp alias |
+| ssh-config-parsing (`Host`-alias, jokertecken, `IdentityFile`, `Include`) | ✅ testad, CLI slår upp alias — `Include` i LinuxApp Rust (2026-08-19), ännu inte i Swift-sidans `SSHConfig.swift` |
 | Host-databas (JSON, taggar, CRUD) | ✅ testad, `~/.bastion/hosts.json` |
 | Dashboard-data (last/minne/disk/uptime/OS/Docker via SSH) | ✅ parser testad, ett kommando — App/-UI (Xcode-only) — ✅ (2026-08-05) LinuxApp Rust (`dashboard.rs`), egen flik, auto-poll var 15:e sekund (se "Klart") |
 | Docker-åtgärder (lista/start/stopp/omstart/logg) | ✅ testad, injektionssäker referens |
 | Sync mellan enheter (LWW-merge + gravstenar, mapp-transport) | ✅ testad, konvergens bevisad |
 | E2E-krypterad sync (AES-256-GCM + PBKDF2, testvektorer) | ✅ testad, chiffertext läcker inget |
-| Importera `~/.ssh/config` → host-DB | ✅ testad (parser + dedup) |
+| Importera `~/.ssh/config` → host-DB | ✅ testad (parser + dedup + `Include`, LinuxApp läser filen från disk) |
 | Docker-shell-kommando (`docker exec -it`, injektionssäkert) | ✅ testad |
 | Kontoinloggning (OAuth2 + PKCE, Dropbox/Google Drive/OneDrive) | ✅ PKCE-kärna testad mot RFC 7636; alla tre `SyncProvider`-implementationer klara, kräver eget klient-ID (se README "Konton") |
 | iOS-app (host-lista, dashboard, Docker+shell, sync, import) | 🧩 `App/`, byggs i Xcode via XcodeGen |

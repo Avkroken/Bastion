@@ -1,9 +1,9 @@
 //! Minimal läsare av OpenSSH:s klientkonfiguration (`~/.ssh/config`). Port
 //! av `Sources/SSHCore/SSHConfig.swift`. Stöder `Host`-block med
-//! jokertecken (`*`, `?`) och negation (`!`), samt de vanligaste nycklarna.
-//! Semantik enligt OpenSSH: **första värdet vinner** per nyckel. `Match`-
-//! block hoppas medvetet över (ännu ej stött) — samma avgränsning som
-//! Swift-sidan.
+//! jokertecken (`*`, `?`) och negation (`!`), `Include`, samt de
+//! vanligaste nycklarna. Semantik enligt OpenSSH: **första värdet vinner**
+//! per nyckel. `Match`-block hoppas medvetet över (ännu ej stött) — samma
+//! avgränsning som Swift-sidan.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedHost {
@@ -23,29 +23,40 @@ pub struct SSHConfig {
     entries: Vec<Entry>,
 }
 
+/// Största antal `Include`-nivåer som följs. Samma gräns som OpenSSH:s
+/// egen (`readconf.c`, `MAX_READCONF_DEPTH` = 16), och av samma skäl: en
+/// config som direkt eller indirekt inkluderar sig själv ska ge en
+/// trunkerad läsning, inte en oändlig loop.
+const MAX_INCLUDE_DEPTH: usize = 16;
+
 impl SSHConfig {
+    /// Läser en config-TEXT utan att röra filsystemet. `Include`-rader
+    /// hoppas över — det finns ingen katalog att lösa dem mot. Använd
+    /// [`SSHConfig::parse_file`] när filen finns på disk.
     pub fn parse(text: &str) -> SSHConfig {
         let mut entries = Vec::new();
-        for raw_line in text.split(['\n', '\r']) {
-            let Some((key, value)) = tokenize(raw_line) else { continue };
-            match key.as_str() {
-                "host" => {
-                    let patterns: Vec<String> = value
-                        .split([' ', '\t'])
-                        .filter(|s| !s.is_empty())
-                        .map(String::from)
-                        .collect();
-                    entries.push(Entry::Host(patterns));
-                }
-                "match" => {
-                    // Ej stött — tomt mönster matchar aldrig, så blockets
-                    // nycklar ignoreras.
-                    entries.push(Entry::Host(Vec::new()));
-                }
-                _ => entries.push(Entry::Setting(key, value)),
-            }
-        }
+        collect_entries(text, None, 0, &mut entries);
         SSHConfig { entries }
+    }
+
+    /// Läser en config från disk och FÖLJER `Include`-rader.
+    ///
+    /// Det här är skillnaden mellan att importera en modern
+    /// `~/.ssh/config` och att importera ingenting alls: `Include
+    /// ~/.ssh/config.d/*` är hur de flesta verktyg (1Password, Colima,
+    /// OrbStack m.fl.) säger åt användaren att lägga upp sin config, och
+    /// då står det inte en enda `Host`-rad i huvudfilen.
+    ///
+    /// Saknade filer hoppas tyst över. OpenSSH felar på en Include utan
+    /// jokertecken som pekar på en fil som inte finns, men här är
+    /// alternativet att en enda död sökväg gör att INGA värdar
+    /// importeras — sämre för det här användningsfallet.
+    pub fn parse_file(path: &std::path::Path) -> std::io::Result<SSHConfig> {
+        let text = std::fs::read_to_string(path)?;
+        let base = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        let mut entries = Vec::new();
+        collect_entries(&text, Some(&base), 0, &mut entries);
+        Ok(SSHConfig { entries })
     }
 
     /// Konkreta värdalias (inte jokertecken/negation) i den ordning de
@@ -104,6 +115,95 @@ fn expand_tilde(path: &str) -> String {
 /// Delar en rad i (nyckel-gemener, värde). Stöder `Key Value`, `Key=Value`,
 /// `Key = Value` och citerade värden. Returnerar `None` för tomma/
 /// kommentarrader.
+/// Tolkar en config-text till poster, och expanderar `Include` INLINE på
+/// den plats raden stod. Att inlina är inte en förenkling utan just vad
+/// OpenSSH gör: en inkluderad fils `Host`-block gäller vidare efter
+/// include-punkten, precis som om innehållet stått där direkt.
+fn collect_entries(
+    text: &str,
+    base_dir: Option<&std::path::Path>,
+    depth: usize,
+    out: &mut Vec<Entry>,
+) {
+    for raw_line in text.split(['\n', '\r']) {
+        let Some((key, value)) = tokenize(raw_line) else { continue };
+        match key.as_str() {
+            "host" => {
+                let patterns: Vec<String> = value
+                    .split([' ', '\t'])
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect();
+                out.push(Entry::Host(patterns));
+            }
+            "match" => {
+                // Ej stött — tomt mönster matchar aldrig, så blockets
+                // nycklar ignoreras.
+                out.push(Entry::Host(Vec::new()));
+            }
+            "include" => {
+                let Some(base_dir) = base_dir else { continue };
+                if depth >= MAX_INCLUDE_DEPTH {
+                    continue;
+                }
+                for path in resolve_include(&value, base_dir) {
+                    if let Ok(nested) = std::fs::read_to_string(&path) {
+                        collect_entries(&nested, Some(base_dir), depth + 1, out);
+                    }
+                }
+            }
+            _ => out.push(Entry::Setting(key, value)),
+        }
+    }
+}
+
+/// Löser upp en `Include`-rads sökvägar till konkreta filer.
+///
+/// En rad kan ange flera sökvägar separerade med blanksteg, var och en med
+/// `~` och/eller jokertecken. Relativa sökvägar räknas från katalogen
+/// configfilen ligger i — OpenSSH säger `~/.ssh` för användarens config,
+/// vilket är samma katalog i praktiken men blir rätt även när filen ligger
+/// någon annanstans (t.ex. i ett test).
+///
+/// Träffarna sorteras. OpenSSH läser glob-träffar i den ordning `glob(3)`
+/// ger, vilket är sorterad ordning — och ordningen spelar roll, eftersom
+/// första värdet vinner per nyckel.
+fn resolve_include(value: &str, base_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for raw in value.split([' ', '\t']).filter(|s| !s.is_empty()) {
+        let expanded = expand_tilde(raw);
+        let candidate = std::path::Path::new(&expanded);
+        let full = if candidate.is_absolute() {
+            candidate.to_path_buf()
+        } else {
+            base_dir.join(candidate)
+        };
+
+        if !expanded.contains('*') && !expanded.contains('?') {
+            out.push(full);
+            continue;
+        }
+
+        // Jokertecken hanteras bara i SISTA segmentet, som i OpenSSH:s
+        // egna exempel (`Include ~/.ssh/config.d/*`). Ett mönster mitt i
+        // sökvägen är sällsynt nog att inte vara värt en egen
+        // katalogtraversering.
+        let (Some(dir), Some(pattern)) = (full.parent(), full.file_name()) else {
+            continue;
+        };
+        let pattern = pattern.to_string_lossy().into_owned();
+        let Ok(read) = std::fs::read_dir(dir) else { continue };
+        let mut matches: Vec<std::path::PathBuf> = read
+            .flatten()
+            .filter(|e| glob(&pattern, &e.file_name().to_string_lossy()))
+            .map(|e| e.path())
+            .collect();
+        matches.sort();
+        out.extend(matches);
+    }
+    out
+}
+
 fn tokenize(line: &str) -> Option<(String, String)> {
     let trimmed = line.trim();
     if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -334,5 +434,139 @@ Host nouser
         assert_eq!(store.import_ssh_config(IMPORT_CONFIG).unwrap(), 0); // re-import lägger inte till igen
         assert_eq!(store.all().len(), 3);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Utan `Include` importeras NOLL värdar ur en modern config, utan att
+    /// något ser trasigt ut. Det är hela poängen med den här funktionen,
+    /// så testet speglar exakt det upplägg verktyg som 1Password och
+    /// OrbStack instruerar användaren att skapa: en huvudfil som bara
+    /// pekar vidare, och inte en enda `Host`-rad i den.
+    #[test]
+    fn hosts_behind_an_include_are_found_and_would_not_be_without_it() {
+        let dir = temp_config_dir();
+        std::fs::create_dir_all(dir.join("config.d")).unwrap();
+        std::fs::write(dir.join("config"), "Include config.d/work\n").unwrap();
+        std::fs::write(
+            dir.join("config.d/work"),
+            "Host kund\n  HostName kund.example\n  User anders\n  Port 2222\n",
+        )
+        .unwrap();
+
+        let config = SSHConfig::parse_file(&dir.join("config")).unwrap();
+        assert_eq!(config.host_aliases(), vec!["kund".to_string()]);
+        let resolved = config.resolve("kund");
+        assert_eq!(resolved.host_name, "kund.example");
+        assert_eq!(resolved.user.as_deref(), Some("anders"));
+        assert_eq!(resolved.port, 2222);
+
+        // Kontrollen: samma text utan filsystemet ger ingenting. Utan den
+        // här raden bevisar testet inte att det var Include som gjorde
+        // jobbet.
+        let text = std::fs::read_to_string(dir.join("config")).unwrap();
+        assert!(
+            SSHConfig::parse(&text).host_aliases().is_empty(),
+            "utan Include-upplösning finns ingen värd i huvudfilen — det är felet som fixas"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// `Include ~/.ssh/config.d/*` är det vanligaste sättet raden skrivs.
+    /// Ordningen måste vara sorterad: första värdet vinner per nyckel, så
+    /// en ostabil läsordning skulle ge olika resultat mellan körningar på
+    /// samma filer.
+    #[test]
+    fn a_wildcard_include_reads_every_match_in_sorted_order() {
+        let dir = temp_config_dir();
+        std::fs::create_dir_all(dir.join("config.d")).unwrap();
+        std::fs::write(dir.join("config"), "Include config.d/*\n").unwrap();
+        std::fs::write(dir.join("config.d/10-a"), "Host alfa\n  User a\n").unwrap();
+        std::fs::write(dir.join("config.d/20-b"), "Host beta\n  User b\n").unwrap();
+        std::fs::write(dir.join("config.d/30-c"), "Host gamma\n  User c\n").unwrap();
+
+        let config = SSHConfig::parse_file(&dir.join("config")).unwrap();
+        assert_eq!(
+            config.host_aliases(),
+            vec!["alfa".to_string(), "beta".to_string(), "gamma".to_string()]
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// En config som inkluderar sig själv ska ge en trunkerad läsning, inte
+    /// hänga sig. Utan djupgränsen är det här inte ett långsamt test utan
+    /// ett test som aldrig återvänder.
+    #[test]
+    fn a_self_including_config_stops_instead_of_looping_forever() {
+        let dir = temp_config_dir();
+        std::fs::write(dir.join("config"), "Include config\nHost slut\n  User a\n").unwrap();
+
+        let config = SSHConfig::parse_file(&dir.join("config")).unwrap();
+        // Värden finns kvar — läsningen trunkerades, den kraschade inte.
+        assert!(config.host_aliases().contains(&"slut".to_string()));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// En Include som pekar på en fil som inte finns får inte ta med sig
+    /// resten av configen i fallet. Ett kvarglömt verktyg som avinstallerats
+    /// lämnar precis en sådan rad efter sig.
+    #[test]
+    fn a_missing_include_target_does_not_discard_the_rest_of_the_config() {
+        let dir = temp_config_dir();
+        std::fs::write(
+            dir.join("config"),
+            "Include config.d/finns-inte\nHost kvar\n  HostName kvar.example\n  User a\n",
+        )
+        .unwrap();
+
+        let config = SSHConfig::parse_file(&dir.join("config")).unwrap();
+        assert_eq!(config.host_aliases(), vec!["kvar".to_string()]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Poster ur en inkluderad fil måste hamna på include-radens PLATS, inte
+    /// sist. Annars ändras vilket värde som vinner — OpenSSH tar det första,
+    /// så en omflyttning byter tyst ut användarens inställningar.
+    #[test]
+    fn included_settings_land_where_the_include_line_stood() {
+        let dir = temp_config_dir();
+        std::fs::write(
+            dir.join("config"),
+            "Host server\n  User fran-huvudfilen\nInclude senare\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("senare"), "Host server\n  User fran-included\n").unwrap();
+
+        let config = SSHConfig::parse_file(&dir.join("config")).unwrap();
+        assert_eq!(
+            config.resolve("server").user.as_deref(),
+            Some("fran-huvudfilen"),
+            "första värdet vinner — den inkluderade filen stod EFTER och ska inte skriva över"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Hela vägen fram: från fil på disk till värdar i databasen.
+    #[test]
+    fn importing_from_a_file_stores_hosts_that_only_exist_behind_an_include() {
+        let dir = temp_config_dir();
+        std::fs::create_dir_all(dir.join("config.d")).unwrap();
+        std::fs::write(dir.join("config"), "Include config.d/*\n").unwrap();
+        std::fs::write(
+            dir.join("config.d/hosts"),
+            "Host bakom-include\n  HostName b.example\n  User anders\n",
+        )
+        .unwrap();
+
+        let mut store = crate::host::HostStore::open(dir.join("hosts.json")).unwrap();
+        assert_eq!(store.import_ssh_config_file(&dir.join("config")).unwrap(), 1);
+        assert_eq!(store.all()[0].alias, "bakom-include");
+        // Omimport ska fortfarande inte skapa dubbletter.
+        assert_eq!(store.import_ssh_config_file(&dir.join("config")).unwrap(), 0);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    fn temp_config_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("bastion-include-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 }
