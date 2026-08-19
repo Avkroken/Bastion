@@ -9107,7 +9107,8 @@ fn spawn_background_sync_plain(
     std::thread::spawn(move || {
         let result = (|| -> std::io::Result<()> {
             let mut store = host::HostStore::open(host::HostStore::default_path())?;
-            store.sync(&provider)
+            let mut snippets = snippet::SnippetStore::open(snippet::SnippetStore::default_path())?;
+            store.sync_with_snippets(&provider, &mut snippets)
         })();
         let _ = tx.send_blocking(result.map_err(|e| e.to_string()));
     });
@@ -9122,7 +9123,8 @@ fn spawn_background_sync_webdav(
     std::thread::spawn(move || {
         let result = (|| -> std::io::Result<()> {
             let mut store = host::HostStore::open(host::HostStore::default_path())?;
-            store.sync(&provider)
+            let mut snippets = snippet::SnippetStore::open(snippet::SnippetStore::default_path())?;
+            store.sync_with_snippets(&provider, &mut snippets)
         })();
         let _ = tx.send_blocking(result.map_err(|e| e.to_string()));
     });
@@ -9136,7 +9138,8 @@ fn spawn_background_sync_encrypted(
     std::thread::spawn(move || {
         let result = (|| -> std::io::Result<()> {
             let mut store = host::HostStore::open(host::HostStore::default_path())?;
-            store.sync(&provider)
+            let mut snippets = snippet::SnippetStore::open(snippet::SnippetStore::default_path())?;
+            store.sync_with_snippets(&provider, &mut snippets)
         })();
         let _ = tx.send_blocking(result.map_err(|e| e.to_string()));
     });
@@ -9567,7 +9570,12 @@ fn build_snippet_row(
         #[strong(rename_to = snippet_id)]
         snippet.id,
         move |_| {
-            if let Err(e) = snippet_store.borrow_mut().delete(snippet_id) {
+            // `delete_synced`, inte `delete`: utan gravsten kommer
+            // snippeten tillbaka vid nästa synk mot en enhet som
+            // fortfarande har den, och användaren får radera om och om igen.
+            let recorded = host::HostStore::open(host::HostStore::default_path())
+                .and_then(|mut hosts| snippet_store.borrow_mut().delete_synced(snippet_id, &mut hosts));
+            if let Err(e) = recorded {
                 eprintln!("kunde inte ta bort snippeten: {e}");
                 return;
             }

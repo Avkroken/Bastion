@@ -86,15 +86,26 @@ public final class HostStore {
     /// Slår ihop ett fjärrtillstånd (från en annan enhet) med det lokala och
     /// persisterar resultatet. Returnerar det sammanslagna tillståndet.
     @discardableResult
-    public func merge(_ remote: SyncState) -> SyncState {
-        lock.withLock {
+    public func merge(_ remote: SyncState, snippets: SnippetStore? = nil) -> SyncState {
+        // Snippet-databasen läses UTANFÖR låset: den har ett eget lås, och att
+        // ta två lås i den här ordningen någon annanstans skulle vara en
+        // dödläges-risk som inte behöver finnas.
+        let localSnippets = snippets?.all() ?? []
+        let merged: SyncState = lock.withLock {
             let merged = SyncEngine.merge(
-                SyncState(hosts: Array(byID.values), tombstones: tombstones), remote)
+                SyncState(
+                    hosts: Array(byID.values), snippets: localSnippets, tombstones: tombstones),
+                remote)
             byID = Dictionary(merged.hosts.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             tombstones = merged.tombstones
             persist()
             return merged
         }
+        // Snippets bor i sin egen fil — `hosts.json` ska inte börja bära dem
+        // bara för att synken hanterar dem. Två sanningskällor för samma data
+        // är hur de hinner glida isär.
+        snippets?.replaceAll(merged.snippets)
+        return merged
     }
 
     /// Importerar värdar från en `~/.ssh/config`-text. Alias som redan finns
@@ -142,12 +153,26 @@ public final class HostStore {
 
     /// Full synkrunda mot en transport: hämta fjärrtillstånd, slå ihop lokalt,
     /// skriv tillbaka det sammanslagna. Kör den när appen öppnas/backgrundas.
+    ///
+    /// Tar BÅDA databaserna. Två synkvägar skulle betyda att någon förr eller
+    /// senare väljer den som tyst hoppar över snippets. De delar dessutom
+    /// gravstenskarta, så två separata rundturer vore inte bara långsammare
+    /// utan fel: den andra pushen skulle skriva över den förstas gravstenar.
     @discardableResult
-    public func sync(with provider: SyncProvider) throws -> SyncState {
+    public func sync(with provider: SyncProvider, snippets: SnippetStore) throws -> SyncState {
         let remote = (try provider.pull()) ?? SyncState()
-        let merged = merge(remote)
+        let merged = merge(remote, snippets: snippets)
         try provider.push(merged)
         return merged
+    }
+
+    /// Skriver en gravsten utan att röra värdlistan — för poster som lever i
+    /// en annan databas men delar sync-tillstånd (se `SnippetStore`).
+    public func recordTombstone(_ id: UUID) {
+        lock.withLock {
+            tombstones[id] = Date()
+            persist()
+        }
     }
 
     // Anropas med låset hållet.

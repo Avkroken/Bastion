@@ -7,15 +7,27 @@
       "user": "anders",
       "port": 22,
       "tags": [],
-      "auth": { "agentDefault": {} },
+      "auth": {
+        "agentDefault": {}
+      },
       "isFavorite": false,
       "platform": "posix",
       "forwardAgent": false,
       "modifiedAt": 790000000
     }
   ],
+  "snippets": [
+    {
+      "id": "cccccccc-dddd-eeee-ffff-000000000001",
+      "name": "starta om plex",
+      "template": "docker compose restart {{tjanst}}",
+      "modifiedAt": 787000000
+    }
+  ],
   "tombstones": [
-    "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", 780000000,
-    "99999999-8888-7777-6666-555555555555", 785000000
+    "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    780000000,
+    "99999999-8888-7777-6666-555555555555",
+    785000000
   ]
 }

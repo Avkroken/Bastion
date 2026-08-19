@@ -298,8 +298,12 @@ mod tests {
         store_a
             .upsert(Host::new("nas".into(), "10.0.0.2".into(), "root".into()))
             .unwrap();
-        store_a.sync(&provider).unwrap();
-        store_b.sync(&provider).unwrap();
+        // Egna, tomma snippet-databaser: testet handlar om krypteringen,
+        // och den enda synkvägen tar båda databaserna.
+        let mut snips_a = crate::snippet::SnippetStore::open(dir.join("a/snippets.json")).unwrap();
+        let mut snips_b = crate::snippet::SnippetStore::open(dir.join("b/snippets.json")).unwrap();
+        store_a.sync_with_snippets(&provider, &mut snips_a).unwrap();
+        store_b.sync_with_snippets(&provider, &mut snips_b).unwrap();
 
         assert_eq!(store_b.all()[0].alias, "nas");
 

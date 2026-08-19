@@ -61,11 +61,15 @@ final class SyncCryptoTests: XCTestCase {
         let provider = EncryptedFolderSyncProvider(path: dir + "/shared.enc", passphrase: "delad-hemlis")
         let deviceA = HostStore(path: dir + "/a.json")
         let deviceB = HostStore(path: dir + "/b.json")
+        // Egna, tomma snippet-databaser: testet handlar om krypteringen, och
+        // den enda synkvägen tar båda.
+        let snipsA = SnippetStore(path: dir + "/a-snippets.json")
+        let snipsB = SnippetStore(path: dir + "/b-snippets.json")
 
         let h = Host(id: UUID(), alias: "nas", hostName: "10.0.0.2", user: "root")
         deviceA.upsert(h)
-        try deviceA.sync(with: provider)
-        try deviceB.sync(with: provider)
+        try deviceA.sync(with: provider, snippets: snipsA)
+        try deviceB.sync(with: provider, snippets: snipsB)
         XCTAssertEqual(deviceB.get(h.id)?.alias, "nas")
 
         // Fel lösenfras på en tredje enhet -> kan inte läsa.

@@ -2455,7 +2455,7 @@ Inget nytt att bygga, bara verifiera/lansera:
   den otrimmade nyckeln, så `{{ mellanslag }}` aldrig matchade). UI: knapp
   i värddetaljvyn, fyll i variabler, kör som startkommando i en ny terminal
   (samma `ConnectRequest.running(_:)`/`initialCommand`-mönster som Docker-
-  shell). Ingen sync av snippets mellan enheter än (medvetet, v1).
+  shell). Synkas mellan enheter sedan 2026-08-19 (`SyncState.snippets`, samma LWW-regler och gravstenar som värdarna, en rundtur för båda databaserna).
 - **Favoriter/färgkodning i host-listan** — ✅ klart, både App/ (`Host.isFavorite`/
   `colorTag` i SSHCore, `HostColorPicker`, egen "★ Favoriter"-sektion) och
   LinuxApp (samma fält, favoriter sorterade överst, "☆/★ Favorit"-knapp

@@ -72,7 +72,17 @@ fn occurrences(template: &str) -> Vec<((usize, usize), String)> {
 }
 
 /// Persistent snippet-databas, `~/.bastion/snippets.json` — samma mönster
-/// som `HostStore` men en ren array (ingen sync-integration, se ROADMAP.md).
+/// som `HostStore`, men en ren array.
+///
+/// Gravstenarna ligger MEDVETET inte här utan i sync-tillståndet
+/// (`hosts.json`, som i sin helhet ÄR en serialiserad `SyncState`). Skälet
+/// är att gravstenar bara betyder något för synken, och en delad karta för
+/// båda posttyperna slipper både ett andra fält på tråden och en
+/// formatändring av `snippets.json` som varje plattform hade behövt följa.
+/// Radering av en snippet går därför via [`SnippetStore::delete_synced`],
+/// som får sync-tillståndet med sig — `delete` utan gravsten finns kvar för
+/// den som inte synkar, men en snippet raderad så ÅTERUPPSTÅR vid nästa
+/// synk mot en enhet som fortfarande har den.
 pub struct SnippetStore {
     path: std::path::PathBuf,
     snippets: Vec<Snippet>,
@@ -117,6 +127,27 @@ impl SnippetStore {
 
     pub fn delete(&mut self, id: Uuid) -> std::io::Result<()> {
         self.snippets.retain(|s| s.id != id);
+        self.persist()
+    }
+
+    /// Raderar OCH skriver en gravsten i sync-tillståndet, så raderingen
+    /// överlever en synk. Använd den här i allt som kan synkas; se
+    /// typkommentaren för varför gravstenen bor i `HostStore`.
+    pub fn delete_synced(
+        &mut self,
+        id: Uuid,
+        state: &mut crate::host::HostStore,
+    ) -> std::io::Result<()> {
+        self.delete(id)?;
+        state.record_tombstone(id)
+    }
+
+    /// Ersätter hela innehållet — används av synken när det sammanslagna
+    /// resultatet ska skrivas tillbaka. Rör INTE `modified_at`, till skillnad
+    /// från `upsert`: tidsstämplarna kommer från hopslagningen och är precis
+    /// det som avgjorde vem som vann.
+    pub fn replace_all(&mut self, snippets: Vec<Snippet>) -> std::io::Result<()> {
+        self.snippets = snippets;
         self.persist()
     }
 

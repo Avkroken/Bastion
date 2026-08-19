@@ -223,6 +223,14 @@ impl Host {
 #[derive(Debug, Clone, Default)]
 pub struct SyncState {
     pub hosts: Vec<Host>,
+    /// Synkade snippets. `#[serde(default)]` på avkodningssidan (se
+    /// `Deserialize` nedan) — ett tillstånd skrivet innan snippets ingick i
+    /// synken saknar fältet helt, och ska läsas som "inga snippets", inte
+    /// avvisas. Samma bakåtkompatibilitet som Swift-sidans
+    /// `decodeIfPresent`.
+    pub snippets: Vec<crate::snippet::Snippet>,
+    /// Delas av BÅDA posttyperna. UUID:n krockar inte mellan typerna, och
+    /// en gemensam karta slipper ett andra fält på tråden.
     pub tombstones: HashMap<Uuid, ReferenceDate>,
 }
 
@@ -239,8 +247,9 @@ impl Serialize for SyncState {
                 ]
             })
             .collect();
-        let mut st = s.serialize_struct("SyncState", 2)?;
+        let mut st = s.serialize_struct("SyncState", 3)?;
         st.serialize_field("hosts", &self.hosts)?;
+        st.serialize_field("snippets", &self.snippets)?;
         st.serialize_field("tombstones", &flat)?;
         st.end()
     }
@@ -252,6 +261,8 @@ impl<'de> Deserialize<'de> for SyncState {
         #[derive(Deserialize)]
         struct Raw {
             hosts: Vec<Host>,
+            #[serde(default)]
+            snippets: Vec<crate::snippet::Snippet>,
             tombstones: Vec<serde_json::Value>,
         }
         let raw = Raw::deserialize(d)?;
@@ -273,6 +284,7 @@ impl<'de> Deserialize<'de> for SyncState {
         }
         Ok(SyncState {
             hosts: raw.hosts,
+            snippets: raw.snippets,
             tombstones,
         })
     }
@@ -315,6 +327,7 @@ impl HostStore {
         if let Ok(hosts) = serde_json::from_str::<Vec<Host>>(&data) {
             return Ok(SyncState {
                 hosts,
+                snippets: Vec::new(),
                 tombstones: HashMap::new(),
             });
         }
@@ -422,14 +435,38 @@ impl HostStore {
     }
 
     /// Full synkrunda mot en transport: hämta fjärrtillstånd, slå ihop
-    /// lokalt, skriv tillbaka det sammanslagna — motsvarar
+    /// lokalt, skriv tillbaka det sammanslagna. Motsvarar
     /// `HostStore.sync(with:)` i Swift. Se `crate::sync`.
-    pub fn sync(&mut self, provider: &impl crate::sync::SyncProvider) -> std::io::Result<()> {
+    ///
+    /// Tar BÅDA databaserna, och det finns ingen variant som bara tar
+    /// värdarna. Två synkvägar skulle betyda att någon förr eller senare
+    /// väljer den som tyst hoppar över snippets. De delar dessutom
+    /// gravstenskarta, så två separata rundturer vore inte bara långsammare
+    /// utan fel: den andra pushen skulle skriva över den förstas gravstenar.
+    pub fn sync_with_snippets(
+        &mut self,
+        provider: &impl crate::sync::SyncProvider,
+        snippets: &mut crate::snippet::SnippetStore,
+    ) -> std::io::Result<()> {
         let remote = provider.pull()?.unwrap_or_default();
-        let local = std::mem::take(&mut self.state);
-        self.state = crate::sync::merge(local, remote);
-        self.persist()?;
-        provider.push(&self.state)
+        let local = SyncState {
+            hosts: std::mem::take(&mut self.state.hosts),
+            snippets: snippets.all().into_iter().cloned().collect(),
+            tombstones: std::mem::take(&mut self.state.tombstones),
+        };
+        let merged = crate::sync::merge(local, remote);
+
+        provider.push(&merged)?;
+        snippets.replace_all(merged.snippets.clone())?;
+        self.state = SyncState { snippets: Vec::new(), ..merged };
+        self.persist()
+    }
+
+    /// Skriver en gravsten utan att röra värdlistan — för poster som lever i
+    /// en annan databas men delar sync-tillstånd (se `SnippetStore`).
+    pub fn record_tombstone(&mut self, id: Uuid) -> std::io::Result<()> {
+        self.state.tombstones.insert(id, ReferenceDate::now());
+        self.persist()
     }
 
     fn persist(&self) -> std::io::Result<()> {
@@ -539,12 +576,13 @@ mod tests {
         tombstones.insert(id, ReferenceDate(5.0));
         let state = SyncState {
             hosts: vec![],
+            snippets: Vec::new(),
             tombstones,
         };
         let json = serde_json::to_string(&state).unwrap();
         assert_eq!(
             json,
-            r#"{"hosts":[],"tombstones":["00000000-0000-0000-0000-000000000001",5.0]}"#
+            r#"{"hosts":[],"snippets":[],"tombstones":["00000000-0000-0000-0000-000000000001",5.0]}"#
         );
         let back: SyncState = serde_json::from_str(&json).unwrap();
         assert_eq!(back.tombstones.len(), 1);
@@ -827,6 +865,18 @@ mod tests {
         assert_eq!(round_tripped.forward_agent, host.forward_agent);
     }
 
+    /// Ett tillstånd skrivet INNAN snippets ingick i synken saknar fältet
+    /// helt. Det ska läsas som "inga snippets", inte avvisas — annars slutar
+    /// synken fungera för alla som inte uppgraderat alla sina enheter
+    /// samtidigt, vilket ingen gör.
+    #[test]
+    fn a_sync_state_written_before_snippets_existed_still_loads() {
+        let json = r#"{"hosts":[],"tombstones":[]}"#;
+        let state: SyncState = serde_json::from_str(json).expect("gammalt tillstånd ska läsas");
+        assert!(state.snippets.is_empty());
+        assert!(state.hosts.is_empty());
+    }
+
     /// `tombstones` är det ANDRA handskrivna kontraktet mot Swift-sidan.
     /// Swift kodar `[UUID: Date]` som en PLATT array av omväxlande nycklar
     /// och värden — inte som ett JSON-objekt — eftersom `UUID` inte är
@@ -850,6 +900,10 @@ mod tests {
 
         assert_eq!(state.hosts.len(), 1);
         assert_eq!(state.hosts[0].alias, "synk");
+        assert_eq!(state.snippets.len(), 1, "snippets ingår i tillståndet");
+        assert_eq!(state.snippets[0].name, "starta om plex");
+        assert_eq!(state.snippets[0].template, "docker compose restart {{tjanst}}");
+        assert_eq!(state.snippets[0].modified_at.0, 787_000_000.0);
         assert_eq!(state.tombstones.len(), 2, "den platta arrayen ska ge TVÅ gravstenar");
 
         let first = Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap();
