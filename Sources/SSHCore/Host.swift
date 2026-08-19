@@ -54,6 +54,22 @@ public struct Host: Codable, Identifiable, Sendable, Equatable {
     /// användningstillfället, inte vid lagring (samma mönster som `hostName`
     /// inte validerar DNS-syntax vid sparning).
     public var macAddress: String?
+    /// Vidarebefordra den lokala ssh-agenten till värden (OpenSSH:s
+    /// `ForwardAgent`).
+    ///
+    /// FALSKT som förval, och det är ett säkerhetsval snarare än ett
+    /// bekvämlighetsval: med agenten vidarebefordrad kan vem som helst med
+    /// root på fjärrvärden använda DINA nycklar så länge sessionen lever —
+    /// utan att kunna läsa dem, men utan att du märker något heller.
+    /// OpenSSH har samma förval av samma skäl.
+    ///
+    /// Fältet fanns i LinuxApps `Host` men saknades här, och `Codable`
+    /// släpper okända nycklar tyst. Följden var att en värd med
+    /// agentvidarebefordran påslagen FÖRLORADE inställningen så fort
+    /// tillståndet passerade en Apple-enhet vid synk — avkodningen kastade
+    /// nyckeln, kodningen skrev inte tillbaka den. Ingen felutskrift, ingen
+    /// synlig ändring förrän nästa anslutning betedde sig annorlunda.
+    public var forwardAgent: Bool
     /// När värden senast ändrades. Styr sync-mergen (nyaste ändringen vinner).
     public var modifiedAt: Date
 
@@ -71,6 +87,7 @@ public struct Host: Codable, Identifiable, Sendable, Equatable {
         startupCommand: String? = nil,
         jumpHostID: UUID? = nil,
         macAddress: String? = nil,
+        forwardAgent: Bool = false,
         modifiedAt: Date = Date()
     ) {
         self.id = id
@@ -86,11 +103,12 @@ public struct Host: Codable, Identifiable, Sendable, Equatable {
         self.startupCommand = startupCommand
         self.jumpHostID = jumpHostID
         self.macAddress = macAddress
+        self.forwardAgent = forwardAgent
         self.modifiedAt = modifiedAt
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, alias, hostName, user, port, tags, auth, isFavorite, colorTag, platform, startupCommand, jumpHostID, macAddress, modifiedAt
+        case id, alias, hostName, user, port, tags, auth, isFavorite, colorTag, platform, startupCommand, jumpHostID, macAddress, forwardAgent, modifiedAt
     }
 
     /// Egen init(from:) — isFavorite/colorTag/platform/startupCommand/
@@ -113,6 +131,7 @@ public struct Host: Codable, Identifiable, Sendable, Equatable {
         startupCommand = try c.decodeIfPresent(String.self, forKey: .startupCommand)
         jumpHostID = try c.decodeIfPresent(UUID.self, forKey: .jumpHostID)
         macAddress = try c.decodeIfPresent(String.self, forKey: .macAddress)
+        forwardAgent = try c.decodeIfPresent(Bool.self, forKey: .forwardAgent) ?? false
         modifiedAt = try c.decode(Date.self, forKey: .modifiedAt)
     }
 
@@ -129,7 +148,14 @@ public struct Host: Codable, Identifiable, Sendable, Equatable {
             let r = config.resolve(alias)
             guard let user = r.user, !user.isEmpty else { return nil }
             let auth: HostAuth = r.identityFile.map { .keyFile($0) } ?? .agentDefault
-            return Host(alias: alias, hostName: r.hostName, user: user, port: r.port, auth: auth)
+            // Fälten fanns redan i modellen — importen fyllde dem bara aldrig
+            // i, så en användare som konfigurerat dem i ssh-config fick dem
+            // tyst bortkastade och en värd som betedde sig annorlunda här än
+            // under `ssh`.
+            let startup = r.remoteCommand.flatMap { $0.isEmpty ? nil : $0 }
+            return Host(
+                alias: alias, hostName: r.hostName, user: user, port: r.port, auth: auth,
+                startupCommand: startup, forwardAgent: r.forwardAgent)
         }
     }
 }

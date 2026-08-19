@@ -7,6 +7,15 @@ public struct ResolvedHost: Sendable, Equatable {
     public var port: Int
     public var identityFile: String?
     public var proxyJump: String?
+    /// OpenSSH:s `ForwardAgent`. Bara ett uttryckligt ja räknas — allt annat,
+    /// inklusive nyckelns frånvaro, är nej. Att gissa fel åt det hållet vore
+    /// att slå på agentvidarebefordran åt någon som inte bett om det, och då
+    /// kan vem som helst med root på fjärrvärden använda deras nycklar så
+    /// länge sessionen lever.
+    public var forwardAgent: Bool = false
+    /// OpenSSH:s `RemoteCommand` — kommandot som körs direkt efter anslutning.
+    /// Motsvarar ``Host/startupCommand``.
+    public var remoteCommand: String?
 }
 
 /// Minimal läsare av OpenSSH:s klientkonfiguration (`~/.ssh/config`). Stöder
@@ -172,7 +181,9 @@ public struct SSHConfig: Sendable {
             identityFile: found["identityfile"].map {
                 ($0 as NSString).expandingTildeInPath
             },
-            proxyJump: found["proxyjump"])
+            proxyJump: found["proxyjump"],
+            forwardAgent: found["forwardagent"]?.lowercased() == "yes",
+            remoteCommand: found["remotecommand"])
     }
 
     // MARK: - Parsning
@@ -195,6 +206,31 @@ public struct SSHConfig: Sendable {
     }
 
     /// En värd matchar om minst ett positivt mönster matchar och inget negerat gör det.
+    /// Plockar ut värdaliaset ur ett `ProxyJump`-värde.
+    ///
+    /// Syntaxen är `[user@]host[:port]`, och flera hopp kan anges
+    /// kommaseparerat. Bara FÖRSTA hoppet returneras — anslutningskedjan
+    /// stöder ändå bara ett hopp, så att importera en längre kedja skulle
+    /// skapa en koppling som inte går att använda.
+    ///
+    /// `nil` när värdet är tomt eller `none` (OpenSSH:s sätt att stänga av
+    /// ett ärvt `ProxyJump`).
+    public static func proxyJumpAlias(_ value: String) -> String? {
+        guard let first = value.split(separator: ",").first.map(String.init)?
+            .trimmingCharacters(in: .whitespaces), !first.isEmpty else { return nil }
+        if first.lowercased() == "none" { return nil }
+        let withoutUser = first.split(separator: "@").last.map(String.init) ?? first
+        // IPv6-literaler skrivs `[::1]:22` — allt före den avslutande
+        // klammern hör till adressen, inte till porten.
+        let host: String
+        if let end = withoutUser.firstIndex(of: "]") {
+            host = String(withoutUser[...end])
+        } else {
+            host = withoutUser.split(separator: ":").first.map(String.init) ?? withoutUser
+        }
+        return host.isEmpty ? nil : host
+    }
+
     /// Avgör om ett `Match`-blocks kriterier gäller för `alias`.
     ///
     /// OpenSSH kräver att ALLA kriterier på raden är uppfyllda. Här kan bara

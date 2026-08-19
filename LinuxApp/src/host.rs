@@ -711,4 +711,22 @@ mod tests {
             );
         }
     }
+
+    /// Fältnamnet i JSON är ett KONTRAKT mot Swift-sidan, inte en intern
+    /// detalj: `Host` synkas mellan plattformarna som JSON, och en nyckel
+    /// som inte stavas likadant på båda sidor släpps tyst av mottagaren.
+    /// Precis det hände med `forwardAgent`, som saknades i Swift-modellen
+    /// och därför raderades vid varje synk genom en Apple-enhet.
+    #[test]
+    fn forward_agent_is_serialised_under_the_name_the_other_platforms_expect() {
+        let mut host = Host::new("h".into(), "10.0.0.1".into(), "a".into());
+        host.forward_agent = true;
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&host).unwrap()).unwrap();
+        assert_eq!(
+            json.get("forwardAgent").and_then(|v| v.as_bool()),
+            Some(true),
+            "nyckeln måste heta forwardAgent — Swift-sidans CodingKeys stavar den så"
+        );
+    }
 }

@@ -102,11 +102,42 @@ public final class HostStore {
     /// de faktiskt tillagda värdarna.
     @discardableResult
     public func importSSHConfig(_ text: String) -> [Host] {
+        let config = SSHConfig(text: text)
         let existing = Set(all().map { $0.alias.lowercased() })
-        let fresh = Host.imported(from: SSHConfig(text: text))
+        let fresh = Host.imported(from: config)
             .filter { !existing.contains($0.alias.lowercased()) }
         for host in fresh { upsert(host) }
-        return fresh
+
+        // Andra pass: koppla ihop ProxyJump. Måste ske EFTER att alla värdar
+        // sparats — jump-hosten kan stå efter den som pekar på den i configen,
+        // och en koppling kräver mottagarens id.
+        //
+        // Bara nyimporterade värdar får sin jump satt. Att röra en värd som
+        // redan fanns vore att tyst skriva om något användaren kan ha ställt
+        // in själv, och hela importen bygger på att befintliga alias lämnas
+        // ifred.
+        //
+        // ProxyJump är den av de importerade inställningarna som märks mest
+        // när den tappas: målet är ofta bara nåbart genom hoppet, så utan
+        // kopplingen fungerar anslutningen inte alls.
+        var byAlias: [String: UUID] = [:]
+        for host in all() { byAlias[host.alias.lowercased()] = host.id }
+        var linked: [Host] = []
+        for host in fresh {
+            guard let raw = config.resolve(host.alias).proxyJump,
+                  let jumpAlias = SSHConfig.proxyJumpAlias(raw),
+                  let jumpID = byAlias[jumpAlias.lowercased()],
+                  jumpID != host.id  // en värd som pekar på sig själv är bara ett fel
+            else {
+                linked.append(host)
+                continue
+            }
+            var updated = host
+            updated.jumpHostID = jumpID
+            upsert(updated)
+            linked.append(updated)
+        }
+        return linked
     }
 
     /// Full synkrunda mot en transport: hämta fjärrtillstånd, slå ihop lokalt,
