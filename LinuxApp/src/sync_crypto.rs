@@ -315,4 +315,53 @@ mod tests {
 
         std::fs::remove_dir_all(dir).ok();
     }
+
+    /// Gränserna finns för att talet i kuvertet är ANGRIPARKONTROLLERAT —
+    /// filen kommer per design från en obetrodd mapp. Testet mäter TIDEN,
+    /// inte bara att ett fel kommer: kontrollen måste ligga före
+    /// nyckelhärledningen, annars är felet korrekt men CPU-tiden redan
+    /// spenderad. Det är hela sårbarheten.
+    #[test]
+    fn an_attacker_chosen_iteration_count_is_rejected_before_any_derivation() {
+        let mut envelope = seal(&SyncState::default(), "hemlig", DEFAULT_ITERATIONS).unwrap();
+        let offset = MAGIC.len();
+        envelope[offset..offset + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+
+        let start = std::time::Instant::now();
+        assert_eq!(open(&envelope, "hemlig").unwrap_err(), SyncCryptoError::BadFormat);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "avvisandet måste ske FÖRE nyckelhärledningen — annars har angriparen \
+             redan fått betalt i CPU-tid"
+        );
+    }
+
+    /// Motsatsen: en absurt SVAG härledning ska inte heller accepteras, så
+    /// ingen kan göra en senare bruteforce billig genom att skriva 1.
+    #[test]
+    fn an_absurdly_weak_iteration_count_is_rejected() {
+        let mut envelope = seal(&SyncState::default(), "hemlig", DEFAULT_ITERATIONS).unwrap();
+        let offset = MAGIC.len();
+        envelope[offset..offset + 4].copy_from_slice(&1u32.to_be_bytes());
+        assert_eq!(open(&envelope, "hemlig").unwrap_err(), SyncCryptoError::BadFormat);
+    }
+
+    /// Gränserna får inte vara så snäva att de avvisar riktiga kuvert, och
+    /// de MÅSTE vara samma som Swift-sidans (`SyncCrypto.swift`). Går de isär
+    /// blir ett kuvert som ena plattformen skrivit oläsbart på den andra — en
+    /// synk som slutar fungera utan att någon ändrat något.
+    #[test]
+    fn the_bounds_accept_real_envelopes_and_match_the_swift_side() {
+        assert_eq!(MIN_ITERATIONS, 1_000);
+        assert_eq!(MAX_ITERATIONS, 10_000_000);
+        assert_eq!(DEFAULT_ITERATIONS, 210_000);
+
+        for iterations in [MIN_ITERATIONS, DEFAULT_ITERATIONS] {
+            let envelope = seal(&SyncState::default(), "hemlig", iterations).unwrap();
+            assert!(
+                open(&envelope, "hemlig").is_ok(),
+                "iterations = {iterations} ska accepteras"
+            );
+        }
+    }
 }

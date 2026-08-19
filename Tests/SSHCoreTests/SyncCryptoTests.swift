@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import SSHCore
 
@@ -75,5 +76,64 @@ final class SyncCryptoTests: XCTestCase {
         // Fel lösenfras på en tredje enhet -> kan inte läsa.
         let wrong = EncryptedFolderSyncProvider(path: dir + "/shared.enc", passphrase: "gissning")
         XCTAssertThrowsError(try wrong.pull())
+    }
+
+    // MARK: - Iterationsgränser
+
+    /// Talet i kuvertet är angriparkontrollerat: filen kommer per design från
+    /// en obetrodd mapp. Utan övre gräns kan några hundra byte begära uppemot
+    /// 4,3 miljarder PBKDF2-rundor, och härledningen körs INNAN AEAD hinner
+    /// avvisa filen — timmar av CPU per synkförsök, vilket på iOS betyder en
+    /// app som hänger tills watchdogen dödar den.
+    ///
+    /// Testet mäter TIDEN, inte bara att ett fel kastas: kontrollen måste
+    /// ligga före `deriveKey`, annars är felet korrekt men skadan redan skedd.
+    func testAnAbsurdIterationCountIsRejectedBeforeAnyDerivationRuns() throws {
+        var envelope = try SyncCrypto.seal(SyncState(), passphrase: "hemlig")
+        // Skriv över iterationsfältet med UInt32.max.
+        let offset = SyncCrypto.magic.count
+        envelope.replaceSubrange(offset..<(offset + 4), with: [0xFF, 0xFF, 0xFF, 0xFF])
+
+        let start = ContinuousClock.now
+        XCTAssertThrowsError(try SyncCrypto.open(envelope, passphrase: "hemlig")) { error in
+            XCTAssertEqual(error as? SyncCryptoError, .badFormat)
+        }
+        XCTAssertLessThan(
+            ContinuousClock.now - start, .seconds(2),
+            "avvisandet måste ske FÖRE nyckelhärledningen — annars har angriparen "
+                + "redan fått betalt i CPU-tid")
+    }
+
+    /// Motsatsen: ett kuvert sparat med en absurt SVAG härledning ska inte
+    /// heller accepteras, så ingen kan göra en senare bruteforce billig genom
+    /// att skriva `iterations: 1`.
+    func testAnAbsurdlyWeakIterationCountIsRejected() throws {
+        var envelope = try SyncCrypto.seal(SyncState(), passphrase: "hemlig")
+        let offset = SyncCrypto.magic.count
+        envelope.replaceSubrange(offset..<(offset + 4), with: [0, 0, 0, 1])
+        XCTAssertThrowsError(try SyncCrypto.open(envelope, passphrase: "hemlig")) { error in
+            XCTAssertEqual(error as? SyncCryptoError, .badFormat)
+        }
+    }
+
+    /// Gränserna får inte vara så snäva att de avvisar riktiga kuvert.
+    /// Standardvärdet, och båda ändpunkterna, ska gå igenom.
+    func testTheDefaultAndBothBoundsAreAccepted() throws {
+        for iterations in [SyncCrypto.minIterations, SyncCrypto.defaultIterations] {
+            let envelope = try SyncCrypto.seal(
+                SyncState(), passphrase: "hemlig", iterations: iterations)
+            XCTAssertNoThrow(
+                try SyncCrypto.open(envelope, passphrase: "hemlig"),
+                "iterations = \(iterations) ska accepteras")
+        }
+    }
+
+    /// Värdena MÅSTE vara samma som LinuxApps (`sync_crypto.rs`). Går de isär
+    /// blir ett kuvert som ena plattformen skrivit oläsbart på den andra —
+    /// en synk som slutar fungera utan att någon ändrat något.
+    func testTheBoundsMatchTheOnesLinuxAppUses() {
+        XCTAssertEqual(SyncCrypto.minIterations, 1_000)
+        XCTAssertEqual(SyncCrypto.maxIterations, 10_000_000)
+        XCTAssertEqual(SyncCrypto.defaultIterations, 210_000)
     }
 }

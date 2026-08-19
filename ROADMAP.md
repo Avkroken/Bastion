@@ -36,7 +36,7 @@ delvis andra, av konkreta skäl:
 | Dashboard-data (last/minne/disk/uptime/OS/Docker via SSH) | ✅ parser testad, ett kommando — App/-UI (Xcode-only) — ✅ (2026-08-05) LinuxApp Rust (`dashboard.rs`), egen flik, auto-poll var 15:e sekund (se "Klart") |
 | Docker-åtgärder (lista/start/stopp/omstart/logg) | ✅ testad, injektionssäker referens |
 | Sync mellan enheter (LWW-merge + gravstenar, mapp-transport) | ✅ testad, konvergens bevisad |
-| E2E-krypterad sync (AES-256-GCM + PBKDF2, testvektorer) | ✅ testad, chiffertext läcker inget |
+| E2E-krypterad sync (AES-256-GCM + PBKDF2, testvektorer) | ✅ testad, chiffertext läcker inget. `iterations` LÄST UR EN FIL klampas nu på BÅDA plattformarna (1 000–10 000 000) — Swift-sidan saknade gränsen och körde PBKDF2 med ett angriparvalt tal före AEAD-kontrollen (2026-08-19) |
 | Importera `~/.ssh/config` → host-DB | ✅ testad (parser + dedup + `Include`/`Match`, LinuxApp läser filen från disk). Importerar även `ForwardAgent`, `RemoteCommand` → `startup_command` och `ProxyJump` → `jump_host_id` på BÅDA plattformarna (2026-08-19). TVÅ tysta dataförluster vid synk hittade och fixade: `Host.forwardAgent` saknades helt i Swift-modellen, och `jumpHostID` stavades `jumpHostId` av serde men `jumpHostID` av Swift, så ProxyJump-kopplingen försvann i BÅDA riktningarna. Båda sidor läser nu den gamla stavningen och skriver den nya, och ett test per plattform låser HELA nyckeluppsättningen så nästa fält inte kan gå isär tyst |
 | Docker-shell-kommando (`docker exec -it`, injektionssäkert) | ✅ testad |
 | Kontoinloggning (OAuth2 + PKCE, Dropbox/Google Drive/OneDrive) | ✅ PKCE-kärna testad mot RFC 7636; alla tre `SyncProvider`-implementationer klara, kräver eget klient-ID (se README "Konton") |
