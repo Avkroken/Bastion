@@ -33,7 +33,7 @@ delvis andra, av konkreta skäl:
 | known_hosts / TOFU (SHA256-fingeravtryck, MITM-skydd) | ✅ testad, `~/.bastion/known_hosts` |
 | ssh-config-parsing (`Host`-alias, jokertecken, `IdentityFile`, `Include`) | ✅ testad, CLI slår upp alias — `Include` i BÅDE LinuxApp Rust och `SSHConfig.swift` (2026-08-19) |
 | Host-databas (JSON, taggar, CRUD) | ✅ testad, `~/.bastion/hosts.json` |
-| Dashboard-data (last/minne/disk/uptime/OS/Docker via SSH) | ✅ parser testad, ett kommando — App/-UI (Xcode-only) — ✅ (2026-08-05) LinuxApp Rust (`dashboard.rs`), egen flik, auto-poll var 15:e sekund (se "Klart") |
+| Dashboard-data (last/minne/disk/uptime/OS/Docker via SSH) | ✅ parser testad, ett kommando — App/-UI (Xcode-only) — ✅ (2026-08-05) LinuxApp Rust (`dashboard.rs`), egen flik, auto-poll var 15:e sekund (se "Klart") — ✅ (2026-08-19) WindowsApp C# (`SystemProbe.cs`, samma 11 fält som Rust-sidan, egen Översikt-flik som öppnas när man klickar på en värd) |
 | Docker-åtgärder (lista/start/stopp/omstart/logg) | ✅ testad, injektionssäker referens |
 | Sync mellan enheter (LWW-merge + gravstenar, mapp-transport) | ✅ testad, konvergens bevisad |
 | E2E-krypterad sync (AES-256-GCM + PBKDF2, testvektorer) | ✅ testad, chiffertext läcker inget |
@@ -56,6 +56,9 @@ delvis andra, av konkreta skäl:
 | ssh-agent-protokollklient | ✅ `SSHAgentClient.swift`, testad mot en RIKTIG `ssh-agent` — 🚫 kanal-forwarding till fjärrserver BLOCKERAD (se ROADMAP) |
 | Tailscale-värdförslag | ✅ `TailscaleStatus.swift` (fetch/fetchLocal) — LinuxApp OCH App/-UI (2026-07-08, Xcode-only; `fetchLocal` villkorsstyrd bort på iOS, `Foundation.Process` saknas där) |
 | S3-kompatibel objektlagring | ✅ `S3Client.swift` + `S3ConnectionStore` — LinuxApp OCH App/-UI (2026-07-08, Xcode-only) |
+| Värdlista grupperad på tagg + sök | ✅ App/ OCH LinuxApp (`host_grouping.rs`) — ✅ (2026-08-19) WindowsApp (`HostGrouping.cs`, samma semantik, 7 tester) |
+| WindowsApp-CI | ✅ (2026-08-19) `windowsapp-build.yml` — kärnans tester på ubuntu, WinUI-bygget på en Windows-runner. Innan dess byggdes `WindowsApp/` aldrig automatiskt: XAML-kompilatorn kräver Windows |
+| Gränssnittsprototyp (alla fem plattformar) | ✅ (2026-08-19) `docs/prototyp/bastion-gui.html`, interaktivt designunderlag för Windows- och Linux-klienterna |
 
 ## Riktmärke: Termius (2026-08-05)
 

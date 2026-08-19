@@ -51,7 +51,10 @@ public sealed partial class MainWindow : Window
         IsSourceGrouped = true,
         ItemsPath = new PropertyPath("Hosts"),
     };
-    private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
+    // Fullt kvalificerad: både Microsoft.UI.Dispatching och Windows.System (som
+    // `Launcher` behöver) har en DispatcherQueue, och CS0104 stoppade hela bygget.
+    private readonly Microsoft.UI.Dispatching.DispatcherQueue _dispatcher =
+        Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
     private readonly SnippetStore _snippetStore = new(SnippetStore.DefaultPath);
     private readonly AppSettingsStore _settingsStore = new();
     private SyncConfig _syncConfig = SyncConfig.Load(SyncConfig.DefaultPath);
