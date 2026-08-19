@@ -343,9 +343,23 @@ impl HostStore {
     /// (skiftlägesokänsligt) hoppas över, så ett omimport av samma fil
     /// inte skapar dubbletter. Returnerar antalet FAKTISKT importerade.
     pub fn import_ssh_config(&mut self, text: &str) -> std::io::Result<usize> {
+        self.import_parsed(crate::ssh_config::SSHConfig::parse(text))
+    }
+
+    /// Som `import_ssh_config`, men läser filen från disk och följer
+    /// därmed `Include`-rader (se `ssh_config::SSHConfig::parse_file`).
+    ///
+    /// Skillnaden är inte kosmetisk: en config som bara består av
+    /// `Include ~/.ssh/config.d/*` — hur 1Password, Colima, OrbStack m.fl.
+    /// säger åt användaren att lägga upp sin — ger noll importerade värdar
+    /// när bara texten klistras in, utan att något ser trasigt ut.
+    pub fn import_ssh_config_file(&mut self, path: &std::path::Path) -> std::io::Result<usize> {
+        self.import_parsed(crate::ssh_config::SSHConfig::parse_file(path)?)
+    }
+
+    fn import_parsed(&mut self, config: crate::ssh_config::SSHConfig) -> std::io::Result<usize> {
         let existing: std::collections::HashSet<String> =
             self.all().iter().map(|h| h.alias.to_lowercase()).collect();
-        let config = crate::ssh_config::SSHConfig::parse(text);
         let fresh: Vec<Host> = crate::ssh_config::imported_hosts(&config)
             .into_iter()
             .filter(|h| !existing.contains(&h.alias.to_lowercase()))

@@ -31,13 +31,13 @@ delvis andra, av konkreta skäl:
 | Misslyckad auth utan att hänga | ✅ testad |
 | Interaktiv shell + PTY (stdin/stdout, resize) | ✅ testad end-to-end |
 | known_hosts / TOFU (SHA256-fingeravtryck, MITM-skydd) | ✅ testad, `~/.bastion/known_hosts` |
-| ssh-config-parsing (`Host`-alias, jokertecken, `IdentityFile`) | ✅ testad, CLI slår upp alias |
+| ssh-config-parsing (`Host`-alias, jokertecken, `IdentityFile`, `Include`) | ✅ testad, CLI slår upp alias — `Include` i BÅDE LinuxApp Rust och `SSHConfig.swift` (2026-08-19) |
 | Host-databas (JSON, taggar, CRUD) | ✅ testad, `~/.bastion/hosts.json` |
-| Dashboard-data (last/minne/disk/uptime/OS/Docker via SSH) | ✅ parser testad, ett kommando — App/-UI (Xcode-only) — ✅ (2026-08-05) LinuxApp Rust (`dashboard.rs`), egen flik, ingen auto-poll än (se "Klart") |
+| Dashboard-data (last/minne/disk/uptime/OS/Docker via SSH) | ✅ parser testad, ett kommando — App/-UI (Xcode-only) — ✅ (2026-08-05) LinuxApp Rust (`dashboard.rs`), egen flik, auto-poll var 15:e sekund (se "Klart") |
 | Docker-åtgärder (lista/start/stopp/omstart/logg) | ✅ testad, injektionssäker referens |
 | Sync mellan enheter (LWW-merge + gravstenar, mapp-transport) | ✅ testad, konvergens bevisad |
 | E2E-krypterad sync (AES-256-GCM + PBKDF2, testvektorer) | ✅ testad, chiffertext läcker inget |
-| Importera `~/.ssh/config` → host-DB | ✅ testad (parser + dedup) |
+| Importera `~/.ssh/config` → host-DB | ✅ testad (parser + dedup + `Include`, LinuxApp läser filen från disk) |
 | Docker-shell-kommando (`docker exec -it`, injektionssäkert) | ✅ testad |
 | Kontoinloggning (OAuth2 + PKCE, Dropbox/Google Drive/OneDrive) | ✅ PKCE-kärna testad mot RFC 7636; alla tre `SyncProvider`-implementationer klara, kräver eget klient-ID (se README "Konton") |
 | iOS-app (host-lista, dashboard, Docker+shell, sync, import) | 🧩 `App/`, byggs i Xcode via XcodeGen |
@@ -229,7 +229,20 @@ ordning nyttan per arbetsinsats är störst):
    tystade Info.plist-nycklar) — ingen av dem en gissning som råkade
    fungera, alla verifierade direkt mot antingen App Store Connect
    API:t eller det faktiska byggda innehållet.
-3. **Windows-GUI via `WinUIBackend`** — ✅ **`windowsapp-build` grönt för
+3. **Windows-GUI via `WinUIBackend`** — ⚠️ **beskriver en ERSATT
+   arkitektur, läs med det i åtanke.** `WindowsApp/` är idag ett C#/
+   WinUI3-projekt med en HELT egen SSH-kärna (`Bastion.Core`, byggd på
+   SSH.NET), inte den Swift/`WinUIBackend`-app texten nedan handlar om.
+   **Och den har ingen CI alls**: kontrollerat 2026-08-19, det finns inget
+   workflow i `.github/workflows/` som bygger eller testar `WindowsApp/`
+   (`Bastion.Core.Tests` körs alltså aldrig automatiskt). Det säger inget
+   om vad som gällde när texten nedan skrevs — den här klonen är grund
+   (`--depth`), så historiken går inte att spåra härifrån — men det är
+   läget i dag, och konsekvensen är att Windows-koden saknar
+   verifieringsväg både lokalt och i CI. Historiken nedan bevaras för
+   swift-nio-lärdomarna, som fortfarande gäller `Package.swift`.
+
+   ✅ **`windowsapp-build` grönt för
    första gången någonsin (2026-07-10)**, efter 74 raka misslyckade
    körningar sedan CI:t skapades (2026-07-04). Rotorsaken var två
    bekräftade uppströmsbuggar i swift-nio, inte något i Bastions egen kod
@@ -1403,10 +1416,19 @@ ordning nyttan per arbetsinsats är störst):
     så posten är alltid synlig, inte styrd av `FeatureToggles`. Öppnas
     som en egen flik (samma mönster som Docker-vyn) med en
     uppdateringsknapp.
-  - **Kvar**: ingen auto-poll (Swift-sidans `DashboardModel.
-    startPolling()`, 15 s intervall) än — bara manuell uppdatering via
-    knappen. 156/156 `cargo test` gröna totalt, `cargo build`/`clippy`
-    helt tysta.
+  - **Auto-poll**: ✅ klart — var 15:e sekund, samma intervall som
+    Swift-sidans `DashboardModel.startPolling()`. Uppdateringen AWAITAS
+    i loopen i stället för att eldas iväg som en egen task: `ssh::
+    COMMAND_TIMEOUT` är 30 s, alltså längre än intervallet, så en
+    fire-and-forget-variant hade kunnat starta en andra, överlappande
+    uppdatering mot samma `ListBox` när en anslutning är långsam.
+    Stoppvillkoret är `tab_view_contains` — en levande fråga mot
+    flikvyns widget-träd, inte en `#[weak]`-uppgradering (den sker bara
+    en gång, vid start av `async move`-blocket).
+    (Den här punkten stod kvar som "Kvar: ingen auto-poll" långt efter
+    att den byggts — rättad 2026-08-19 efter att en stale statusrad
+    tidigare i samma dokument fått ett test skrivet mot dokumentationen
+    i stället för mot koden. Läs koden, inte raden.)
 
 - **Terminalfärgteman i den NYA Rust/GTK4-`LinuxApp`** (2026-08-05,
   `LinuxApp/src/terminal_theme.rs`): fanns i Swift-sidan
@@ -2723,8 +2745,45 @@ Inget nytt att bygga, bara verifiera/lansera:
     samma PR. 3 nya tester mot en riktig `LoopbackServer` (periodiska
     sändningar sker, `stopKeepAlive` stoppar dem faktiskt, `resize()`
     uppdaterar storleken keep-alive återanvänder).
-    **Täcker bara "håll NAT-mappningen varm"** på Swift-sidan —
-    dead-connection-detektering och återanslutning saknades där helt.
+    **Död-detektering, SSHCore (Swift)**: ✅ klart (2026-08-19,
+    `SSHShell.swift`). Fönsterändringen ensam kan per definition ALDRIG
+    upptäcka något: `WindowChangeRequest.wantReply` är hårdkodad `false` i
+    swift-nio-ssh (`ChildChannelUserEvents.swift`), så det finns inget
+    uteblivet svar att sakna. `startKeepAlive` skickar därför även en
+    `EnvironmentRequest` med `wantReply: true` bredvid; svaret kommer in som
+    `ChannelSuccessEvent`/`ChannelFailureEvent` i barnkanalens pipeline och
+    räknas av `ShellHandler`. Uteblir svaret `maxMissed` gånger i rad är
+    anslutningen död: `onConnectionLost` anropas och kanalen stängs.
+    `App/TerminalView.swift` skriver en gul varningsrad direkt i terminalen
+    — inte via `onSessionEnded`, som stänger vyn innan användaren hinner se
+    något.
+    **Två saker verifierade i stället för antagna**: (1) swift-nio-ssh
+    svarar INTE automatiskt på kanalförfrågningar den förstår — bara okända
+    får ett automatiskt failure — så `LoopbackServer` fick svara själv,
+    annars hade testservern varit den enda motpart som inte gör det.
+    (2) En riktig OpenSSH-sshd svarar `SSH_MSG_CHANNEL_SUCCESS` på en
+    `env`-begäran med `want_reply` skickad EFTER `shell` — empiriskt
+    provkört, inte läst ur RFC 4254. (Källkodsläsning av OpenSSH:s
+    `session.c` gav gissningen FAILURE eftersom kanalen inte längre är
+    `LARVAL`; fel gissning, men irrelevant — båda svaren duger som
+    livstecken.)
+    Två tester med kontroll: en server som TYSTNAR (slutar svara, håller
+    anslutningen öppen) ska rapporteras, och en som fortsätter svara ska
+    INTE rapporteras hur många intervall som än passerar.
+  - **Död-detektering, WindowsApp (C#)**: ⬜ inte gjord. `Bastion.Core`
+    är en HELT egen implementation på SSH.NET (`Renci.SshNet`), inte
+    `SSHCore` — ingenting av Swift-arbetet ovan gäller där. Kontrollerat
+    2026-08-19: noll träffar på `KeepAlive` i `WindowsApp/`, alltså varken
+    keep-alive eller död-detektering. SSH.NET:s egna `KeepAliveInterval`
+    skickar `SSH_MSG_IGNORE`, som INTE kräver svar — den skulle alltså
+    lösa "håll NAT varm" men inte upptäckt, exakt samma halva lösning som
+    Swift-sidan hade. Ett svar-bärande alternativ behöver undersökas i
+    SSH.NET:s API (`IChannelSession.SendEnvironmentVariableRequest` ser ut
+    att vänta in svaret, men det är LÄST, inte provkört).
+    Medvetet inte byggd blint i samma omgång: det finns ingen
+    .NET-toolchain i utvecklingsmiljön, så påståendet hade inte kunnat
+    beläggas på samma sätt som Rust- och Swift-sidorna (där båda har ett
+    test med kontrollarm).
   - **Död-detektering + återanslutning, LinuxApp (Rust)**: ✅ klart
     (2026-08-19, `LinuxApp/src/ssh.rs` + `main.rs`). LinuxApp hade
     ingenting av det här — varken keep-alive eller död-detektering

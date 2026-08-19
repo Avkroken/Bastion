@@ -15,12 +15,20 @@ public final class SSHShell: @unchecked Sendable {
     // tillstånd.
     private let lastSize: NIOLockedValueBox<(cols: Int, rows: Int)>
     private let keepAliveTask: NIOLockedValueBox<Task<Void, Never>?>
+    /// Räknas upp av `ShellHandler` varje gång servern svarar på en
+    /// kanalförfrågan. Delas mellan kanalens event loop (som skriver) och
+    /// keep-alive-Task:en (som läser) — därav samma låsbox som resten.
+    private let liveness: NIOLockedValueBox<Int>
 
-    init(channel: Channel, output: AsyncThrowingStream<SSHChunk, Error>, cols: Int, rows: Int) {
+    init(
+        channel: Channel, output: AsyncThrowingStream<SSHChunk, Error>,
+        cols: Int, rows: Int, liveness: NIOLockedValueBox<Int>
+    ) {
         self.channel = channel
         self.output = output
         self.lastSize = NIOLockedValueBox((cols: cols, rows: rows))
         self.keepAliveTask = NIOLockedValueBox(nil)
+        self.liveness = liveness
     }
 
     /// Skicka rå indata (tangenttryck) till fjärr-shellen.
@@ -58,22 +66,83 @@ public final class SSHShell: @unchecked Sendable {
     /// bara SIGWINCH till fjärrprocessen vid en FAKTISK ändring (`tty_ioctl.c`
     /// jämför mot föregående storlek) — samma storlek som redan är satt ger
     /// alltså ingen synlig effekt i den körande shell-sessionen.
-    /// Täcker bara "håll NAT-mappningen varm"-delen av resiliens — upptäckt
-    /// av en redan DÖD anslutning (nätverksbyte, viloläge) och återanslutning
-    /// är separata, ännu inte implementerade delar av samma roadmap-punkt.
-    public func startKeepAlive(interval: Duration = .seconds(30)) {
+    /// Fönsterändringen ensam kan bara hålla NAT varm, aldrig UPPTÄCKA att
+    /// anslutningen dött: `WindowChangeRequest.wantReply` är hårdkodad
+    /// `false` i swift-nio-ssh, så det finns inget uteblivet svar att
+    /// sakna. Därför skickas även en svar-bärande sond, se
+    /// `sendLivenessProbe()`. Uteblir svaret `maxMissed` gånger i rad är
+    /// anslutningen död: `onConnectionLost` anropas och kanalen stängs, i
+    /// stället för att sessionen sitter och väntar för alltid.
+    ///
+    /// `onConnectionLost` körs på keep-alive-Task:ens kontext, inte på
+    /// någon UI-tråd — anroparen får hoppa till rätt kontext själv.
+    public func startKeepAlive(
+        interval: Duration = .seconds(30),
+        maxMissed: Int = 3,
+        onConnectionLost: (@Sendable () -> Void)? = nil
+    ) {
         let task = Task { [weak self] in
+            var missed = 0
             while !Task.isCancelled {
+                // `self?` bara i korta steg: Task:en ska inte hålla liv i
+                // shellen mellan varven bara för att den råkar vänta.
+                guard let before = self?.probeAndReadLiveness() else { return }
                 try? await Task.sleep(for: interval)
-                guard !Task.isCancelled, let self else { return }
-                let size = self.lastSize.withLockedValue { $0 }
-                self.sendWindowChange(cols: size.cols, rows: size.rows)
+                guard !Task.isCancelled, let now = self?.currentLiveness() else { return }
+
+                if now == before {
+                    missed += 1
+                    if missed >= maxMissed {
+                        onConnectionLost?()
+                        self?.close()
+                        return
+                    }
+                } else {
+                    missed = 0
+                }
             }
         }
         keepAliveTask.withLockedValue { old in
             old?.cancel()
             old = task
         }
+    }
+
+    /// Skickar båda meddelandena och returnerar räknarställningen FÖRE dem,
+    /// så anroparen kan se om något svar kom under väntan. `nil` när kanalen
+    /// inte längre är aktiv — då finns inget att mäta, och en förfrågan på
+    /// en stängd kanal är dessutom ett protokollfel som river kanalen.
+    private func probeAndReadLiveness() -> Int? {
+        guard channel.isActive else { return nil }
+        let before = liveness.withLockedValue { $0 }
+        let size = lastSize.withLockedValue { $0 }
+        sendWindowChange(cols: size.cols, rows: size.rows)
+        sendLivenessProbe()
+        return before
+    }
+
+    private func currentLiveness() -> Int {
+        liveness.withLockedValue { $0 }
+    }
+
+    /// Sonden som gör död-detektering möjlig: en kanalförfrågan servern
+    /// MÅSTE besvara.
+    ///
+    /// `EnvironmentRequest` är vald för att den är ofarlig. En miljövariabel
+    /// som sätts efter att shellen redan startat påverkar ingenting —
+    /// miljön appliceras när processen skapas. VILKET svar som kommer
+    /// spelar heller ingen roll: success och failure bevisar båda att någon
+    /// i andra änden lever och svarar.
+    ///
+    /// Verifierat mot en RIKTIG OpenSSH-sshd, inte antaget ur RFC 4254:
+    /// en `env`-begäran med `want_reply` skickad EFTER `shell` besvarades
+    /// med `SSH_MSG_CHANNEL_SUCCESS`. (Att läsa OpenSSH:s `session.c` gav
+    /// gissningen att den skulle svara FAILURE eftersom kanalen inte längre
+    /// är `LARVAL` — fel gissning, men irrelevant: båda svaren duger.)
+    private func sendLivenessProbe() {
+        let probe = SSHChannelRequestEvent.EnvironmentRequest(
+            wantReply: true, name: "BASTION_KEEPALIVE", value: "1")
+        channel.triggerUserOutboundEvent(probe, promise: nil)
     }
 
     public func stopKeepAlive() {
@@ -101,13 +170,26 @@ final class ShellHandler: ChannelDuplexHandler {
     private let cols: Int
     private let rows: Int
     private let continuation: AsyncThrowingStream<SSHChunk, Error>.Continuation
+    private let liveness: NIOLockedValueBox<Int>
 
     init(term: String, cols: Int, rows: Int,
-         continuation: AsyncThrowingStream<SSHChunk, Error>.Continuation) {
+         continuation: AsyncThrowingStream<SSHChunk, Error>.Continuation,
+         liveness: NIOLockedValueBox<Int>) {
         self.term = term
         self.cols = cols
         self.rows = rows
         self.continuation = continuation
+        self.liveness = liveness
+    }
+
+    /// Enda mätpunkten för att fjärrsidan lever. Vilket av de två svaren
+    /// det är spelar ingen roll — servern kan bara skicka något av dem om
+    /// den faktiskt läser och behandlar vår trafik.
+    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+        if event is ChannelSuccessEvent || event is ChannelFailureEvent {
+            liveness.withLockedValue { $0 &+= 1 }
+        }
+        context.fireUserInboundEventTriggered(event)
     }
 
     func handlerAdded(context: ChannelHandlerContext) {
