@@ -157,6 +157,44 @@ pub fn merge(a: SyncState, b: SyncState) -> SyncState {
     }
 }
 
+/// Tak på hur stor en synkfil får vara innan den läses in i minnet.
+///
+/// Filen kommer per design från en mapp vi INTE kontrollerar — en delad
+/// Dropbox-/Drive-/Syncthing-katalog. Någon med skrivrättigheter där (eller
+/// ett kapat molnkonto) kan lägga dit en fil på flera gigabyte, och en
+/// obegränsad inläsning allokerar hela längden innan något ens tittar på
+/// innehållet. På en telefon är det en omedelbar OOM-död, på skrivbordet
+/// swappande.
+///
+/// 64 MiB är långt över allt verkligt: ett tillstånd med tusen värdar och
+/// lika många snippets ligger under en megabyte. Taket finns för att stänga
+/// en klass av angrepp, inte för att begränsa användaren.
+pub const MAX_SYNC_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Läser en fil men vägrar mer än [`MAX_SYNC_FILE_BYTES`].
+///
+/// Läser via `take(TAK + 1)` i stället för att först fråga om filstorleken
+/// och sedan läsa: en storlekskoll följd av en läsning är två separata
+/// operationer, och filen kan växa emellan. Här är gränsen en egenskap hos
+/// själva läsningen, så det finns inget glapp att utnyttja.
+pub fn read_capped(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let file = std::fs::File::open(path)?;
+    let mut data = Vec::new();
+    file.take(MAX_SYNC_FILE_BYTES + 1).read_to_end(&mut data)?;
+    if data.len() as u64 > MAX_SYNC_FILE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "synkfilen är större än {} MiB och lästes inte in — \
+                 en fil den här storleken kommer inte från Bastion",
+                MAX_SYNC_FILE_BYTES / 1024 / 1024
+            ),
+        ));
+    }
+    Ok(data)
+}
+
 /// En synktransport: hämta fjärrtillstånd och skriv tillbaka det
 /// sammanslagna. Motsvarar `protocol SyncProvider` i Swift.
 pub trait SyncProvider {
@@ -183,8 +221,8 @@ impl SyncProvider for FolderSyncProvider {
         if !self.path.exists() {
             return Ok(None);
         }
-        let data = std::fs::read_to_string(&self.path)?;
-        let state = serde_json::from_str(&data)
+        let data = read_capped(&self.path)?;
+        let state = serde_json::from_slice(&data)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         Ok(Some(state))
     }
@@ -675,5 +713,61 @@ mod tests {
         assert_eq!(snips.all().len(), 1, "och snippeten ska fortfarande finnas kvar där");
 
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Filen kommer från en mapp vi INTE kontrollerar. Utan tak allokerar
+    /// inläsningen hela längden innan något tittat på innehållet — på en
+    /// telefon en omedelbar OOM-död.
+    ///
+    /// Testet skriver en fil som är EN byte över taket, inte flera gigabyte:
+    /// det är gränsen som ska bevisas, och en gigabytefil i en testsvit vore
+    /// ett självmål.
+    #[test]
+    fn a_file_over_the_cap_is_refused_instead_of_read_into_memory() {
+        let dir = std::env::temp_dir().join(format!("bastion-cap-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        std::fs::write(&path, vec![b'x'; MAX_SYNC_FILE_BYTES as usize + 1]).unwrap();
+
+        let err = read_capped(&path).expect_err("en fil över taket ska avvisas");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("MiB"), "felet ska säga vad gränsen är: {err}");
+
+        // Och providern ska inte svälja felet och låtsas att mappen var tom —
+        // "inget att synka" och "någon la en gigabytefil här" är olika saker.
+        let provider = FolderSyncProvider::new(path.clone());
+        assert!(provider.pull().is_err(), "providern måste föra felet vidare");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Taket får inte avvisa något verkligt. En fil precis PÅ gränsen ska
+    /// läsas — annars är det inte ett skydd utan en godtycklig begränsning.
+    #[test]
+    fn a_file_exactly_at_the_cap_is_still_read() {
+        let dir = std::env::temp_dir().join(format!("bastion-cap-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("stor.bin");
+        std::fs::write(&path, vec![b'y'; MAX_SYNC_FILE_BYTES as usize]).unwrap();
+
+        let data = read_capped(&path).expect("exakt på gränsen ska läsas");
+        assert_eq!(data.len() as u64, MAX_SYNC_FILE_BYTES);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Ett vanligt, litet tillstånd ska gå igenom precis som förut.
+    #[test]
+    fn a_normal_state_round_trips_through_the_capped_read() {
+        let dir = std::env::temp_dir().join(format!("bastion-cap-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        let provider = FolderSyncProvider::new(path);
+
+        let mut state = SyncState::default();
+        state.hosts.push(crate::host::Host::new("a".into(), "10.0.0.1".into(), "u".into()));
+        provider.push(&state).unwrap();
+        let back = provider.pull().unwrap().expect("tillståndet skulle läsas tillbaka");
+        assert_eq!(back.hosts.len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

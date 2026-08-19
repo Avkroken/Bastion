@@ -138,7 +138,10 @@ impl crate::sync::SyncProvider for EncryptedFolderSyncProvider {
         if !self.path.exists() {
             return Ok(None);
         }
-        let data = std::fs::read(&self.path)?;
+        // Samma tak som den okrypterade transporten. Här spelar det ännu
+        // större roll: kuvertet är per definition obetrott innehåll från en
+        // mapp vi inte kontrollerar.
+        let data = crate::sync::read_capped(&self.path)?;
         let state = open(&data, &self.passphrase)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         Ok(Some(state))

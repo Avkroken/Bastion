@@ -139,7 +139,10 @@ public struct EncryptedFolderSyncProvider: SyncProvider {
 
     public func pull() throws -> SyncState? {
         guard FileManager.default.fileExists(atPath: path) else { return nil }
-        return try SyncCrypto.open(Data(contentsOf: URL(fileURLWithPath: path)), passphrase: passphrase)
+        // Samma tak som den okrypterade transporten. Här spelar det ännu
+        // större roll: kuvertet är per definition obetrott innehåll från en
+        // mapp vi inte kontrollerar.
+        return try SyncCrypto.open(SyncFileLimits.read(path), passphrase: passphrase)
     }
 
     public func push(_ state: SyncState) throws {
