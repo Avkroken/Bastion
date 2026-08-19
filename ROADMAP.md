@@ -2723,9 +2723,36 @@ Inget nytt att bygga, bara verifiera/lansera:
     samma PR. 3 nya tester mot en riktig `LoopbackServer` (periodiska
     sändningar sker, `stopKeepAlive` stoppar dem faktiskt, `resize()`
     uppdaterar storleken keep-alive återanvänder).
-    **Täcker bara "håll NAT-mappningen varm"** — dead-connection-
-    detektering och återanslutning (nedan) är fortfarande inte
-    påbörjade.
+    **Täcker bara "håll NAT-mappningen varm"** på Swift-sidan —
+    dead-connection-detektering och återanslutning saknades där helt.
+  - **Död-detektering + återanslutning, LinuxApp (Rust)**: ✅ klart
+    (2026-08-19, `LinuxApp/src/ssh.rs` + `main.rs`). LinuxApp hade
+    ingenting av det här — varken keep-alive eller död-detektering
+    (kontrollerat: noll träffar på `keep_alive`/`reconnect` i hela
+    `LinuxApp/src/`). russh har BÅDA inbyggda men AVSTÄNGDA som standard
+    (`keepalive_interval: None`); en delad `client_config()` slår på dem
+    för samtliga anslutningsvägar (direkt, jump-host, engångskommandon,
+    portvidarebefordran) med 30 s × 3 ≈ två minuter innan en tyst död
+    anslutning rapporteras.
+    Nytt `SshEvent::Disconnected`, skilt från `Closed`: `classify_session_end`
+    avgör om kanalen tog slut för att fjärrshellen avslutades (exit-status
+    sedd), för att användaren stängde rutan, eller utan förklaring — bara
+    det sista är en förlorad anslutning. Tidigare stängdes rutan i alla tre
+    fallen, alltså försvann terminalen OCH skrollbufferten utan ett ord när
+    en server dog. Nu blir rutan kvar med en gul förklaringsrad, fliken får
+    ⚠ i titeln, och en toast (utan timeout) erbjuder "Återanslut" — som
+    öppnar en NY session mot samma värd, aldrig ett låtsat återupptagande
+    av den gamla (`cubic`-fyndet på PR #199: fjärrprocessens tillstånd är
+    borta när transporten faller).
+    **Bevisat, inte antaget**: ett test startar en riktig sshd bakom en
+    egen TCP-relä, svarthålar reläet mitt i en levande session (slutar
+    flytta bytes men håller socketarna ÖPPNA — det TCP självt aldrig
+    upptäcker) och kräver att anslutningen dör. Kontrollen i samma test
+    är poängen: exakt samma svarthålning med russh:s standardkonfiguration
+    märks INTE, vilket är det enda sättet att skilja "keepalive upptäckte
+    det" från "något annat rev anslutningen ändå".
+    **Kvar**: samma sak i SSHCore/App/ (Swift), samt nätverksbytes- och
+    uppvakningsdetektering på alla plattformar.
   - **WiFi ↔ mobildata-byte** — TCP-anslutningen dör vid nätverksbyte
     (annat interface = ny anslutning krävs). Kräver `NWPathMonitor`
     (Apple) eller motsvarande för att upptäcka bytet.

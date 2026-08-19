@@ -3841,6 +3841,16 @@ fn split_focused_pane(area: &Rc<SessionArea>, orientation: gtk::Orientation) {
     };
     let target = SessionTarget::Split { pane, orientation };
 
+    reopen_pane_source(area, source, target);
+}
+
+/// Öppnar en session mot samma sak som en befintlig ruta pekar på.
+///
+/// Utbruten ur `split_focused_pane` när återanslutning tillkom: båda gör
+/// exakt samma sak (ta reda på vad rutan var kopplad till och öppna en till
+/// mot samma), bara med olika `target`. Att duplicera den skulle betyda två
+/// ställen att komma ihåg lösenordsfrågan på.
+fn reopen_pane_source(area: &Rc<SessionArea>, source: PaneSource, target: SessionTarget) {
     match source {
         PaneSource::Ssh { host, jump } => {
             let jump = jump.map(|j| *j);
@@ -4144,6 +4154,9 @@ fn start_session(
         #[strong(rename_to = output)]
         session.output,
         async move {
+            // Sätts bara av `Disconnected`. Styr om `Closed` får riva rutan
+            // eller inte — se den grenen för varför skillnaden spelar roll.
+            let mut connection_lost = false;
             while let Ok(event) = output.recv().await {
                 match event {
                     SshEvent::Data(bytes) => terminal.feed(&bytes),
@@ -4159,14 +4172,63 @@ fn start_session(
                         }
                     }
                     SshEvent::Connected => {}
+                    SshEvent::Disconnected(msg) => {
+                        connection_lost = true;
+                        terminal.feed(
+                            format!("\r\n\x1b[33m[bastion] {msg}\x1b[0m\r\n").as_bytes(),
+                        );
+                        page.set_title(&format!("⚠ {}", page.title()));
+                        show_reconnect_toast(&area, &terminal);
+                    }
                     SshEvent::Closed => {
-                        close_session_pane(&area, &terminal, &page);
+                        // Ett rent avslut (`exit`, stängd flik) river rutan
+                        // som förut. En DÖD anslutning gör det inte: allt
+                        // användaren har kvar av sessionen är skrollbufferten,
+                        // och att kasta den i samma ögonblick som anslutningen
+                        // föll är att dölja precis det som behöver läsas.
+                        // Rutan stängs manuellt när man är klar med den.
+                        if !connection_lost {
+                            close_session_pane(&area, &terminal, &page);
+                        }
                         break;
                     }
                 }
             }
         }
     ));
+}
+
+/// Erbjuder en ny anslutning mot samma sak när den gamla dog.
+///
+/// Öppnar avsiktligt en NY session i stället för att återuppliva rutan:
+/// fjärrprocessen och dess tillstånd är borta när transporten faller
+/// (`cubic`-fyndet på PR #199), så allt annat vore att låtsas att en
+/// pågående shell överlevde. Den döda rutan blir kvar bredvid med sin
+/// skrollbuffert.
+///
+/// `set_timeout(0)` — en tappad anslutning ska inte glida förbi medan man
+/// tittar åt ett annat håll; toasten står kvar tills den avfärdas.
+fn show_reconnect_toast(area: &Rc<SessionArea>, terminal: &vte::Terminal) {
+    let toast = adw::Toast::new("Anslutningen bröts");
+    toast.set_button_label(Some("Återanslut"));
+    toast.set_timeout(0);
+    // Källan läses från DEN ruta som dog, inte från den som råkar ha fokus
+    // — i en delad vy är det sällan samma, och att återansluta till fel
+    // värd vore värre än att inte erbjuda det alls.
+    let Some(source) = pane_source(terminal) else {
+        // Utan känd källa går det inte att erbjuda en återanslutning —
+        // meddelandet är fortfarande värt att visa.
+        area.toasts.add_toast(toast);
+        return;
+    };
+    toast.connect_button_clicked(clone!(
+        #[strong]
+        area,
+        move |_| {
+            reopen_pane_source(&area, source.clone(), SessionTarget::NewTab);
+        }
+    ));
+    area.toasts.add_toast(toast);
 }
 
 /// Ansluter till en Telnet-värd (RFC 854, okrypterat, inget lösenord/
