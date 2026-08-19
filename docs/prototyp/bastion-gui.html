@@ -1,0 +1,1155 @@
+<title>Bastion SSH</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* ---------- tokens: ljust läge (bas) ---------- */
+:root{
+  --bg:#E7E4DD; --surface:#F4F2ED; --raised:#FFFFFF; --sunken:#DCD8D0;
+  --line:#CDC7BB; --line-soft:#E0DBD2;
+  --ink:#191E25; --ink-2:#4C5561; --ink-3:#7E8894;
+  --accent:#B45F26; --accent-ink:#FFFFFF; --accent-soft:#F1DFCD;
+  --ok:#1E7C66; --warn:#94700F; --crit:#AE382E;
+  --ok-soft:#D7EBE4; --warn-soft:#F2E6C4; --crit-soft:#F3D9D5;
+  --term-bg:#12171E; --term-ink:#D8DFE7; --term-dim:#7E8B99; --term-accent:#E0925A;
+  --shadow:0 1px 2px rgba(25,30,37,.10), 0 18px 50px -22px rgba(25,30,37,.45);
+  --radius:10px;
+  --sans:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  --display:"Archivo","IBM Plex Sans",system-ui,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0E1218; --surface:#161B22; --raised:#1C222B; --sunken:#0A0D12;
+    --line:#2A323D; --line-soft:#20272F;
+    --ink:#E5E9ED; --ink-2:#A2ADB9; --ink-3:#6C7885;
+    --accent:#D98547; --accent-ink:#191E25; --accent-soft:#372618;
+    --ok:#4CB598; --warn:#D2AB3D; --crit:#DC6C60;
+    --ok-soft:#122C27; --warn-soft:#2E2713; --crit-soft:#331B18;
+    --term-bg:#090C11; --term-ink:#D7DEE6; --term-dim:#6C7885; --term-accent:#D98547;
+    --shadow:0 1px 2px rgba(0,0,0,.5), 0 24px 60px -24px rgba(0,0,0,.85);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0E1218; --surface:#161B22; --raised:#1C222B; --sunken:#0A0D12;
+  --line:#2A323D; --line-soft:#20272F;
+  --ink:#E5E9ED; --ink-2:#A2ADB9; --ink-3:#6C7885;
+  --accent:#D98547; --accent-ink:#191E25; --accent-soft:#372618;
+  --ok:#4CB598; --warn:#D2AB3D; --crit:#DC6C60;
+  --ok-soft:#122C27; --warn-soft:#2E2713; --crit-soft:#331B18;
+  --term-bg:#090C11; --term-ink:#D7DEE6; --term-dim:#6C7885; --term-accent:#D98547;
+  --shadow:0 1px 2px rgba(0,0,0,.5), 0 24px 60px -24px rgba(0,0,0,.85);
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:var(--sans); font-size:15px; line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+button{font:inherit; color:inherit; background:none; border:0; cursor:pointer}
+:focus-visible{outline:2px solid var(--accent); outline-offset:2px; border-radius:4px}
+@media (prefers-reduced-motion: reduce){*{animation-duration:.001ms !important; transition-duration:.001ms !important}}
+
+.page{max-width:1220px; margin:0 auto; padding:34px 22px 60px; display:flex; flex-direction:column; gap:22px}
+
+/* ---------- sidhuvud ---------- */
+.masthead{display:flex; flex-wrap:wrap; align-items:flex-end; justify-content:space-between; gap:20px}
+.brand{display:flex; align-items:center; gap:12px}
+.mark{
+  width:34px; height:38px; flex:none; border-radius:4px 4px 12px 12px;
+  background:linear-gradient(170deg,var(--accent),color-mix(in oklab,var(--accent) 62%, #6B3410));
+  position:relative;
+}
+.mark::before{content:""; position:absolute; inset:6px 7px auto 7px; height:3px; background:var(--bg); opacity:.85}
+.mark::after{content:""; position:absolute; left:50%; top:14px; width:5px; height:11px; margin-left:-2.5px; border-radius:3px 3px 0 0; background:var(--bg); opacity:.85}
+.wordmark{font-family:var(--display); font-weight:700; font-size:31px; letter-spacing:-.025em; line-height:1}
+.tagline{color:var(--ink-2); font-size:14px; margin-top:3px}
+.switch{display:flex; flex-wrap:wrap; gap:6px; background:var(--surface); border:1px solid var(--line); border-radius:999px; padding:5px}
+.switch button{
+  padding:6px 14px; border-radius:999px; font-size:13px; font-weight:500; color:var(--ink-2);
+  transition:background .15s ease, color .15s ease;
+}
+.switch button:hover{color:var(--ink)}
+.switch button[aria-pressed="true"]{background:var(--accent); color:var(--accent-ink)}
+
+/* ---------- scen + fönsterchrome ---------- */
+.stage{display:flex; justify-content:center}
+.window{
+  width:100%; background:var(--surface); border:1px solid var(--line);
+  box-shadow:var(--shadow); overflow:hidden; display:flex; flex-direction:column;
+  height:min(76vh,660px); min-height:540px;
+}
+[data-platform="macos"] .window{border-radius:12px}
+[data-platform="windows"] .window{border-radius:8px}
+[data-platform="linux"] .window{border-radius:14px}
+[data-platform="ios"] .window,[data-platform="android"] .window{
+  width:min(392px,100%); height:min(78vh,720px); border:9px solid #1A1F27; box-shadow:var(--shadow);
+}
+[data-platform="ios"] .window{border-radius:42px}
+[data-platform="android"] .window{border-radius:26px}
+
+.chrome{display:flex; align-items:center; gap:10px; padding:0 12px; height:40px; flex:none;
+  background:var(--raised); border-bottom:1px solid var(--line-soft); font-size:13px; color:var(--ink-2)}
+.chrome .title{font-weight:500; color:var(--ink)}
+.dots{display:flex; gap:8px}
+.dots i{width:12px; height:12px; border-radius:50%; display:block}
+.dots i:nth-child(1){background:#E2685C} .dots i:nth-child(2){background:#DDAE3F}
+.dots i:nth-child(3){background:#5FB07C}
+.caption{margin-left:auto; display:flex; gap:2px}
+.caption span{width:34px; height:30px; display:grid; place-items:center; font-family:var(--mono); font-size:11px; color:var(--ink-2)}
+.gnome-btn{margin-left:auto; width:26px; height:26px; border-radius:50%; background:var(--sunken); display:grid; place-items:center; font-size:12px}
+.statusbar{display:flex; align-items:center; justify-content:space-between; padding:8px 22px 2px; font-size:12px; font-weight:600; flex:none; background:var(--surface)}
+
+/* ---------- appstomme ---------- */
+.app{flex:1; display:flex; min-height:0}
+.rail{width:66px; flex:none; background:var(--raised); border-right:1px solid var(--line-soft);
+  display:flex; flex-direction:column; align-items:center; gap:2px; padding:10px 0}
+.rail button{width:50px; padding:8px 0 6px; border-radius:8px; display:grid; gap:3px; justify-items:center;
+  font-size:9.5px; letter-spacing:.03em; color:var(--ink-3); text-transform:uppercase}
+.rail button svg{width:19px; height:19px; stroke:currentColor; fill:none; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round}
+.rail button:hover{color:var(--ink); background:var(--sunken)}
+.rail button[aria-pressed="true"]{color:var(--accent); background:var(--accent-soft)}
+
+.hosts{width:230px; flex:none; border-right:1px solid var(--line-soft); background:var(--surface);
+  display:flex; flex-direction:column; min-height:0}
+.hosts header{padding:12px 12px 8px; display:flex; flex-direction:column; gap:9px}
+.search{display:flex; align-items:center; gap:7px; background:var(--sunken); border:1px solid transparent;
+  border-radius:8px; padding:6px 9px}
+.search:focus-within{border-color:var(--accent)}
+.search input{border:0; background:none; outline:none; font:inherit; font-size:13px; color:var(--ink); width:100%}
+.search svg{width:14px; height:14px; stroke:var(--ink-3); fill:none; stroke-width:1.8}
+.hostlist{overflow-y:auto; padding:0 8px 12px; display:flex; flex-direction:column; gap:2px}
+.grouplabel{font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; color:var(--ink-3);
+  font-weight:600; padding:12px 6px 5px}
+.hostrow{display:flex; align-items:center; gap:9px; padding:7px 8px; border-radius:8px; width:100%; text-align:left}
+.hostrow:hover{background:var(--sunken)}
+.hostrow[aria-current="true"]{background:var(--accent-soft)}
+.hostrow[aria-current="true"] .hostname{color:var(--accent)}
+.hostname{font-size:13.5px; font-weight:500; line-height:1.25}
+.hostmeta{font-family:var(--mono); font-size:11px; color:var(--ink-3)}
+.dot{width:7px; height:7px; border-radius:50%; flex:none; background:var(--ok)}
+.dot.warn{background:var(--warn)} .dot.crit{background:var(--crit)} .dot.off{background:var(--ink-3)}
+
+.main{flex:1; display:flex; flex-direction:column; min-width:0; min-height:0; background:var(--bg)}
+.tabs{display:flex; align-items:center; gap:2px; padding:6px 8px; background:var(--surface);
+  border-bottom:1px solid var(--line-soft); flex:none; overflow-x:auto}
+.tab{display:flex; align-items:center; gap:8px; padding:6px 10px; border-radius:7px; font-size:13px;
+  color:var(--ink-2); white-space:nowrap}
+.tab[aria-current="true"]{background:var(--bg); color:var(--ink); box-shadow:inset 0 0 0 1px var(--line-soft)}
+.tab .x{font-size:14px; line-height:1; color:var(--ink-3); padding:0 1px}
+.tab .x:hover{color:var(--crit)}
+.newtab{margin-left:4px; color:var(--ink-3); font-size:17px; padding:2px 8px; border-radius:7px}
+.newtab:hover{background:var(--sunken); color:var(--ink)}
+.pane{flex:1; overflow-y:auto; min-height:0}
+.pane.flush{overflow:hidden; display:flex; flex-direction:column}
+
+/* ---------- gemensamma delar ---------- */
+.viewhead{display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap;
+  padding:18px 20px 14px}
+.viewhead h2{font-family:var(--display); font-size:22px; font-weight:600; letter-spacing:-.02em; margin:0; text-wrap:balance}
+.subline{font-family:var(--mono); font-size:12.5px; color:var(--ink-2); margin-top:3px}
+.actions{display:flex; gap:8px; flex-wrap:wrap}
+.btn{padding:7px 13px; border-radius:8px; font-size:13px; font-weight:500; border:1px solid var(--line);
+  background:var(--raised); transition:background .15s ease}
+.btn:hover{background:var(--sunken)}
+.btn.primary{background:var(--accent); border-color:var(--accent); color:var(--accent-ink)}
+.btn.primary:hover{filter:brightness(1.06)}
+.btn.tiny{padding:4px 9px; font-size:12px}
+.pill{display:inline-flex; align-items:center; gap:6px; padding:3px 9px; border-radius:999px;
+  font-size:11.5px; font-weight:600; letter-spacing:.02em}
+.pill.ok{background:var(--ok-soft); color:var(--ok)}
+.pill.warn{background:var(--warn-soft); color:var(--warn)}
+.pill.crit{background:var(--crit-soft); color:var(--crit)}
+.pill.neutral{background:var(--sunken); color:var(--ink-2)}
+.tagchip{font-size:11px; padding:2px 8px; border-radius:999px; background:var(--sunken); color:var(--ink-2)}
+.section{padding:0 20px 20px; display:flex; flex-direction:column; gap:10px}
+.sechead{display:flex; align-items:baseline; justify-content:space-between; gap:12px}
+.sechead h3{font-size:12px; text-transform:uppercase; letter-spacing:.09em; color:var(--ink-3); font-weight:600; margin:0}
+.card{background:var(--raised); border:1px solid var(--line-soft); border-radius:var(--radius)}
+.grid{display:grid; gap:10px}
+.tiles{grid-template-columns:repeat(auto-fit,minmax(168px,1fr))}
+.tile{padding:12px 13px 11px; display:flex; flex-direction:column; gap:7px; position:relative; overflow:hidden}
+.tile .label{font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-3); font-weight:600}
+.tile .value{font-family:var(--mono); font-size:23px; font-weight:500; letter-spacing:-.02em; font-variant-numeric:tabular-nums; line-height:1.1}
+.tile .value small{font-size:12px; color:var(--ink-3); font-weight:400; margin-left:3px}
+.tile .foot{font-size:11.5px; color:var(--ink-2); font-family:var(--mono)}
+.tile .stripe{position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--ok)}
+.tile.warn .stripe{background:var(--warn)} .tile.crit .stripe{background:var(--crit)}
+.meter{height:6px; border-radius:3px; background:var(--sunken); overflow:hidden}
+.meter i{display:block; height:100%; background:var(--ok); border-radius:3px}
+.meter.warn i{background:var(--warn)} .meter.crit i{background:var(--crit)}
+.spark{display:block; width:100%; height:34px; color:var(--ok)}
+.spark.warn{color:var(--warn)} .spark.crit{color:var(--crit)}
+
+.facts{grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); padding:13px; gap:13px 18px}
+.fact .k{font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:var(--ink-3); font-weight:600}
+.fact .v{font-family:var(--mono); font-size:13px; margin-top:2px; word-break:break-word}
+
+.tablewrap{overflow-x:auto}
+table{border-collapse:collapse; width:100%; font-size:13px}
+th{text-align:left; font-size:10.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-3);
+  font-weight:600; padding:9px 12px; border-bottom:1px solid var(--line-soft); white-space:nowrap}
+td{padding:9px 12px; border-bottom:1px solid var(--line-soft); white-space:nowrap}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--sunken)}
+.mono{font-family:var(--mono); font-variant-numeric:tabular-nums}
+.dim{color:var(--ink-2)}
+.rowactions{display:flex; gap:6px; justify-content:flex-end}
+.nameCell{display:flex; align-items:center; gap:8px}
+
+/* ---------- terminal ---------- */
+.term{flex:1; min-height:0; background:var(--term-bg); color:var(--term-ink); font-family:var(--mono);
+  font-size:13px; line-height:1.55; padding:14px 16px; overflow-y:auto; cursor:text}
+.term b{color:var(--term-accent); font-weight:500}
+.term .u{color:#6FC0A6} .term .p{color:#7FA8D8} .term .e{color:#E2837A} .term .d{color:var(--term-dim)}
+.term-line{white-space:pre-wrap; word-break:break-word}
+.term-input-row{display:flex; gap:8px; align-items:baseline}
+.term-prompt{white-space:nowrap; flex:none}
+.term-input{flex:1; border:0; background:none; outline:none; font:inherit; color:var(--term-ink); caret-color:var(--term-accent)}
+.termbar{display:flex; align-items:center; gap:10px; padding:7px 14px; background:var(--surface);
+  border-bottom:1px solid var(--line-soft); font-size:12px; color:var(--ink-2); flex:none}
+.keyrow{display:flex; gap:5px; padding:8px 8px calc(8px + env(safe-area-inset-bottom)); background:var(--raised);
+  border-top:1px solid var(--line-soft); overflow-x:auto; flex:none}
+.keyrow button{font-family:var(--mono); font-size:12px; padding:7px 10px; border-radius:7px;
+  background:var(--sunken); color:var(--ink-2); white-space:nowrap}
+.keyrow button:active{background:var(--accent); color:var(--accent-ink)}
+
+/* ---------- filer, snippets, nycklar, synk ---------- */
+.crumbs{display:flex; align-items:center; gap:5px; padding:10px 20px; font-family:var(--mono); font-size:12.5px;
+  border-bottom:1px solid var(--line-soft); background:var(--surface); flex-wrap:wrap}
+.crumbs button{color:var(--accent)}
+.crumbs span{color:var(--ink-3)}
+.snips{grid-template-columns:repeat(auto-fit,minmax(250px,1fr))}
+.snip{padding:13px; display:flex; flex-direction:column; gap:9px}
+.snip h4{margin:0; font-size:14px; font-weight:600}
+.snip code{font-family:var(--mono); font-size:12px; background:var(--sunken); padding:8px 10px; border-radius:7px;
+  display:block; overflow-x:auto; white-space:pre; color:var(--ink-2)}
+.snip code em{font-style:normal; color:var(--accent); font-weight:600}
+.keylist{display:flex; flex-direction:column}
+.keyitem{display:flex; align-items:center; gap:12px; padding:12px 13px; border-bottom:1px solid var(--line-soft); flex-wrap:wrap}
+.keyitem:last-child{border-bottom:0}
+.keyitem .fp{font-family:var(--mono); font-size:11.5px; color:var(--ink-3); word-break:break-all}
+.provgrid{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
+.prov{padding:12px; display:flex; flex-direction:column; gap:6px; align-items:flex-start; text-align:left; width:100%}
+.prov[aria-pressed="true"]{border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent)}
+.prov .n{font-weight:600; font-size:13.5px}
+.prov .s{font-size:11.5px; color:var(--ink-3)}
+.note{font-size:12.5px; color:var(--ink-2); background:var(--sunken); border-radius:8px; padding:10px 12px}
+.empty{padding:40px 20px; text-align:center; color:var(--ink-3); font-size:13.5px}
+
+/* ---------- telefonläge ---------- */
+[data-platform="ios"] .rail,[data-platform="android"] .rail,
+[data-platform="ios"] .hosts,[data-platform="android"] .hosts,
+[data-platform="ios"] .tabs,[data-platform="android"] .tabs{display:none}
+.mobilehosts{display:none}
+[data-platform="ios"] .mobilehosts,[data-platform="android"] .mobilehosts{display:flex; flex-direction:column; min-height:0; flex:1}
+.bottomnav{display:none}
+[data-platform="ios"] .bottomnav,[data-platform="android"] .bottomnav{display:flex}
+.bottomnav{flex:none; border-top:1px solid var(--line-soft); background:var(--raised);
+  padding:6px 4px calc(6px + env(safe-area-inset-bottom))}
+.bottomnav button{flex:1; display:grid; justify-items:center; gap:3px; font-size:10px; color:var(--ink-3); padding:4px 0}
+.bottomnav button svg{width:20px; height:20px; stroke:currentColor; fill:none; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round}
+.bottomnav button[aria-pressed="true"]{color:var(--accent)}
+.appbar{display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--line-soft);
+  background:var(--surface); flex:none}
+.appbar h2{font-family:var(--display); font-size:17px; margin:0; font-weight:600}
+.appbar .back{color:var(--accent); font-size:14px}
+[data-platform="ios"] .viewhead h2,[data-platform="android"] .viewhead h2{font-size:19px}
+[data-platform="ios"] .tiles,[data-platform="android"] .tiles{grid-template-columns:repeat(2,1fr)}
+
+/* ---------- fotnot ---------- */
+.legend{display:flex; align-items:center; gap:10px; flex-wrap:wrap; font-size:12.5px; color:var(--ink-2)}
+.legend .pill{flex:none}
+.footgrid{display:grid; gap:14px; grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+  border-top:1px solid var(--line); padding-top:18px}
+.footgrid h4{margin:0 0 4px; font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-3)}
+.footgrid p{margin:0; font-size:13px; color:var(--ink-2)}
+.footgrid a{color:var(--accent)}
+
+@media (max-width:880px){
+  .page{padding:24px 14px 44px}
+  .window{height:min(80vh,620px)}
+  .rail{width:56px}
+  .rail button{width:44px; font-size:0; gap:0; padding:10px 0}
+  .rail button svg{width:20px; height:20px}
+  .hosts{width:172px}
+}
+@media (max-width:620px){
+  [data-platform="macos"] .hosts,[data-platform="windows"] .hosts,[data-platform="linux"] .hosts{display:none}
+  .wordmark{font-size:26px}
+}
+</style>
+
+<div class="page">
+  <header class="masthead">
+    <div class="brand">
+      <div class="mark" aria-hidden="true"></div>
+      <div>
+        <div class="wordmark">bastion</div>
+        <div class="tagline">Fristående SSH-klient — native på varje plattform, synk utan konto.</div>
+      </div>
+    </div>
+    <div class="switch" id="switch" role="group" aria-label="Välj plattform"></div>
+  </header>
+
+  <div class="stage" id="stage" data-platform="macos">
+    <div class="window">
+      <div class="chrome" id="chrome"></div>
+      <div class="app">
+        <nav class="rail" id="rail" aria-label="Huvudnavigering"></nav>
+        <aside class="hosts">
+          <header>
+            <div class="search">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>
+              <input id="hostsearch" type="search" placeholder="Sök värd eller tagg" aria-label="Sök värd eller tagg">
+            </div>
+          </header>
+          <div class="hostlist" id="hostlist"></div>
+        </aside>
+        <section class="main">
+          <div class="tabs" id="tabs"></div>
+          <div class="pane" id="pane"></div>
+          <nav class="bottomnav" id="bottomnav" aria-label="Flikar"></nav>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <span class="pill neutral">Prototyp</span>
+    <span>Terminalen är simulerad — en webbsida kan inte öppna riktiga SSH-anslutningar. Kommandona svarar med samma data som panelerna visar. Prova <span class="mono">help</span>.</span>
+  </div>
+
+  <div class="footgrid">
+    <div>
+      <h4>Native per plattform</h4>
+      <p>SwiftUI på iOS/macOS, Kotlin på Android, WinUI 3 på Windows, GTK4 på Linux. Inget delat UI-lager — bara ett gemensamt synkprotokoll.</p>
+    </div>
+    <div>
+      <h4>Synk utan inloggning</h4>
+      <p>Värddatabasen slås ihop deterministiskt (last-write-wins + gravstenar) genom en fil i en mapp du redan synkar. Nyttolasten är AES-256-GCM-krypterad på enheten.</p>
+    </div>
+    <div>
+      <h4>Öppen källkod</h4>
+      <p>MIT-licens, ingen container, inget konto. Nycklarna lämnar aldrig enheten okrypterade.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+"use strict";
+
+/* ------------------------------ data ------------------------------ */
+const PLATFORMS = [
+  {id:"macos",   name:"macOS"},
+  {id:"windows", name:"Windows"},
+  {id:"linux",   name:"Linux"},
+  {id:"ios",     name:"iOS"},
+  {id:"android", name:"Android"}
+];
+
+const ICON = {
+  gauge:'<path d="M4 18a8 8 0 1 1 16 0"/><path d="m12 14 4-4"/><circle cx="12" cy="14" r="1.4"/>',
+  term:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 10 3 2.5L7 15"/><path d="M13 15h4"/>',
+  docker:'<rect x="3" y="12" width="18" height="7" rx="1.5"/><rect x="6" y="8" width="4" height="4"/><rect x="11" y="8" width="4" height="4"/><rect x="11" y="4" width="4" height="4"/>',
+  folder:'<path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h7A1.5 1.5 0 0 1 19 10v7.5A1.5 1.5 0 0 1 17.5 19h-13A1.5 1.5 0 0 1 3 17.5z"/>',
+  code:'<path d="m8 7-5 5 5 5"/><path d="m16 7 5 5-5 5"/><path d="m13.5 5-3 14"/>',
+  key:'<circle cx="8" cy="12" r="4"/><path d="M12 12h9"/><path d="M17 12v3.5"/><path d="M20 12v2.5"/>',
+  sync:'<path d="M20 12a8 8 0 0 1-13.7 5.6"/><path d="M4 12a8 8 0 0 1 13.7-5.6"/><path d="M4 7v5h5"/><path d="M20 17v-5h-5"/>',
+  server:'<rect x="3" y="4" width="18" height="7" rx="1.5"/><rect x="3" y="13" width="18" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/>',
+  dots:'<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>'
+};
+
+const VIEWS = [
+  {id:"oversikt", name:"Översikt", icon:"gauge"},
+  {id:"terminal", name:"Terminal", icon:"term"},
+  {id:"docker",   name:"Docker",   icon:"docker"},
+  {id:"filer",    name:"Filer",    icon:"folder"},
+  {id:"snippets", name:"Snippets", icon:"code"},
+  {id:"nycklar",  name:"Nycklar",  icon:"key"},
+  {id:"synk",     name:"Synk",     icon:"sync"}
+];
+
+const HOSTS = [
+  {id:"web-01", tag:"Produktion", role:"Web", user:"deploy", addr:"10.0.4.11", port:22, state:"ok",
+   os:"Debian 12 (bookworm)", kernel:"6.1.0-21-amd64", uptime:"42 d 6 tim", cores:8, load:[0.42,0.55,0.61],
+   mem:{used:5.4,total:16}, disk:{used:118,total:400}, temp:41, users:["deploy","anders"],
+   ips:["10.0.4.11","2001:db8:4::11"], auth:"ed25519 · Secure Enclave", jump:null,
+   containers:[
+     {name:"caddy", image:"caddy:2.8", state:"kör", up:"12 dagar", ports:"80, 443"},
+     {name:"web", image:"ghcr.io/denied/web:1.14", state:"kör", up:"3 dagar", ports:"8080"},
+     {name:"redis", image:"redis:7.2-alpine", state:"kör", up:"12 dagar", ports:"6379"}
+   ]},
+  {id:"api-02", tag:"Produktion", role:"API", user:"deploy", addr:"10.0.4.12", port:22, state:"ok",
+   os:"Ubuntu 24.04 LTS", kernel:"6.8.0-41-generic", uptime:"11 d 2 tim", cores:4, load:[1.12,0.94,0.88],
+   mem:{used:6.9,total:8}, disk:{used:61,total:200}, temp:47, users:["deploy"],
+   ips:["10.0.4.12"], auth:"ed25519-sk · YubiKey", jump:"bastion.denied.se",
+   containers:[
+     {name:"api", image:"ghcr.io/denied/api:2.3.1", state:"kör", up:"2 dagar", ports:"9000"},
+     {name:"worker", image:"ghcr.io/denied/api:2.3.1", state:"kör", up:"2 dagar", ports:"—"},
+     {name:"migrate", image:"ghcr.io/denied/api:2.3.1", state:"stoppad", up:"—", ports:"—"}
+   ]},
+  {id:"db-01", tag:"Produktion", role:"Databas", user:"postgres", addr:"10.0.4.20", port:22, state:"warn",
+   os:"Debian 12 (bookworm)", kernel:"6.1.0-21-amd64", uptime:"96 d 14 tim", cores:16, load:[3.42,2.98,2.61],
+   mem:{used:52.1,total:64}, disk:{used:1740,total:1900}, temp:58, users:["postgres"],
+   ips:["10.0.4.20"], auth:"ed25519 · fil", jump:null,
+   containers:[{name:"pgbackrest", image:"pgbackrest:2.51", state:"kör", up:"96 dagar", ports:"—"}]},
+  {id:"nas", tag:"Homelab", role:"Lagring", user:"root", addr:"192.168.1.10", port:22, state:"ok",
+   os:"TrueNAS SCALE 24.04", kernel:"6.6.32-production", uptime:"210 d 3 tim", cores:6, load:[0.28,0.31,0.35],
+   mem:{used:21.4,total:32}, disk:{used:9800,total:24000}, temp:36, users:["root"],
+   ips:["192.168.1.10"], auth:"ed25519 · Secure Enclave", jump:null,
+   containers:[
+     {name:"syncthing", image:"syncthing:1.27", state:"kör", up:"48 dagar", ports:"8384"},
+     {name:"restic", image:"restic/restic:0.16", state:"stoppad", up:"—", ports:"—"}
+   ]},
+  {id:"plex", tag:"Homelab", role:"Media", user:"anders", addr:"192.168.1.24", port:22, state:"ok",
+   os:"Ubuntu 24.04 LTS", kernel:"6.8.0-41-generic", uptime:"18 d 22 tim", cores:8, load:[2.10,1.86,1.44],
+   mem:{used:12.2,total:32}, disk:{used:310,total:500}, temp:63, users:["anders"],
+   ips:["192.168.1.24"], auth:"ed25519 · fil", jump:null,
+   containers:[
+     {name:"plex", image:"plexinc/pms-docker:1.41", state:"kör", up:"18 dagar", ports:"32400"},
+     {name:"tautulli", image:"tautulli:2.14", state:"kör", up:"18 dagar", ports:"8181"}
+   ]},
+  {id:"pve", tag:"Homelab", role:"Proxmox", user:"root", addr:"192.168.1.5", port:22, state:"ok",
+   os:"Proxmox VE 8.2", kernel:"6.8.4-3-pve", uptime:"64 d 9 tim", cores:12, load:[1.44,1.51,1.60],
+   mem:{used:44.8,total:96}, disk:{used:420,total:1000}, temp:52, users:["root"],
+   ips:["192.168.1.5"], auth:"ed25519 · Secure Enclave", jump:null,
+   containers:[{name:"lxc/108-docker", image:"debian-12-standard", state:"kör", up:"64 dagar", ports:"—"}]},
+  {id:"kund-vinge", tag:"Kunder", role:"Applikation", user:"drift", addr:"vinge.example.net", port:2222, state:"off",
+   os:"Rocky Linux 9.4", kernel:"5.14.0-427.el9", uptime:"—", cores:4, load:[0,0,0],
+   mem:{used:0,total:16}, disk:{used:0,total:250}, temp:0, users:[],
+   ips:["203.0.113.44"], auth:"ed25519-cert · CA denied-ca", jump:"bastion.denied.se",
+   containers:[]}
+];
+
+const FS = {
+  "/":            [d("etc"), d("home"), d("srv"), d("var"), f("swapfile","2,0 G","-rw-------","4 mar")],
+  "/etc":         [d("nginx"), d("ssh"), f("os-release","386 B","-rw-r--r--","18 jun"), f("hosts","221 B","-rw-r--r--","2 maj")],
+  "/etc/ssh":     [f("sshd_config","3,4 kB","-rw-r--r--","9 aug"), f("ssh_host_ed25519_key","411 B","-rw-------","2 jan")],
+  "/etc/nginx":   [d("sites-enabled"), f("nginx.conf","1,5 kB","-rw-r--r--","14 jul")],
+  "/home":        [d("deploy")],
+  "/home/deploy": [d(".ssh"), f(".bashrc","3,7 kB","-rw-r--r--","12 apr"), f("deploy.log","884 kB","-rw-r--r--","i dag")],
+  "/home/deploy/.ssh":[f("authorized_keys","1,1 kB","-rw-------","6 aug"), f("known_hosts","4,2 kB","-rw-r--r--","6 aug")],
+  "/srv":         [d("backup"), d("www"), f("docker-compose.yml","2,8 kB","-rw-r--r--","i dag"), f(".env","512 B","-rw-------","3 aug")],
+  "/srv/www":     [d("assets"), f("index.html","6,4 kB","-rw-r--r--","i går"), f("robots.txt","62 B","-rw-r--r--","1 feb")],
+  "/srv/backup":  [f("db-2026-08-19.sql.zst","1,4 G","-rw-------","03:15"), f("db-2026-08-18.sql.zst","1,4 G","-rw-------","i går")],
+  "/var":         [d("log"), d("lib")],
+  "/var/log":     [f("syslog","12 MB","-rw-r-----","nu"), f("auth.log","2,1 MB","-rw-r-----","nu"), f("nginx","—","drwxr-xr-x","i dag")]
+};
+function d(name){ return {name, type:"dir", size:"—", perm:"drwxr-xr-x", mtime:"i dag"}; }
+function f(name,size,perm,mtime){ return {name, type:"file", size, perm, mtime}; }
+
+const SNIPPETS = [
+  {name:"Starta om en tjänst i stacken", cmd:"docker compose -f {{stack}}/docker-compose.yml restart {{tjänst}}",
+   vars:{stack:"/srv", "tjänst":"web"}, tag:"Docker"},
+  {name:"Senaste loggen för en unit", cmd:"journalctl -u {{tjänst}} -n 60 --no-pager",
+   vars:{"tjänst":"nginx"}, tag:"systemd"},
+  {name:"Största katalogerna", cmd:"du -sh {{sökväg}}/* | sort -h | tail -10",
+   vars:{"sökväg":"/srv"}, tag:"Linux"},
+  {name:"Certifikat som går ut", cmd:"openssl x509 -enddate -noout -in {{fil}}",
+   vars:{fil:"/etc/ssl/denied.se.pem"}, tag:"Säkerhet"},
+  {name:"Paket att uppdatera", cmd:"apt update -qq && apt list --upgradable",
+   vars:{}, tag:"Linux"}
+];
+
+const KEYS = [
+  {name:"id_ed25519", type:"Ed25519", store:"Secure Enclave", fp:"SHA256:9wU2Xk4pQmC0Ib9dTfR2sNvE7hK1LzYq3aP8oGm5J4c", note:"Face ID krävs vid varje signering", state:"ok"},
+  {name:"yubikey-5c", type:"ecdsa-sk", store:"PKCS#11 · YubiKey 5C", fp:"SHA256:2Fh8ZqL5nX1vB6cD0eR9tYu3IoP7aS4dG2jK8mN1qWe", note:"Kräver beröring", state:"ok"},
+  {name:"deploy-ci", type:"Ed25519 + certifikat", store:"Fil · ~/.ssh", fp:"SHA256:Lm3Qw9Zx1Cv7Bn5As8Df2Gh4Jk6Op0Ty9Ui3Re5Wq2", note:"Signerad av denied-ca, går ut om 21 dagar", state:"warn"},
+  {name:"gammal-rsa", type:"RSA 4096", store:"Fil · ~/.ssh", fp:"SHA256:Xz0Pl9Ok8Ij7Uh6Yg5Tf4Rd3Es2Wa1Qb0Nc9Mv8Lk7", note:"Inaktiverad — RSA-SHA1 avvisas av klienten", state:"crit"}
+];
+
+const PROVIDERS = [
+  {id:"mapp", n:"Synkad mapp", s:"~/Library/Mobile Documents"},
+  {id:"icloud", n:"iCloud Drive", s:"Via synkad mapp"},
+  {id:"dropbox", n:"Dropbox", s:"OAuth2 + PKCE"},
+  {id:"gdrive", n:"Google Drive", s:"appDataFolder"},
+  {id:"onedrive", n:"OneDrive", s:"Graph, app-mapp"},
+  {id:"webdav", n:"WebDAV", s:"Endast HTTPS"},
+  {id:"git", n:"Git", s:"Egen remote"},
+  {id:"syncthing", n:"Syncthing", s:"Mapp på enheten"}
+];
+
+/* ------------------------------ tillstånd ------------------------------ */
+const state = {
+  platform:"macos",
+  hostId:"web-01",
+  view:"oversikt",
+  tabs:["web-01","db-01"],
+  filter:"",
+  path:"/srv",
+  provider:"mapp",
+  syncLine:"Senast synkad 09:41 · 7 värdar, 5 snippets · ingen konflikt",
+  term:{},
+  history:[],
+  histIdx:-1
+};
+
+const host = () => HOSTS.find(h => h.id === state.hostId) || HOSTS[0];
+const isPhone = () => state.platform === "ios" || state.platform === "android";
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const pct = (a,b) => b ? Math.min(100, Math.round(a/b*100)) : 0;
+const level = p => p >= 88 ? "crit" : p >= 70 ? "warn" : "ok";
+const gb = n => n >= 1000 ? (n/1000).toFixed(1).replace(".",",") + " TB" : n + " GB";
+
+function hist(seed, n, base){
+  const out = []; let x = seed * 9301;
+  for (let i = 0; i < n; i++){
+    x = (x * 9301 + 49297) % 233280;
+    out.push(Math.max(0.02, base * (0.55 + (x/233280) * 0.9)));
+  }
+  return out;
+}
+function spark(vals, cls){
+  const w = 100, h = 34, max = Math.max(...vals) * 1.3 || 1;
+  const pts = vals.map((v,i) => [i/(vals.length-1)*w, h - 1 - (v/max)*(h-5)]);
+  const line = pts.map(p => p[0].toFixed(1)+","+p[1].toFixed(1)).join(" ");
+  const last = pts[pts.length-1];
+  return `<svg class="spark ${cls}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
+    <polygon points="0,${h} ${line} ${w},${h}" fill="currentColor" opacity=".13"></polygon>
+    <polyline points="${line}" fill="none" stroke="currentColor" stroke-width="1.5" vector-effect="non-scaling-stroke"></polyline>
+    <line x1="${last[0]}" y1="${last[1]}" x2="${last[0]}" y2="${last[1]}" stroke="currentColor" stroke-width="4.5"
+      stroke-linecap="round" vector-effect="non-scaling-stroke"></line>
+  </svg>`;
+}
+function svg(icon){ return `<svg viewBox="0 0 24 24" aria-hidden="true">${ICON[icon]}</svg>`; }
+function statePill(h){
+  if (h.state === "off") return '<span class="pill neutral">Frånkopplad</span>';
+  if (h.state === "warn") return '<span class="pill warn">Disk nästan full</span>';
+  return '<span class="pill ok">Ansluten</span>';
+}
+
+/* ------------------------------ chrome per plattform ------------------------------ */
+function renderChrome(){
+  const el = document.getElementById("chrome");
+  const h = host();
+  const title = `${h.user}@${h.id} — Bastion`;
+  if (state.platform === "macos"){
+    el.innerHTML = `<div class="dots"><i></i><i></i><i></i></div><div class="title" style="margin:0 auto">${esc(title)}</div>`;
+  } else if (state.platform === "windows"){
+    el.innerHTML = `<div class="title">Bastion</div><div class="dim">${esc(h.id)}</div>
+      <div class="caption"><span>&#9472;</span><span>&#9723;</span><span>&#10005;</span></div>`;
+  } else if (state.platform === "linux"){
+    el.innerHTML = `<div class="title" style="margin:0 auto 0 4px">Bastion</div>
+      <div class="dim">${esc(h.id)}</div><div class="gnome-btn">&#10005;</div>`;
+  } else {
+    el.innerHTML = "";
+  }
+  el.style.display = isPhone() ? "none" : "flex";
+  document.getElementById("statusbar")?.remove();
+  if (isPhone()){
+    const bar = document.createElement("div");
+    bar.id = "statusbar"; bar.className = "statusbar";
+    bar.innerHTML = state.platform === "ios"
+      ? `<span>09:41</span><span class="mono">5G &nbsp;&#9679;&#9679;&#9679; &nbsp;82 %</span>`
+      : `<span>09:41</span><span class="mono">LTE &nbsp;&#9679;&#9679; &nbsp;82 %</span>`;
+    el.parentNode.insertBefore(bar, el);
+  }
+}
+
+/* ------------------------------ rail, värdlista, flikar ------------------------------ */
+function renderRail(){
+  document.getElementById("rail").innerHTML = VIEWS.map(v =>
+    `<button data-act="view" data-id="${v.id}" aria-pressed="${state.view === v.id}" title="${v.name}">
+       ${svg(v.icon)}<span>${v.name}</span></button>`).join("");
+}
+
+function hostRows(){
+  const q = state.filter.trim().toLowerCase();
+  const shown = HOSTS.filter(h => !q || (h.id + h.tag + h.role + h.addr).toLowerCase().includes(q));
+  if (!shown.length) return `<div class="empty">Ingen värd matchar “${esc(state.filter)}”.</div>`;
+  let out = "", tag = null;
+  for (const h of shown){
+    if (h.tag !== tag){ tag = h.tag; out += `<div class="grouplabel">${esc(tag)}</div>`; }
+    out += `<button class="hostrow" data-act="host" data-id="${h.id}" aria-current="${h.id === state.hostId}">
+      <span class="dot ${h.state === "ok" ? "" : h.state}"></span>
+      <span><span class="hostname">${esc(h.id)}</span><br><span class="hostmeta">${esc(h.user)}@${esc(h.addr)}</span></span>
+    </button>`;
+  }
+  return out;
+}
+function renderHostList(){ document.getElementById("hostlist").innerHTML = hostRows(); }
+
+function renderTabs(){
+  const el = document.getElementById("tabs");
+  el.innerHTML = state.tabs.map(id => {
+    const h = HOSTS.find(x => x.id === id); if (!h) return "";
+    return `<div class="tab" aria-current="${id === state.hostId}">
+      <span class="dot ${h.state === "ok" ? "" : h.state}"></span>
+      <button data-act="host" data-id="${id}">${esc(h.id)}</button>
+      <button class="x" data-act="close" data-id="${id}" aria-label="Stäng ${esc(h.id)}">&#10005;</button>
+    </div>`;
+  }).join("") + `<button class="newtab" data-act="newtab" aria-label="Ny session">+</button>`;
+}
+
+function renderBottomNav(){
+  const items = [
+    {id:"hosts", name:"Värdar", icon:"server"},
+    {id:"oversikt", name:"Översikt", icon:"gauge"},
+    {id:"terminal", name:"Terminal", icon:"term"},
+    {id:"docker", name:"Docker", icon:"docker"},
+    {id:"mer", name:"Mer", icon:"dots"}
+  ];
+  const active = ["filer","snippets","nycklar","synk"].includes(state.view) ? "mer" : state.view;
+  document.getElementById("bottomnav").innerHTML = items.map(i =>
+    `<button data-act="view" data-id="${i.id}" aria-pressed="${active === i.id}">${svg(i.icon)}<span>${i.name}</span></button>`).join("");
+}
+
+/* ------------------------------ vyer ------------------------------ */
+function viewOversikt(h){
+  if (h.state === "off"){
+    return head(h) + `<div class="section"><div class="card note">
+      Sessionen är stängd. Bastion behåller värden i listan och återansluter via hoppvärden
+      <span class="mono">${esc(h.jump || "—")}</span> när du väljer <strong>Anslut</strong>.</div></div>`;
+  }
+  const memP = pct(h.mem.used, h.mem.total), diskP = pct(h.disk.used, h.disk.total);
+  const loadP = Math.min(100, Math.round(h.load[0]/h.cores*100));
+  const cpuSeries = hist(h.id.length + h.cores, 24, h.load[0]);
+  const running = h.containers.filter(c => c.state === "kör").length;
+  return head(h) + `
+  <div class="section">
+    <div class="grid tiles">
+      <div class="card tile ${level(loadP)}"><span class="stripe"></span>
+        <span class="label">Belastning</span>
+        <span class="value">${h.load[0].toFixed(2).replace(".",",")}<small>/ ${h.cores} kärnor</small></span>
+        ${spark(cpuSeries, level(loadP))}
+        <span class="foot">1m ${h.load[0].toFixed(2)} · 5m ${h.load[1].toFixed(2)} · 15m ${h.load[2].toFixed(2)}</span>
+      </div>
+      <div class="card tile ${level(memP)}"><span class="stripe"></span>
+        <span class="label">Minne</span>
+        <span class="value">${memP} <small>%</small></span>
+        <div class="meter ${level(memP)}"><i style="width:${memP}%"></i></div>
+        <span class="foot">${String(h.mem.used).replace(".",",")} av ${h.mem.total} GB</span>
+      </div>
+      <div class="card tile ${level(diskP)}"><span class="stripe"></span>
+        <span class="label">Disk /</span>
+        <span class="value">${diskP} <small>%</small></span>
+        <div class="meter ${level(diskP)}"><i style="width:${diskP}%"></i></div>
+        <span class="foot">${gb(h.disk.used)} av ${gb(h.disk.total)}</span>
+      </div>
+      <div class="card tile ${h.temp >= 60 ? "warn" : "ok"}"><span class="stripe"></span>
+        <span class="label">Temperatur</span>
+        <span class="value">${h.temp} <small>°C</small></span>
+        ${spark(hist(h.temp, 24, h.temp), h.temp >= 60 ? "warn" : "ok")}
+        <span class="foot">paketsensor · coretemp</span>
+      </div>
+    </div>
+  </div>
+  <div class="section">
+    <div class="sechead"><h3>System</h3><span class="dim mono" style="font-size:12px">ett SSH-kommando, ingen agent</span></div>
+    <div class="card grid facts">
+      ${fact("Operativsystem", h.os)}${fact("Kärna", h.kernel)}${fact("Upptid", h.uptime)}
+      ${fact("IP-adresser", h.ips.join("  "))}${fact("Inloggade", h.users.join(", ") || "—")}
+      ${fact("Autentisering", h.auth)}${fact("Hoppvärd", h.jump || "ingen")}${fact("Portvidarebefordran", "8080 → 127.0.0.1:9000")}
+    </div>
+  </div>
+  <div class="section">
+    <div class="sechead"><h3>Docker · ${running} av ${h.containers.length} kör</h3>
+      <button class="btn tiny" data-act="view" data-id="docker">Öppna Docker</button></div>
+    ${containerTable(h, 3)}
+  </div>`;
+}
+
+function fact(k, v){ return `<div class="fact"><div class="k">${k}</div><div class="v">${esc(v)}</div></div>`; }
+
+function head(h){
+  return `<div class="viewhead">
+    <div>
+      <h2>${esc(h.id)}</h2>
+      <div class="subline">${esc(h.user)}@${esc(h.addr)}:${h.port}</div>
+      <div style="display:flex; gap:6px; margin-top:8px; flex-wrap:wrap">
+        ${statePill(h)}<span class="tagchip">${esc(h.tag)}</span><span class="tagchip">${esc(h.role)}</span>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn" data-act="view" data-id="filer">Filer</button>
+      <button class="btn primary" data-act="view" data-id="terminal">Terminal</button>
+    </div>
+  </div>`;
+}
+
+function containerTable(h, limit){
+  const rows = (limit ? h.containers.slice(0, limit) : h.containers);
+  if (!rows.length) return `<div class="card empty">Ingen container på den här värden.</div>`;
+  return `<div class="card tablewrap"><table>
+    <thead><tr><th>Container</th><th>Avbild</th><th>Upptid</th><th>Portar</th><th></th></tr></thead>
+    <tbody>${rows.map(c => `<tr>
+      <td><span class="nameCell"><span class="dot ${c.state === "kör" ? "" : "off"}"></span>${esc(c.name)}</span></td>
+      <td class="mono dim">${esc(c.image)}</td>
+      <td class="mono">${esc(c.up)}</td>
+      <td class="mono dim">${esc(c.ports)}</td>
+      <td><span class="rowactions">
+        <button class="btn tiny" data-act="logg" data-id="${esc(c.name)}">Logg</button>
+        <button class="btn tiny" data-act="restart" data-id="${esc(c.name)}">Starta om</button>
+      </span></td></tr>`).join("")}</tbody></table></div>`;
+}
+
+function viewDocker(h){
+  const running = h.containers.filter(c => c.state === "kör").length;
+  return `<div class="viewhead"><div><h2>Docker</h2>
+      <div class="subline">${esc(h.id)} · ${running} av ${h.containers.length} kör</div></div>
+      <div class="actions"><button class="btn" data-act="compose">docker compose up -d</button></div></div>
+    <div class="section">${containerTable(h, 0)}</div>
+    <div class="section"><div class="sechead"><h3>Avbilder</h3></div>
+      <div class="card tablewrap"><table>
+        <thead><tr><th>Avbild</th><th>Tagg</th><th>Storlek</th><th>Skapad</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">ghcr.io/denied/web</td><td class="mono">1.14</td><td class="mono">184 MB</td><td class="dim">3 dagar sedan</td></tr>
+          <tr><td class="mono">caddy</td><td class="mono">2.8</td><td class="mono">48 MB</td><td class="dim">2 veckor sedan</td></tr>
+          <tr><td class="mono">redis</td><td class="mono">7.2-alpine</td><td class="mono">41 MB</td><td class="dim">1 månad sedan</td></tr>
+        </tbody></table></div></div>`;
+}
+
+function viewFiler(h){
+  const entries = FS[state.path] || [];
+  const parts = state.path.split("/").filter(Boolean);
+  let acc = "";
+  const crumbs = [`<button data-act="cd" data-id="/">/</button>`].concat(parts.map((p, i) => {
+    acc += "/" + p;
+    return `${i ? "<span>/</span>" : ""}<button data-act="cd" data-id="${esc(acc)}">${esc(p)}</button>`;
+  })).join("");
+  return `<div class="viewhead"><div><h2>Filer</h2>
+      <div class="subline">SFTP · ${esc(h.user)}@${esc(h.addr)}</div></div>
+      <div class="actions">
+        <button class="btn" data-act="mkdir">Ny mapp</button>
+        <button class="btn" data-act="zip">Zippa markerat</button>
+        <button class="btn primary" data-act="upload">Ladda upp</button>
+      </div></div>
+    <div class="crumbs">${crumbs}</div>
+    <div class="section" style="padding-top:14px">
+      ${entries.length ? `<div class="card tablewrap"><table>
+        <thead><tr><th>Namn</th><th>Storlek</th><th>Rättigheter</th><th>Ändrad</th></tr></thead>
+        <tbody>${entries.map(e => `<tr>
+          <td><span class="nameCell">
+            ${e.type === "dir"
+              ? `<button data-act="cd" data-id="${esc(state.path === "/" ? "/" + e.name : state.path + "/" + e.name)}"
+                   style="display:flex; align-items:center; gap:8px; color:var(--accent); font-weight:500">
+                   <svg viewBox="0 0 24 24" style="width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:1.6">${ICON.folder}</svg>${esc(e.name)}</button>`
+              : `<span style="padding-left:24px">${esc(e.name)}</span>`}
+          </span></td>
+          <td class="mono">${esc(e.size)}</td><td class="mono dim">${esc(e.perm)}</td><td class="dim">${esc(e.mtime)}</td>
+        </tr>`).join("")}</tbody></table></div>`
+      : `<div class="card empty">Katalogen är tom.</div>`}
+    </div>`;
+}
+
+function viewSnippets(){
+  return `<div class="viewhead"><div><h2>Snippets</h2>
+      <div class="subline">Variabler i {{hakparenteser}} fylls i innan körning</div></div>
+      <div class="actions"><button class="btn" data-act="nysnippet">Nytt snippet</button></div></div>
+    <div class="section"><div class="grid snips">
+      ${SNIPPETS.map((s,i) => `<div class="card snip">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px">
+          <h4>${esc(s.name)}</h4><span class="tagchip">${esc(s.tag)}</span>
+        </div>
+        <code>${esc(s.cmd).replace(/\{\{([^}]+)\}\}/g, "<em>{{$1}}</em>")}</code>
+        <div class="actions">
+          <button class="btn tiny primary" data-act="run" data-id="${i}">Kör</button>
+          <button class="btn tiny" data-act="edit" data-id="${i}">Ändra</button>
+        </div>
+      </div>`).join("")}
+    </div></div>`;
+}
+
+function viewNycklar(){
+  return `<div class="viewhead"><div><h2>Nycklar</h2>
+      <div class="subline">Privata nycklar lämnar aldrig enheten okrypterade</div></div>
+      <div class="actions">
+        <button class="btn" data-act="deploy">Distribuera till värd</button>
+        <button class="btn primary" data-act="genkey">Generera Ed25519</button>
+      </div></div>
+    <div class="section"><div class="card keylist">
+      ${KEYS.map(k => `<div class="keyitem">
+        <span class="dot ${k.state === "ok" ? "" : k.state}"></span>
+        <span style="flex:1; min-width:180px">
+          <span style="font-weight:600">${esc(k.name)}</span>
+          <span class="tagchip" style="margin-left:8px">${esc(k.type)}</span>
+          <div class="fp">${esc(k.fp)}</div>
+        </span>
+        <span class="dim" style="font-size:12.5px; min-width:150px">${esc(k.store)}<br>${esc(k.note)}</span>
+      </div>`).join("")}
+    </div></div>
+    <div class="section">
+      <div class="sechead"><h3>Värdnycklar</h3></div>
+      <div class="card note">Alla värdar är verifierade mot <span class="mono">known_hosts</span> (TOFU).
+        Ändras ett fingeravtryck vägrar Bastion ansluta och visar båda avtrycken sida vid sida.</div>
+    </div>`;
+}
+
+function viewSynk(){
+  return `<div class="viewhead"><div><h2>Synk</h2>
+      <div class="subline">Ingen inloggning, ingen server — bara en krypterad fil</div></div>
+      <div class="actions"><button class="btn primary" data-act="syncnow">Synka nu</button></div></div>
+    <div class="section">
+      <div class="sechead"><h3>Transport</h3></div>
+      <div class="grid provgrid">
+        ${PROVIDERS.map(p => `<button class="card prov" data-act="prov" data-id="${p.id}"
+          aria-pressed="${state.provider === p.id}">
+          <span class="n">${esc(p.n)}</span><span class="s">${esc(p.s)}</span></button>`).join("")}
+      </div>
+    </div>
+    <div class="section">
+      <div class="sechead"><h3>Kryptering</h3></div>
+      <div class="card grid facts">
+        ${fact("Chiffer", "AES-256-GCM")}${fact("Nyckelhärledning", "PBKDF2-HMAC-SHA256")}
+        ${fact("Lösenfras", "Sparad i Keychain")}${fact("Sammanslagning", "Last-write-wins + gravstenar")}
+      </div>
+      <div class="card note" id="syncline">${esc(state.syncLine)}</div>
+    </div>`;
+}
+
+function viewMer(){
+  const items = [{id:"filer",n:"Filer"},{id:"snippets",n:"Snippets"},{id:"nycklar",n:"Nycklar"},{id:"synk",n:"Synk"}];
+  return `<div class="viewhead"><div><h2>Mer</h2><div class="subline">${esc(host().id)}</div></div></div>
+    <div class="section"><div class="card keylist">
+      ${items.map(i => `<button class="keyitem" data-act="view" data-id="${i.id}" style="width:100%; text-align:left">
+        <span style="flex:1; font-weight:500">${i.n}</span><span class="dim">&rsaquo;</span></button>`).join("")}
+    </div></div>`;
+}
+
+function viewHostsMobile(){
+  return `<div class="viewhead" style="padding-bottom:6px"><div><h2>Värdar</h2>
+      <div class="subline">${HOSTS.length} värdar · 3 taggar</div></div></div>
+    <div class="section" style="padding-top:0">
+      <div class="search" style="margin-bottom:6px">
+        <svg viewBox="0 0 24 24" aria-hidden="true" style="width:14px;height:14px;stroke:var(--ink-3);fill:none;stroke-width:1.8"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>
+        <input id="hostsearch-m" type="search" placeholder="Sök värd eller tagg" value="${esc(state.filter)}" aria-label="Sök värd eller tagg">
+      </div>
+      <div class="card" id="mhosts" style="padding:6px">${hostRows()}</div>
+    </div>`;
+}
+
+/* ------------------------------ terminal ------------------------------ */
+function termInit(h){
+  if (state.term[h.id]) return;
+  if (h.state === "off"){
+    state.term[h.id] = [
+      `<span class="d">$ ssh ${h.user}@${h.addr} -p ${h.port}</span>`,
+      `<span class="e">ssh: connect to host ${h.addr} port ${h.port}: Connection refused</span>`,
+      `<span class="d">Bastion håller kvar fliken och återansluter när värden svarar.</span>`,
+      ""
+    ];
+    return;
+  }
+  state.term[h.id] = [
+    `<span class="d">$ ssh ${h.user}@${h.addr} -p ${h.port}</span>`,
+    `<span class="d">Värdnyckel verifierad mot known_hosts (ed25519, SHA256:9wU2Xk…J4c)</span>`,
+    h.jump ? `<span class="d">Hoppar via ${h.jump}</span>` : "",
+    `Välkommen till ${h.os} (${h.kernel})`,
+    `Senaste inloggning: i dag 09:41 från 192.168.1.42`,
+    `<span class="d">Skriv <b>help</b> för kommandon som den här prototypen svarar på.</span>`,
+    ""
+  ].filter(Boolean);
+}
+function prompt(h){
+  return `<span class="u">${esc(h.user)}@${esc(h.id)}</span>:<span class="p">${esc(state.path)}</span>$`;
+}
+function push(h, ...lines){ state.term[h.id].push(...lines); }
+
+function runCommand(raw){
+  const h = host();
+  const cmd = raw.trim();
+  push(h, `${prompt(h)} ${esc(cmd)}`);
+  if (!cmd) return;
+  if (h.state === "off"){
+    push(h, `<span class="e">Ingen anslutning till ${esc(h.addr)} — kommandot kördes inte.</span>`, "");
+    return;
+  }
+  state.history.push(cmd); state.histIdx = state.history.length;
+  const [bin, ...args] = cmd.split(/\s+/);
+  const out = [];
+  const memP = pct(h.mem.used, h.mem.total), diskP = pct(h.disk.used, h.disk.total);
+
+  switch (bin){
+    case "help":
+      out.push("Prototypen svarar på:",
+        "  uname -a   uptime   whoami   pwd   ls   cd   df -h   free -h",
+        "  ip a       docker ps   docker logs &lt;namn&gt;   docker restart &lt;namn&gt;",
+        "  cat /etc/os-release        sensors        clear        exit");
+      break;
+    case "uname":
+      out.push(args.includes("-a")
+        ? `Linux ${h.id} ${h.kernel} #1 SMP PREEMPT_DYNAMIC x86_64 GNU/Linux`
+        : "Linux");
+      break;
+    case "uptime":
+      out.push(` 09:41:12 up ${h.uptime.replace("d","dagar,").replace("tim","timmar")},  ${h.users.length} användare,  load average: ${h.load.map(l => l.toFixed(2)).join(", ")}`);
+      break;
+    case "whoami": out.push(h.user); break;
+    case "pwd": out.push(state.path); break;
+    case "hostname": out.push(h.id); break;
+    case "ls": {
+      const entries = FS[state.path] || [];
+      out.push(entries.length
+        ? entries.map(e => e.type === "dir" ? `<b>${esc(e.name)}/</b>` : esc(e.name)).join("  ")
+        : "");
+      break;
+    }
+    case "cd": {
+      const target = args[0] || "/";
+      const next = target.startsWith("/") ? target
+        : (state.path === "/" ? "" : state.path) + "/" + target;
+      const clean = next.replace(/\/+$/, "") || "/";
+      if (FS[clean]) state.path = clean;
+      else out.push(`<span class="e">bash: cd: ${esc(target)}: Filen eller katalogen finns inte</span>`);
+      break;
+    }
+    case "df":
+      out.push("Filsystem      Storlek  Använt  Ledigt Anv% Monterat på",
+        `/dev/sda1        ${String(gb(h.disk.total)).padStart(6)}  ${String(gb(h.disk.used)).padStart(6)}  ${String(gb(h.disk.total - h.disk.used)).padStart(6)} ${String(diskP + "%").padStart(4)} /`);
+      if (diskP >= 88) out.push(`<span class="e">varning: mindre än 10 % kvar på /</span>`);
+      break;
+    case "free":
+      out.push("               total        använt        ledigt",
+        `Minne:      ${String(h.mem.total + "G").padStart(8)} ${String(h.mem.used + "G").padStart(13)} ${String((h.mem.total - h.mem.used).toFixed(1) + "G").padStart(13)}`,
+        `Swap:            2,0G          0,0G          2,0G`,
+        `<span class="d">${memP} % av minnet används</span>`);
+      break;
+    case "sensors":
+      out.push("coretemp-isa-0000", `Package id 0:  +${h.temp}.0°C  (high = +82.0°C, crit = +100.0°C)`);
+      break;
+    case "ip":
+      h.ips.forEach((ipAddr, i) => out.push(`${i + 2}: ${i === 0 ? "eth0" : "eth0:1"}    inet ${ipAddr}/24 scope global`));
+      break;
+    case "cat":
+      if (args[0] === "/etc/os-release")
+        out.push(`PRETTY_NAME="${h.os}"`, `ID=${h.os.toLowerCase().split(" ")[0]}`, `HOME_URL="https://www.debian.org/"`);
+      else out.push(`<span class="e">cat: ${esc(args[0] || "")}: Filen eller katalogen finns inte</span>`);
+      break;
+    case "docker": {
+      const sub = args[0];
+      if (sub === "ps"){
+        out.push("NAMN                 AVBILD                          STATUS          PORTAR");
+        h.containers.filter(c => c.state === "kör" || args.includes("-a")).forEach(c =>
+          out.push(`${c.name.padEnd(20)} ${c.image.padEnd(31)} ${(c.state === "kör" ? "Up " + c.up : "Exited").padEnd(15)} ${c.ports}`));
+      } else if (sub === "logs"){
+        dockerLogs(h, args[1] || (h.containers[0] && h.containers[0].name)).forEach(l => out.push(l));
+      } else if (sub === "restart"){
+        out.push(args[1] || "", `<span class="d">containern startades om på 1,8 s</span>`);
+      } else if (sub === "compose"){
+        out.push(`<span class="d">[+] Running ${h.containers.length}/${h.containers.length}</span>`,
+          ...h.containers.map(c => ` &#10003; Container ${c.name}  Started`));
+      } else out.push(`<span class="e">docker: okänt kommando "${esc(sub || "")}"</span>`);
+      break;
+    }
+    case "clear": state.term[h.id] = []; return;
+    case "exit":
+      out.push(`<span class="d">Anslutningen till ${h.addr} stängdes. Bastion håller kvar fliken.</span>`);
+      break;
+    default:
+      out.push(`<span class="e">bash: ${esc(bin)}: kommandot finns inte</span>`);
+  }
+  push(h, ...out, "");
+}
+
+function dockerLogs(h, name){
+  const c = h.containers.find(x => x.name === name);
+  if (!c) return [`<span class="e">Error: No such container: ${esc(name || "")}</span>`];
+  return [
+    `<span class="d">— senaste 6 raderna från ${esc(c.name)} —</span>`,
+    `09:38:55 INFO  startad ur ${esc(c.image)}`,
+    `09:39:02 INFO  lyssnar på ${esc(c.ports === "—" ? "unix-socket" : c.ports)}`,
+    `09:40:11 INFO  GET /healthz 200 1.2ms`,
+    `09:40:41 INFO  GET /healthz 200 1.1ms`,
+    `09:41:00 WARN  långsam fråga: 412 ms`,
+    `09:41:11 INFO  GET /healthz 200 1.3ms`
+  ];
+}
+
+function viewTerminal(h){
+  termInit(h);
+  const keys = ["Esc","Tab","Ctrl","Alt","&#8592;","&#8595;","&#8593;","&#8594;","|","~","/","F1","F5","F12"];
+  return `<div class="termbar">
+      <span class="dot ${h.state === "ok" ? "" : h.state}"></span>
+      <span class="mono">${esc(h.user)}@${esc(h.addr)}:${h.port}</span>
+      <span class="dim">· ed25519 · xterm-256color · ${h.jump ? "via " + esc(h.jump) : "direkt"}</span>
+    </div>
+    <div class="term" id="term" data-act="focusterm">
+      ${state.term[h.id].map(l => `<div class="term-line">${l}</div>`).join("")}
+      <div class="term-line term-input-row"><span class="term-prompt">${prompt(h)}</span>
+        <input class="term-input" id="terminput" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Terminalinmatning">
+      </div>
+    </div>
+    ${isPhone() ? `<div class="keyrow">${keys.map(k => `<button data-act="key" data-id="${k}">${k}</button>`).join("")}</div>` : ""}`;
+}
+
+/* ------------------------------ rendering ------------------------------ */
+function renderPane(){
+  const pane = document.getElementById("pane");
+  const h = host();
+  const flush = state.view === "terminal";
+  pane.className = "pane" + (flush ? " flush" : "");
+  let html;
+  switch (state.view){
+    case "terminal": html = viewTerminal(h); break;
+    case "docker":   html = viewDocker(h); break;
+    case "filer":    html = viewFiler(h); break;
+    case "snippets": html = viewSnippets(); break;
+    case "nycklar":  html = viewNycklar(); break;
+    case "synk":     html = viewSynk(); break;
+    case "mer":      html = viewMer(); break;
+    case "hosts":    html = viewHostsMobile(); break;
+    default:         html = viewOversikt(h);
+  }
+  if (isPhone() && !["terminal","hosts"].includes(state.view)){
+    html = `<div class="appbar"><button class="back" data-act="view" data-id="hosts">&lsaquo; Värdar</button>
+      <h2>${esc(h.id)}</h2></div>` + html;
+  }
+  pane.innerHTML = html;
+  if (state.view === "terminal"){
+    const term = document.getElementById("term");
+    term.scrollTop = term.scrollHeight;
+  }
+}
+
+function render(){
+  document.getElementById("stage").dataset.platform = state.platform;
+  document.getElementById("switch").innerHTML = PLATFORMS.map(p =>
+    `<button data-act="platform" data-id="${p.id}" aria-pressed="${state.platform === p.id}">${p.name}</button>`).join("");
+  renderChrome(); renderRail(); renderHostList(); renderTabs(); renderBottomNav(); renderPane();
+}
+
+function focusTerm(){
+  const i = document.getElementById("terminput");
+  if (i) i.focus({preventScroll:true});
+}
+function openTerminal(){ state.view = "terminal"; render(); focusTerm(); }
+
+/* ------------------------------ händelser ------------------------------ */
+document.addEventListener("click", e => {
+  const t = e.target.closest("[data-act]");
+  if (!t) return;
+  const id = t.dataset.id;
+  const h = host();
+  switch (t.dataset.act){
+    case "platform":
+      state.platform = id;
+      if (isPhone() && state.view === "oversikt") state.view = "hosts";
+      if (!isPhone() && state.view === "hosts") state.view = "oversikt";
+      render();
+      break;
+    case "view":
+      state.view = id;
+      render();
+      if (id === "terminal") focusTerm();
+      break;
+    case "host":
+      state.hostId = id;
+      if (!state.tabs.includes(id)) state.tabs.push(id);
+      if (isPhone() && state.view === "hosts") state.view = "oversikt";
+      render();
+      break;
+    case "close": {
+      state.tabs = state.tabs.filter(x => x !== id);
+      if (state.hostId === id && state.tabs.length) state.hostId = state.tabs[0];
+      render();
+      break;
+    }
+    case "newtab": {
+      const next = HOSTS.find(x => !state.tabs.includes(x.id));
+      if (next){ state.tabs.push(next.id); state.hostId = next.id; render(); }
+      break;
+    }
+    case "cd": state.path = id; render(); break;
+    case "logg": termInit(h); push(h, `${prompt(h)} docker logs --tail 6 ${id}`, ...dockerLogs(h, id), ""); openTerminal(); break;
+    case "restart": termInit(h); push(h, `${prompt(h)} docker restart ${id}`, id, `<span class="d">containern startades om på 1,8 s</span>`, ""); openTerminal(); break;
+    case "compose": termInit(h); runCommand("docker compose up -d"); openTerminal(); break;
+    case "run": {
+      const s = SNIPPETS[Number(id)];
+      let cmd = s.cmd;
+      for (const [k, v] of Object.entries(s.vars)) cmd = cmd.replace("{{" + k + "}}", v);
+      termInit(h); runCommand(cmd); openTerminal();
+      break;
+    }
+    case "prov":
+      state.provider = id;
+      state.syncLine = `Transport bytt till ${PROVIDERS.find(p => p.id === id).n} · nyttolasten krypteras fortfarande på enheten`;
+      render();
+      break;
+    case "syncnow": {
+      state.syncLine = "Synkar … läser fjärrfil, slår ihop, skriver tillbaka";
+      render();
+      setTimeout(() => {
+        const now = new Date();
+        const t2 = String(now.getHours()).padStart(2,"0") + ":" + String(now.getMinutes()).padStart(2,"0");
+        state.syncLine = `Synkad ${t2} · 7 värdar, 5 snippets · 0 konflikter, 1 gravsten rensad`;
+        if (state.view === "synk") render();
+      }, 900);
+      break;
+    }
+    case "key": {
+      const i = document.getElementById("terminput");
+      if (!i) break;
+      const label = t.textContent.trim();
+      const caret = i.selectionStart ?? i.value.length;
+      if (label === "↑" || label === "↓"){
+        if (!state.history.length) break;
+        state.histIdx = label === "↑"
+          ? Math.max(0, state.histIdx - 1)
+          : Math.min(state.history.length, state.histIdx + 1);
+        i.value = state.history[state.histIdx] || "";
+      } else if (label === "←" || label === "→"){
+        const next = label === "←" ? Math.max(0, caret - 1) : Math.min(i.value.length, caret + 1);
+        i.focus(); i.setSelectionRange(next, next); break;
+      } else if (label === "Esc"){
+        i.value = "";
+      } else if (label === "Tab"){
+        i.value += "\t";
+      } else if (label === "Ctrl" || label === "Alt"){
+        i.value += label === "Ctrl" ? "^" : "⎇";
+      } else {
+        i.value += label;
+      }
+      i.focus();
+      break;
+    }
+    case "focusterm": focusTerm(); break;
+    case "mkdir": case "upload": case "zip": case "nysnippet": case "edit":
+    case "deploy": case "genkey":
+      flash(t);
+      break;
+  }
+});
+
+function flash(btn){
+  const old = btn.textContent;
+  btn.textContent = "Prototyp — inte kopplad";
+  btn.disabled = true;
+  setTimeout(() => { btn.textContent = old; btn.disabled = false; }, 1100);
+}
+
+document.addEventListener("input", e => {
+  if (e.target.id === "hostsearch" || e.target.id === "hostsearch-m"){
+    state.filter = e.target.value;
+    if (e.target.id === "hostsearch") renderHostList();
+    else {
+      const box = document.getElementById("mhosts");
+      if (box) box.innerHTML = hostRows();
+    }
+  }
+});
+
+document.addEventListener("keydown", e => {
+  if (e.target.id !== "terminput") return;
+  if (e.key === "Enter"){
+    runCommand(e.target.value);
+    e.target.value = "";
+    render();
+    focusTerm();
+  } else if (e.key === "ArrowUp"){
+    e.preventDefault();
+    if (!state.history.length) return;
+    state.histIdx = Math.max(0, state.histIdx - 1);
+    e.target.value = state.history[state.histIdx] || "";
+  } else if (e.key === "ArrowDown"){
+    e.preventDefault();
+    state.histIdx = Math.min(state.history.length, state.histIdx + 1);
+    e.target.value = state.history[state.histIdx] || "";
+  }
+});
+
+render();
+})();
+</script>
