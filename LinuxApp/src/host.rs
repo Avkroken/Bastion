@@ -365,7 +365,45 @@ impl HostStore {
             .filter(|h| !existing.contains(&h.alias.to_lowercase()))
             .collect();
         let count = fresh.len();
+        let imported: Vec<(String, Option<String>)> = fresh
+            .iter()
+            .map(|h| {
+                let jump = config.resolve(&h.alias).proxy_jump.as_deref()
+                    .and_then(crate::ssh_config::proxy_jump_alias);
+                (h.alias.clone(), jump)
+            })
+            .collect();
         for host in fresh {
+            self.upsert(host)?;
+        }
+
+        // Andra pass: koppla ihop ProxyJump. Måste ske EFTER att alla
+        // värdar sparats — jump-hosten kan stå efter den som pekar på den i
+        // configen, och en koppling kräver mottagarens id.
+        //
+        // Bara nyimporterade värdar får sin jump satt. Att röra en värd som
+        // redan fanns vore att tyst skriva om något användaren kan ha ställt
+        // in själv, och hela importen bygger på att befintliga alias lämnas
+        // ifred.
+        let by_alias: std::collections::HashMap<String, Uuid> = self
+            .all()
+            .iter()
+            .map(|h| (h.alias.to_lowercase(), h.id))
+            .collect();
+        for (alias, jump_alias) in imported {
+            let Some(jump_alias) = jump_alias else { continue };
+            let Some(&jump_id) = by_alias.get(&jump_alias.to_lowercase()) else { continue };
+            let Some(&id) = by_alias.get(&alias.to_lowercase()) else { continue };
+            // En värd som pekar på sig själv är ingen kedja, bara ett fel.
+            if id == jump_id {
+                continue;
+            }
+            // `all()` ger `Vec<&Host>`, så en `cloned()` på iteratorn ger
+            // fortfarande en referens — klona värden explicit.
+            let Some(mut host) = self.all().into_iter().find(|h| h.id == id).cloned() else {
+                continue;
+            };
+            host.jump_host_id = Some(jump_id);
             self.upsert(host)?;
         }
         Ok(count)

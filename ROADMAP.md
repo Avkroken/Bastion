@@ -37,7 +37,7 @@ delvis andra, av konkreta skäl:
 | Docker-åtgärder (lista/start/stopp/omstart/logg) | ✅ testad, injektionssäker referens |
 | Sync mellan enheter (LWW-merge + gravstenar, mapp-transport) | ✅ testad, konvergens bevisad |
 | E2E-krypterad sync (AES-256-GCM + PBKDF2, testvektorer) | ✅ testad, chiffertext läcker inget |
-| Importera `~/.ssh/config` → host-DB | ✅ testad (parser + dedup + `Include`, LinuxApp läser filen från disk) |
+| Importera `~/.ssh/config` → host-DB | ✅ testad (parser + dedup + `Include`/`Match`, LinuxApp läser filen från disk). Importerar även `ForwardAgent`, `RemoteCommand` → `startup_command` och `ProxyJump` → `jump_host_id` (2026-08-19, Rust; Swift-sidan slänger dem fortfarande) |
 | Docker-shell-kommando (`docker exec -it`, injektionssäkert) | ✅ testad |
 | Kontoinloggning (OAuth2 + PKCE, Dropbox/Google Drive/OneDrive) | ✅ PKCE-kärna testad mot RFC 7636; alla tre `SyncProvider`-implementationer klara, kräver eget klient-ID (se README "Konton") |
 | iOS-app (host-lista, dashboard, Docker+shell, sync, import) | 🧩 `App/`, byggs i Xcode via XcodeGen |
