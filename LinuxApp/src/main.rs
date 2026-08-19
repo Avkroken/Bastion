@@ -39,6 +39,7 @@ mod test_support;
 mod ssh_config;
 mod sync;
 mod sync_crypto;
+mod sync_webdav;
 mod tailscale;
 mod telnet;
 mod terminal_theme;
@@ -2796,6 +2797,89 @@ fn show_settings_dialog(
         }
     ));
 
+    // WebDAV är ALTERNATIV till mappen, inte utöver: en synk har en källa.
+    // Därför en switch som döljer mapp-raden, snarare än två fält som båda
+    // kan vara ifyllda och lämna frågan om vilket som gäller obesvarad.
+    let webdav_row = adw::SwitchRow::builder()
+        .title("Synka mot WebDAV i stället för en mapp")
+        .subtitle("Nextcloud, ownCloud, Apache mod_dav, rclone serve webdav — självhostat utan att montera något")
+        .active(sync_config.borrow().webdav_url.is_some())
+        .build();
+    let webdav_url_row = adw::EntryRow::builder()
+        .title("URL till synkfilen")
+        .text(sync_config.borrow().webdav_url.clone().unwrap_or_default())
+        .visible(sync_config.borrow().webdav_url.is_some())
+        .build();
+    let webdav_user_row = adw::EntryRow::builder()
+        .title("Användarnamn")
+        .text(sync_config.borrow().webdav_username.clone().unwrap_or_default())
+        .visible(sync_config.borrow().webdav_url.is_some())
+        .build();
+    // Lösenordet sparas aldrig — samma regel som lösenfrasen, av samma
+    // skäl: sync-config.json är oskyddad JSON i hemkatalogen.
+    let webdav_password_row = adw::PasswordEntryRow::builder()
+        .title("Lösenord")
+        .visible(sync_config.borrow().webdav_url.is_some())
+        .build();
+
+    webdav_row.connect_active_notify(clone!(
+        #[weak]
+        webdav_url_row,
+        #[weak]
+        webdav_user_row,
+        #[weak]
+        webdav_password_row,
+        #[weak]
+        sync_folder_row,
+        #[weak]
+        encrypted_row,
+        #[strong]
+        sync_config,
+        move |row| {
+            let on = row.is_active();
+            webdav_url_row.set_visible(on);
+            webdav_user_row.set_visible(on);
+            webdav_password_row.set_visible(on);
+            // Mapp och kryptering hör till den andra transporten.
+            sync_folder_row.set_visible(!on);
+            encrypted_row.set_visible(!on);
+
+            let mut cfg = sync_config.borrow_mut();
+            if on {
+                cfg.webdav_url = Some(webdav_url_row.text().to_string());
+                cfg.webdav_username = Some(webdav_user_row.text().to_string());
+            } else {
+                cfg.webdav_url = None;
+                cfg.webdav_username = None;
+            }
+            if let Err(e) = cfg.save(&sync::SyncConfig::default_path()) {
+                eprintln!("kunde inte spara synkinställningen: {e}");
+            }
+        }
+    ));
+
+    // URL och användarnamn sparas löpande. Samma hanterare för båda,
+    // skild åt av en funktionspekare — två nästan identiska block hade
+    // drivit isär vid första ändringen.
+    type SaveField = fn(&mut sync::SyncConfig, String);
+    let webdav_fields: [(&adw::EntryRow, SaveField); 2] = [
+        (&webdav_url_row, |c, v| c.webdav_url = Some(v)),
+        (&webdav_user_row, |c, v| c.webdav_username = Some(v)),
+    ];
+    for (row, save) in webdav_fields {
+        row.connect_changed(clone!(
+            #[strong]
+            sync_config,
+            move |row| {
+                let mut cfg = sync_config.borrow_mut();
+                save(&mut cfg, row.text().to_string());
+                if let Err(e) = cfg.save(&sync::SyncConfig::default_path()) {
+                    eprintln!("kunde inte spara synkinställningen: {e}");
+                }
+            }
+        ));
+    }
+
     let sync_now_row = adw::ActionRow::builder()
         .title("Synka nu")
         .activatable(true)
@@ -2804,6 +2888,10 @@ fn show_settings_dialog(
     sync_now_row.add_suffix(&sync_status_label);
 
     let sync_group = adw::PreferencesGroup::builder().title("Synk").description("Delar host-databasen mellan enheter via en mapp som redan synkas av något annat (Syncthing, en klonad Git-mapp) — eller en krypterad fil i en molnmapp (Dropbox/Drive/OneDrive). Se SYNC_PROTOCOL.md.").build();
+    sync_group.add(&webdav_row);
+    sync_group.add(&webdav_url_row);
+    sync_group.add(&webdav_user_row);
+    sync_group.add(&webdav_password_row);
     sync_group.add(&sync_folder_row);
     sync_group.add(&encrypted_row);
     sync_group.add(&passphrase_row);
@@ -3164,7 +3252,21 @@ fn show_settings_dialog(
             // tillbaka till den riktiga butiken bara vid lyckat utfall.
             sync_status_label.set_text("Synkar…");
             sync_now_row.set_sensitive(false);
-            let rx = if encrypted {
+            let rx = if webdav_row.is_active() {
+                let url = webdav_url_row.text().to_string();
+                let username = webdav_user_row.text().to_string();
+                let password = webdav_password_row.text().to_string();
+                // Alla tre krävs. En tom URL hade gett ett nätverksfel som
+                // inte säger vad som saknas, och tomma uppgifter ett 401.
+                if url.is_empty() || username.is_empty() || password.is_empty() {
+                    sync_status_label.set_text("Fyll i URL, användarnamn och lösenord");
+                    sync_now_row.set_sensitive(true);
+                    return;
+                }
+                spawn_background_sync_webdav(sync_webdav::WebDavSyncProvider::new(
+                    url, username, password,
+                ))
+            } else if encrypted {
                 let passphrase = passphrase_row.text().to_string();
                 if passphrase.is_empty() {
                     sync_status_label.set_text("Ange en lösenfras först");
@@ -3739,6 +3841,16 @@ fn split_focused_pane(area: &Rc<SessionArea>, orientation: gtk::Orientation) {
     };
     let target = SessionTarget::Split { pane, orientation };
 
+    reopen_pane_source(area, source, target);
+}
+
+/// Öppnar en session mot samma sak som en befintlig ruta pekar på.
+///
+/// Utbruten ur `split_focused_pane` när återanslutning tillkom: båda gör
+/// exakt samma sak (ta reda på vad rutan var kopplad till och öppna en till
+/// mot samma), bara med olika `target`. Att duplicera den skulle betyda två
+/// ställen att komma ihåg lösenordsfrågan på.
+fn reopen_pane_source(area: &Rc<SessionArea>, source: PaneSource, target: SessionTarget) {
     match source {
         PaneSource::Ssh { host, jump } => {
             let jump = jump.map(|j| *j);
@@ -4042,6 +4154,9 @@ fn start_session(
         #[strong(rename_to = output)]
         session.output,
         async move {
+            // Sätts bara av `Disconnected`. Styr om `Closed` får riva rutan
+            // eller inte — se den grenen för varför skillnaden spelar roll.
+            let mut connection_lost = false;
             while let Ok(event) = output.recv().await {
                 match event {
                     SshEvent::Data(bytes) => terminal.feed(&bytes),
@@ -4057,14 +4172,63 @@ fn start_session(
                         }
                     }
                     SshEvent::Connected => {}
+                    SshEvent::Disconnected(msg) => {
+                        connection_lost = true;
+                        terminal.feed(
+                            format!("\r\n\x1b[33m[bastion] {msg}\x1b[0m\r\n").as_bytes(),
+                        );
+                        page.set_title(&format!("⚠ {}", page.title()));
+                        show_reconnect_toast(&area, &terminal);
+                    }
                     SshEvent::Closed => {
-                        close_session_pane(&area, &terminal, &page);
+                        // Ett rent avslut (`exit`, stängd flik) river rutan
+                        // som förut. En DÖD anslutning gör det inte: allt
+                        // användaren har kvar av sessionen är skrollbufferten,
+                        // och att kasta den i samma ögonblick som anslutningen
+                        // föll är att dölja precis det som behöver läsas.
+                        // Rutan stängs manuellt när man är klar med den.
+                        if !connection_lost {
+                            close_session_pane(&area, &terminal, &page);
+                        }
                         break;
                     }
                 }
             }
         }
     ));
+}
+
+/// Erbjuder en ny anslutning mot samma sak när den gamla dog.
+///
+/// Öppnar avsiktligt en NY session i stället för att återuppliva rutan:
+/// fjärrprocessen och dess tillstånd är borta när transporten faller
+/// (`cubic`-fyndet på PR #199), så allt annat vore att låtsas att en
+/// pågående shell överlevde. Den döda rutan blir kvar bredvid med sin
+/// skrollbuffert.
+///
+/// `set_timeout(0)` — en tappad anslutning ska inte glida förbi medan man
+/// tittar åt ett annat håll; toasten står kvar tills den avfärdas.
+fn show_reconnect_toast(area: &Rc<SessionArea>, terminal: &vte::Terminal) {
+    let toast = adw::Toast::new("Anslutningen bröts");
+    toast.set_button_label(Some("Återanslut"));
+    toast.set_timeout(0);
+    // Källan läses från DEN ruta som dog, inte från den som råkar ha fokus
+    // — i en delad vy är det sällan samma, och att återansluta till fel
+    // värd vore värre än att inte erbjuda det alls.
+    let Some(source) = pane_source(terminal) else {
+        // Utan känd källa går det inte att erbjuda en återanslutning —
+        // meddelandet är fortfarande värt att visa.
+        area.toasts.add_toast(toast);
+        return;
+    };
+    toast.connect_button_clicked(clone!(
+        #[strong]
+        area,
+        move |_| {
+            reopen_pane_source(&area, source.clone(), SessionTarget::NewTab);
+        }
+    ));
+    area.toasts.add_toast(toast);
 }
 
 /// Ansluter till en Telnet-värd (RFC 854, okrypterat, inget lösenord/
@@ -8878,6 +9042,21 @@ fn open_key_deploy_view(
 /// anropsställen gör en abstraktion här till för tidig.
 fn spawn_background_sync_plain(
     provider: sync::FolderSyncProvider,
+) -> async_channel::Receiver<Result<(), String>> {
+    let (tx, rx) = async_channel::bounded(1);
+    std::thread::spawn(move || {
+        let result = (|| -> std::io::Result<()> {
+            let mut store = host::HostStore::open(host::HostStore::default_path())?;
+            store.sync(&provider)
+        })();
+        let _ = tx.send_blocking(result.map_err(|e| e.to_string()));
+    });
+    rx
+}
+
+/// Samma mönster som `spawn_background_sync_plain`, för WebDAV-transporten.
+fn spawn_background_sync_webdav(
+    provider: sync_webdav::WebDavSyncProvider,
 ) -> async_channel::Receiver<Result<(), String>> {
     let (tx, rx) = async_channel::bounded(1);
     std::thread::spawn(move || {

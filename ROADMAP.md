@@ -2723,9 +2723,36 @@ Inget nytt att bygga, bara verifiera/lansera:
     samma PR. 3 nya tester mot en riktig `LoopbackServer` (periodiska
     sändningar sker, `stopKeepAlive` stoppar dem faktiskt, `resize()`
     uppdaterar storleken keep-alive återanvänder).
-    **Täcker bara "håll NAT-mappningen varm"** — dead-connection-
-    detektering och återanslutning (nedan) är fortfarande inte
-    påbörjade.
+    **Täcker bara "håll NAT-mappningen varm"** på Swift-sidan —
+    dead-connection-detektering och återanslutning saknades där helt.
+  - **Död-detektering + återanslutning, LinuxApp (Rust)**: ✅ klart
+    (2026-08-19, `LinuxApp/src/ssh.rs` + `main.rs`). LinuxApp hade
+    ingenting av det här — varken keep-alive eller död-detektering
+    (kontrollerat: noll träffar på `keep_alive`/`reconnect` i hela
+    `LinuxApp/src/`). russh har BÅDA inbyggda men AVSTÄNGDA som standard
+    (`keepalive_interval: None`); en delad `client_config()` slår på dem
+    för samtliga anslutningsvägar (direkt, jump-host, engångskommandon,
+    portvidarebefordran) med 30 s × 3 ≈ två minuter innan en tyst död
+    anslutning rapporteras.
+    Nytt `SshEvent::Disconnected`, skilt från `Closed`: `classify_session_end`
+    avgör om kanalen tog slut för att fjärrshellen avslutades (exit-status
+    sedd), för att användaren stängde rutan, eller utan förklaring — bara
+    det sista är en förlorad anslutning. Tidigare stängdes rutan i alla tre
+    fallen, alltså försvann terminalen OCH skrollbufferten utan ett ord när
+    en server dog. Nu blir rutan kvar med en gul förklaringsrad, fliken får
+    ⚠ i titeln, och en toast (utan timeout) erbjuder "Återanslut" — som
+    öppnar en NY session mot samma värd, aldrig ett låtsat återupptagande
+    av den gamla (`cubic`-fyndet på PR #199: fjärrprocessens tillstånd är
+    borta när transporten faller).
+    **Bevisat, inte antaget**: ett test startar en riktig sshd bakom en
+    egen TCP-relä, svarthålar reläet mitt i en levande session (slutar
+    flytta bytes men håller socketarna ÖPPNA — det TCP självt aldrig
+    upptäcker) och kräver att anslutningen dör. Kontrollen i samma test
+    är poängen: exakt samma svarthålning med russh:s standardkonfiguration
+    märks INTE, vilket är det enda sättet att skilja "keepalive upptäckte
+    det" från "något annat rev anslutningen ändå".
+    **Kvar**: samma sak i SSHCore/App/ (Swift), samt nätverksbytes- och
+    uppvakningsdetektering på alla plattformar.
   - **WiFi ↔ mobildata-byte** — TCP-anslutningen dör vid nätverksbyte
     (annat interface = ny anslutning krävs). Kräver `NWPathMonitor`
     (Apple) eller motsvarande för att upptäcka bytet.
@@ -3033,7 +3060,28 @@ Inget nytt att bygga, bara verifiera/lansera:
   fel visar GDK ett fel i dialogen — ingen återgång till editorn, eftersom
   binärt innehåll i en textbuffert är sämre än ett tydligt felmeddelande.
 - Inbyggd editor med syntax highlighting
-- Plugin-system (Proxmox, TrueNAS, Unraid, Cloudflare, GitHub, Kubernetes)
+- **Plugin-system** (Proxmox, TrueNAS, Unraid, Cloudflare, GitHub,
+  Kubernetes): ✅ KLART 2026-08-18 — alla sju integrationerna finns i
+  `LinuxApp/integrations` som eget paket (VISION:s "alla plugins separata
+  paket"), med portering till `Sources/SSHCore/*Service.swift`.
+
+  Abstraktionen extraherades EFTER två integrationer och prövades med en
+  tredje: `refresh_integration_list` behövde inte ändras för Proxmox —
+  352 rader tillagda, 0 borttagna. Radbyggarna slogs medvetet INTE ihop
+  (126 mot 187 rader, olika begrepp: ta bort en volym mot ersätta en
+  podd).
+
+  Varje integration äger sin egen valideringsregel, och de skiljer sig
+  på riktigt: Docker tillåter versaler och punkter, Kubernetes bara RFC
+  1123-etiketter, Proxmox bara heltal från 100, TrueNAS behöver `/` för
+  datasetsökvägar. Ett test per modul visar skillnaden så ingen slår
+  ihop dem.
+
+  Inte verifierat: ingen integration är körd mot sin riktiga tjänst —
+  ingen dockerd, inget kluster, ingen Proxmox-nod, ingen TrueNAS finns i
+  utvecklingsmiljön. Kommandobyggare och parsning är testade mot
+  dokumenterade utdataformat, inklusive kantfall (`Ready,Scheduling
+  Disabled`, `<none>`-taggade images, `pct list` med tom `Lock`-kolumn).
 - **Agent Forwarding**: ✅ agent-PROTOKOLLKLIENTEN klar (2026-07-07,
   `SSHAgentClient.swift`) — lista identiteter + begära signaturer från en
   KÖRANDE, LOKAL `ssh-agent` över `$SSH_AUTH_SOCK` (Unix-socket via NIO:s
@@ -3073,9 +3121,38 @@ Inget nytt att bygga, bara verifiera/lansera:
   separat Unix-socket-rundtur via `SSHAgentClient`) — det finns ingen väg
   att koppla in det utan att patcha swift-nio-ssh självt. PKCS11, YubiKey,
   Passkeys drabbas av samma begränsning (alla kräver en extern/asynkron
-  signerare). `secureEnclaveP256Key`-fallet visar att biblioteket
-  KONCEPTUELLT stödjer "nyckelmaterialet lämnar aldrig sin källa" — bara
-  hårdkodat till just Apples Secure Enclave-API, inte generellt.
+  signerare).
+
+  **Tre rättelser 2026-08-18, alla kontrollerade mot källan — den här
+  posten var för svepande och stoppade arbete som gick att göra:**
+
+  1. **Secure Enclave är INTE blockerat.** Posten ovan beskrev
+     `.secureEnclaveP256` som "konceptuellt stöd, hårdkodat" — men
+     `NIOSSHPrivateKey(secureEnclaveP256Key:)` är en PUBLIK initierare
+     (swift-nio-ssh 0.15.0, `NIOSSHPrivateKey.swift` rad 56, bakom
+     `#if canImport(Darwin)`). Den går alltså att anropa utifrån.
+     Implementerat i `Sources/SSHCore/SecureEnclaveKey.swift` +
+     `SSHAuth.secureEnclave`.
+  2. **YubiKey och FIDO2 fungerar redan på Linux.** Begränsningen gäller
+     NIOSSH, inte russh: `russh 0.62.6` listar `SkEd25519` och
+     `SkEcdsaSha2NistP256` bland stödda algoritmer (`keys/key.rs` rad
+     112–124), och `ssh::authenticate`s agent-väg släpper igenom varje
+     icke-RSA-nyckel. Ingen ny kod behövdes — det som saknades var
+     diagnostiken när token inte rördes vid, nu åtgärdad.
+  3. **Agent forwarding var också en NIOSSH-begränsning, inte en
+     generell.** Byggd på Linux med russh (se "Klart").
+
+  Vad som FORTFARANDE är blockerat, och det är verifierat och inte ärvt:
+  PKCS11, externa smartkort och passkeys på Apple-sidan.
+  `NIOSSHUserAuthenticationOffer.Offer.privateKey` tar bara en
+  `NIOSSHPrivateKey`, och det finns ingen protokollbaserad signerare
+  någonstans i biblioteket (`grep "public protocol"` ger fem protokoll,
+  inget för signering). Enda vägen är en fork av swift-nio-ssh.
+
+  **Läxan värd att ta med:** en blockering som skrivs ner utan att
+  avgränsas växer. Den här posten hindrade tre saker som inte var
+  blockerade, i över en månad. Skriv vilket BIBLIOTEK och vilken
+  PLATTFORM begränsningen gäller, inte bara vilken funktion.
 - **OpenSSH-certifikatautentisering** (nytt, 2026-07-05) — stöd för
   `ssh-keygen`-signerade/externt utfärdade SSH-certifikat som en egen
   `HostAuth`-variant, inte bara rå nyckel. De stora molnleverantörerna har

@@ -116,4 +116,16 @@ public enum CloudflareService {
         let version = lines.first { $0.contains("cloudflared") }
         return (state, version)
     }
+
+    // MARK: - Körning över SSH
+
+    public static func tunnels(over session: SSHSession) async throws -> [CloudflareTunnel] {
+        parseTunnels(try await session.run(tunnelsCommand()))
+    }
+
+    public static func serviceStatus(
+        over session: SSHSession
+    ) async throws -> (state: String, version: String?) {
+        parseServiceStatus(try await session.run(serviceStatusCommand()))
+    }
 }

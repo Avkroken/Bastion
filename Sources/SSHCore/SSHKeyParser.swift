@@ -1,7 +1,10 @@
 import Crypto
 import Foundation
 
-public enum SSHKeyError: Error, Sendable {
+// `Equatable` så tester (och anropare) kan jämföra ett fel direkt mot
+// det förväntade fallet i stället för att mönstermatcha varje gång.
+// Alla nyttolaster är `String`, så konformansen härleds.
+public enum SSHKeyError: Error, Sendable, Equatable {
     case notOpenSSHFormat
     case unsupportedKeyType(String)
     case encrypted          // lösenfras-skyddad — stöds inte än
@@ -12,9 +15,16 @@ public enum SSHKeyError: Error, Sendable {
 }
 
 /// Läser en privatnyckel i OpenSSH-format med standardens PEM-hölje,
-/// den standard `ssh-keygen` skapar. Stöder okrypterade Ed25519-nycklar och
-/// returnerar auth-metoden direkt. Krypterade nycklar (lösenfras) samt RSA/ECDSA
-/// är nästa steg — vi kastar tydligt fel i stället för att gissa.
+/// den standard `ssh-keygen` skapar, och returnerar auth-metoden direkt.
+///
+/// Stöder okrypterade Ed25519- OCH ECDSA-nycklar (P256/P384/P521).
+/// Krypterade nycklar (lösenfras) samt RSA kastar tydligt fel i stället
+/// för att gissa — se ROADMAP.md "Uppskjutet med avsikt".
+///
+/// (Den här kommentaren sa länge att ECDSA var "nästa steg" långt efter
+/// att stödet fanns i `switch`-satsen nedan. Ett test skrevs mot
+/// kommentaren i stället för mot koden och föll direkt — därför den här
+/// anteckningen: håll listan här i takt med fallen nedan.)
 public enum OpenSSHPrivateKey {
     private static let pemLabel = ["OPENSSH", "PRIVATE", "KEY"].joined(separator: " ")
 

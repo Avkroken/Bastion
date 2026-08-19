@@ -42,7 +42,59 @@ pub enum SshEvent {
     Connected,
     Data(Vec<u8>),
     Error(String),
+    /// Transporten dog under en session som var i gång — skilt från
+    /// `Closed`, som bara betyder "den här sessionen är slut" oavsett
+    /// anledning. Skillnaden syns för användaren: ett rent `exit` ska inte
+    /// säga något alls, medan en anslutning som försvinner är precis vad
+    /// man behöver få veta (annars stängs terminalen utan förklaring och
+    /// skrollbufferten följer med).
+    Disconnected(String),
     Closed,
+}
+
+/// Hur en shell-session tog slut. Utbruten som en egen funktion i stället
+/// för tre `if`-satser inne i `run()` för att den ska gå att testa: det är
+/// KLASSIFICERINGEN som är lätt att få fel, inte select-loopen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionEnd {
+    /// Fjärrshellen avslutade sig själv (`exit`, `logout`, en dödad
+    /// process). Normalt, inget att rapportera.
+    RemoteExited,
+    /// UI-sidan stängde rutan/fliken. Också normalt.
+    ClosedLocally,
+    /// Varken det ena eller det andra — kanalen tog slut utan att
+    /// fjärrsidan sa varför, eller så gick en skrivning inte igenom.
+    /// Det här är fallet som saknade all hantering: anslutningen var
+    /// borta och ingen fick veta det.
+    ConnectionLost,
+}
+
+/// Lokal stängning väger tyngst: stänger användaren fliken spelar det
+/// ingen roll vad fjärrsidan hann säga, det är fortfarande ett avsiktligt
+/// avslut och inget att larma om.
+pub fn classify_session_end(saw_exit_status: bool, closed_locally: bool) -> SessionEnd {
+    if closed_locally {
+        SessionEnd::ClosedLocally
+    } else if saw_exit_status {
+        SessionEnd::RemoteExited
+    } else {
+        SessionEnd::ConnectionLost
+    }
+}
+
+/// Texten användaren ser när anslutningen dör. Formulerad efter det
+/// `cubic` påpekade på PR #199: en ny TCP-anslutning kan INTE ersätta den
+/// gamla transparent — fjärrprocessen och dess tillstånd är borta — så
+/// texten lovar inte att något återupptas, den säger att sessionen är
+/// slut och att en ny måste öppnas.
+pub fn connection_lost_message() -> String {
+    format!(
+        "Anslutningen bröts oväntat — servern slutade svara eller nätet försvann. \
+         Den shell som kördes är borta och går inte att återuppta där den slutade; \
+         en återanslutning startar en ny session. \
+         (Upptäckt efter {} sekunder utan svar.)",
+        KEEPALIVE_INTERVAL.as_secs() * (KEEPALIVE_MAX as u64 + 1)
+    )
 }
 
 pub struct SshSession {
@@ -242,6 +294,38 @@ pub fn spawn_shell(
     }
 }
 
+/// Hur ofta en TYST anslutning ska pinga servern. russh skickar en
+/// SSH-keepalive först när ingenting hörts på så här länge, så en session
+/// där det faktiskt flödar data betalar ingenting för det här.
+///
+/// 30 sekunder ligger under de idle-timeouts som är vanliga i NAT-tabeller
+/// och hos brandväggar (ofta 60 s eller mer) — hela poängen är att en
+/// session man lämnar öppen i en annan flik inte ska vara tyst död när man
+/// kommer tillbaka.
+const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Hur många obesvarade keepalives som får gå innan anslutningen förklaras
+/// död. Det här är DÖD-DETEKTERINGEN, som saknades helt: utan den märker
+/// klienten aldrig att en server försvann utan att stänga TCP-anslutningen
+/// rent (strömavbrott, tappat nät, en brandvägg som glömde flödet) — den
+/// bara sitter och väntar för alltid.
+///
+/// 3 × 30 s ≈ två minuter innan en död anslutning rapporteras. Lägre vore
+/// snabbare men skulle döda sessioner i onödan på riktigt dåliga nät.
+const KEEPALIVE_MAX: usize = 3;
+
+/// russh har både keepalive och död-detektering inbyggt, men AVSTÄNGT som
+/// standard (`keepalive_interval: None`). Den här funktionen finns för att
+/// ingen anslutningsväg ska kunna glömma att slå på dem — direkt, genom
+/// jump-host, engångskommandon och portvidarebefordran delar alla på den.
+fn client_config() -> Arc<client::Config> {
+    Arc::new(client::Config {
+        keepalive_interval: Some(KEEPALIVE_INTERVAL),
+        keepalive_max: KEEPALIVE_MAX,
+        ..client::Config::default()
+    })
+}
+
 /// Hur länge `client::connect` (TCP + SSH-handskakning) får ta innan den
 /// ges upp — utan detta kan en obesvarad/svarthålsad värd blockera hela
 /// bakgrundstråden (och därmed den väntande UI-kanalen) på obestämd tid.
@@ -333,7 +417,7 @@ async fn connect_direct(
     host: &Host,
     handler: ClientHandler,
 ) -> Result<Handle<ClientHandler>, String> {
-    let config = Arc::new(client::Config::default());
+    let config = client_config();
     let addr = (host.host_name.as_str(), host.port as u16);
     tokio::time::timeout(CONNECT_TIMEOUT, client::connect(config, addr, handler))
         .await
@@ -411,7 +495,7 @@ async fn connect_via_jump(
         })?;
     let stream = channel.into_stream();
 
-    let config = Arc::new(client::Config::default());
+    let config = client_config();
     let target_session = tokio::time::timeout(
         CONNECT_TIMEOUT,
         client::connect_stream(config, stream, target_handler),
@@ -598,30 +682,54 @@ async fn run(
 
     let _ = output_tx.send(SshEvent::Connected).await;
 
+    // Två flaggor, inte en: `break` ensamt säger bara ATT loopen tog slut,
+    // aldrig varför — och det är just varför som avgör om användaren ska
+    // se något. Se `classify_session_end`.
+    let mut saw_exit_status = false;
+    let mut closed_locally = false;
     loop {
         tokio::select! {
             incoming = input_rx.recv() => {
                 match incoming {
                     Ok(bytes) => {
+                        // En skrivning som inte går igenom betyder att
+                        // transporten är borta — INTE ett rent avslut.
                         if channel.data(&bytes[..]).await.is_err() {
                             break;
                         }
                     }
-                    Err(_) => break, // UI-sidan stängde input-kanalen
+                    Err(_) => {
+                        closed_locally = true; // UI-sidan stängde input-kanalen
+                        break;
+                    }
                 }
             }
             msg = channel.wait() => {
                 match msg {
                     Some(ChannelMsg::Data { data }) => {
                         if output_tx.send(SshEvent::Data(data.to_vec())).await.is_err() {
+                            closed_locally = true; // ingen lyssnar längre
                             break;
                         }
                     }
-                    Some(ChannelMsg::ExitStatus { .. }) | None => break,
+                    Some(ChannelMsg::ExitStatus { .. }) => {
+                        saw_exit_status = true;
+                        break;
+                    }
+                    // Kanalen tog slut utan att fjärrsidan sa varför. Det
+                    // är så en död anslutning ser ut härifrån — russh
+                    // river sessionen när keepalives slutar besvaras.
+                    None => break,
                     _ => {}
                 }
             }
         }
+    }
+
+    if classify_session_end(saw_exit_status, closed_locally) == SessionEnd::ConnectionLost {
+        let _ = output_tx
+            .send(SshEvent::Disconnected(connection_lost_message()))
+            .await;
     }
     Ok(())
 }
@@ -637,6 +745,51 @@ pub const RSA_DISABLED_PREFIX: &str = "RSA-nycklar är tillfälligt inaktiverade
 
 /// Felet som varje RSA-väg returnerar. Formuleras på ett ställe så att
 /// nyckelfil, certifikat och ssh-agent säger exakt samma sak.
+/// Vad agent-autentiseringen faktiskt stötte på, när ingen nyckel gick
+/// igenom.
+///
+/// Ren funktion och egen typ av ett skäl: den gamla koden avgjorde det
+/// här i en villkorskedja mitt i en async-loop, där det varken gick att
+/// testa eller att utöka utan att läsa hela loopen. Nu är beslutet en
+/// tabell.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AgentAttempt {
+    /// Nycklar som faktiskt provades mot servern.
+    pub considered: usize,
+    /// RSA-nycklar som hoppades över (RUSTSEC-2023-0071).
+    pub skipped_rsa: usize,
+    /// Säkerhetsnycklar (FIDO2/YubiKey, `sk-ssh-ed25519` och
+    /// `sk-ecdsa-sha2-nistp256`) bland de provade.
+    pub security_keys: usize,
+}
+
+/// Felmeddelandet när ingen identitet i agenten dög.
+///
+/// Tre olika situationer som ser likadana ut för användaren men kräver
+/// helt olika saker:
+///
+/// 1. Bara RSA fanns — stödet är avstängt, byt nyckeltyp.
+/// 2. En säkerhetsnyckel provades — den kräver en FYSISK BERÖRING, och
+///    utan den timeoutar signeringen. Det ser ut som att servern nekade,
+///    men ingen har nekat något: token väntade på ett finger.
+/// 3. Vanliga nycklar provades och servern sa nej — det är ett riktigt
+///    auth-fel.
+///
+/// Fall 2 är det som annars är omöjligt att gissa sig till. En YubiKey
+/// blinkar tyst i en USB-port, ofta bakom datorn.
+pub fn agent_failure_message(attempt: AgentAttempt) -> String {
+    if attempt.considered == 0 && attempt.skipped_rsa > 0 {
+        return rsa_disabled_error();
+    }
+    if attempt.security_keys > 0 {
+        let plural = if attempt.security_keys == 1 { "en säkerhetsnyckel" } else { "säkerhetsnycklar" };
+        return format!(
+            "servern avvisade autentiseringen. Agenten hade {plural} (FIDO2/YubiKey),              och en sådan måste RÖRAS VID för att signera — sitter den i en port du              inte ser kan den ha väntat på ett finger tills försöket gav upp.              Kontrollera att den blinkar och försök igen."
+        );
+    }
+    "servern avvisade autentiseringen".to_string()
+}
+
 fn rsa_disabled_error() -> String {
     format!(
         "{RSA_DISABLED_PREFIX}. Stödet är avstängt tills RUSTSEC-2023-0071 \
@@ -693,6 +846,7 @@ async fn authenticate(
             // det intetsägande "servern avvisade autentiseringen".
             let mut skipped_rsa = 0usize;
             let mut considered = 0usize;
+            let mut security_keys = 0usize;
             for identity in identities {
                 // `request_identities` ger nu `AgentIdentity` (nyckel +
                 // kommentar, eller ett certifikat). Bara rena publika
@@ -708,6 +862,17 @@ async fn authenticate(
                     continue;
                 }
                 considered += 1;
+                // `sk-`-algoritmerna är FIDO2/säkerhetsnycklar. russh
+                // stöder dem (`SkEd25519`, `SkEcdsaSha2NistP256`), och de
+                // går genom agenten precis som andra nycklar — men de
+                // kräver en fysisk beröring, vilket ingen annan nyckeltyp
+                // gör. Räknas för att felmeddelandet ska kunna säga det.
+                if matches!(
+                    key.algorithm(),
+                    russh::keys::Algorithm::SkEd25519 | russh::keys::Algorithm::SkEcdsaSha2NistP256
+                ) {
+                    security_keys += 1;
+                }
                 let result = session
                     .authenticate_publickey_with(&host.user, key, None, &mut agent)
                     .await;
@@ -716,8 +881,12 @@ async fn authenticate(
                     break;
                 }
             }
-            if !succeeded && considered == 0 && skipped_rsa > 0 {
-                return Err(rsa_disabled_error());
+            if !succeeded {
+                return Err(agent_failure_message(AgentAttempt {
+                    considered,
+                    skipped_rsa,
+                    security_keys,
+                }));
             }
             succeeded
         }
@@ -819,6 +988,60 @@ mod tests {
     use crate::host::Host;
     use std::time::Duration;
 
+    /// Tre situationer som ser likadana ut för användaren men kräver
+    /// helt olika saker. Den mellersta är den som annars är omöjlig att
+    /// gissa sig till: en YubiKey blinkar tyst i en port bakom datorn.
+    #[test]
+    fn agent_failure_tells_the_three_situations_apart() {
+        // Bara RSA fanns — inget provades.
+        let only_rsa = agent_failure_message(AgentAttempt {
+            considered: 0,
+            skipped_rsa: 2,
+            security_keys: 0,
+        });
+        assert!(only_rsa.starts_with(RSA_DISABLED_PREFIX), "{only_rsa}");
+
+        // En säkerhetsnyckel provades — kan ha väntat på en beröring.
+        let sk = agent_failure_message(AgentAttempt {
+            considered: 1,
+            skipped_rsa: 0,
+            security_keys: 1,
+        });
+        assert!(sk.contains("RÖRAS VID"), "{sk}");
+        assert!(sk.contains("en säkerhetsnyckel"), "singular när det är en: {sk}");
+
+        let many = agent_failure_message(AgentAttempt {
+            considered: 3,
+            skipped_rsa: 0,
+            security_keys: 2,
+        });
+        assert!(many.contains("säkerhetsnycklar"), "plural när det är flera: {many}");
+
+        // Vanliga nycklar, servern sa nej. Inget mer att tillägga.
+        let plain = agent_failure_message(AgentAttempt {
+            considered: 2,
+            skipped_rsa: 0,
+            security_keys: 0,
+        });
+        assert_eq!(plain, "servern avvisade autentiseringen");
+        assert!(!plain.contains(RSA_DISABLED_PREFIX));
+    }
+
+    /// RSA-fallet gäller bara när INGET annat provades. Fanns det en
+    /// användbar nyckel också är det servern som nekat, inte
+    /// RSA-avstängningen — och då hade RSA-texten pekat användaren åt
+    /// fel håll.
+    #[test]
+    fn rsa_message_only_when_nothing_else_was_tried() {
+        let mixed = agent_failure_message(AgentAttempt {
+            considered: 1,
+            skipped_rsa: 3,
+            security_keys: 0,
+        });
+        assert!(!mixed.starts_with(RSA_DISABLED_PREFIX), "{mixed}");
+        assert_eq!(mixed, "servern avvisade autentiseringen");
+    }
+
     /// `main.rs` känner igen RSA-felet på `RSA_DISABLED_PREFIX` för att
     /// kunna visa dialogen med den klickbara länken. Formuleras meddelandet
     /// om utan att prefixet står först försvinner dialogen tyst och
@@ -846,6 +1069,7 @@ mod tests {
                 Ok(SshEvent::Data(_)) => return Ok(()),
                 Ok(SshEvent::Error(e)) => return Err(e),
                 Ok(SshEvent::Closed) => return Err("stängdes utan data eller fel".into()),
+                Ok(SshEvent::Disconnected(msg)) => return Err(msg),
                 Ok(SshEvent::Connected) => continue,
                 Err(_) => return Err("output-kanalen stängdes oväntat".into()),
             }
@@ -1509,4 +1733,240 @@ mod tests {
         );
     }
 
+
+    /// En TCP-relä som går att SVARTHÅLA: den slutar flytta bytes åt båda
+    /// håll men håller båda socketarna ÖPPNA. Det är precis vad ett tappat
+    /// nät gör, och exakt det fall TCP inte upptäcker av sig självt — utan
+    /// keepalive sitter klienten och väntar för alltid. Att i stället
+    /// stänga socketarna vore ett helt annat (och redan hanterat) fall:
+    /// då kommer ett RST/FIN och russh märker det direkt.
+    ///
+    /// Returnerar porten reläet lyssnar på plus flaggan som svarthålar den.
+    fn spawn_blackhole_relay(target_port: u16) -> Option<(u16, Arc<std::sync::atomic::AtomicBool>)> {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let port = crate::test_support::reserve_port()?;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", port)).ok()?;
+        let blackhole = Arc::new(AtomicBool::new(false));
+
+        let flag = blackhole.clone();
+        std::thread::spawn(move || {
+            let Ok((client, _)) = listener.accept() else {
+                return;
+            };
+            let Ok(server) = std::net::TcpStream::connect(("127.0.0.1", target_port)) else {
+                return;
+            };
+            // Kort lästimeout så pumparna hinner reagera på flaggan i
+            // stället för att blockera i en read som aldrig återkommer.
+            let _ = client.set_read_timeout(Some(Duration::from_millis(100)));
+            let _ = server.set_read_timeout(Some(Duration::from_millis(100)));
+
+            let pairs = [
+                (client.try_clone(), server.try_clone()),
+                (server.try_clone(), client.try_clone()),
+            ];
+            let mut handles = Vec::new();
+            for (src, dst) in pairs {
+                let (Ok(mut src), Ok(mut dst)) = (src, dst) else {
+                    return;
+                };
+                let flag = flag.clone();
+                handles.push(std::thread::spawn(move || {
+                    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+                    let mut buf = [0u8; 8192];
+                    while std::time::Instant::now() < deadline {
+                        if flag.load(Ordering::Relaxed) {
+                            // Håll socketarna vid liv utan att flytta något.
+                            // Att returnera här skulle droppa dem, alltså
+                            // stänga anslutningen rent — motsatsen till målet.
+                            std::thread::sleep(Duration::from_millis(50));
+                            continue;
+                        }
+                        match src.read(&mut buf) {
+                            Ok(0) => return,
+                            Ok(n) => {
+                                if dst.write_all(&buf[..n]).is_err() {
+                                    return;
+                                }
+                            }
+                            Err(e)
+                                if matches!(
+                                    e.kind(),
+                                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                                ) => {}
+                            Err(_) => return,
+                        }
+                    }
+                }));
+            }
+            for handle in handles {
+                let _ = handle.join();
+            }
+        });
+
+        Some((port, blackhole))
+    }
+
+    /// Bevisar att keepalive-konfigurationen faktiskt UPPTÄCKER en död
+    /// anslutning — inte bara att fälten är satta.
+    ///
+    /// Uppställningen är en riktig sshd bakom en relä som svarthålas mitt
+    /// i en levande session. Kontrollen i samma test är själva poängen:
+    /// EXAKT samma svarthålning med `Config::default()` (russh:s standard,
+    /// alltså keepalive AVSTÄNGT) lämnar klienten hängande. Utan den
+    /// jämförelsen skulle testet inte kunna skilja "keepalive upptäckte
+    /// det" från "något annat rev anslutningen ändå".
+    ///
+    /// Snabba konstanter (1 s × 1) i stället för produktionens 30 s × 3 —
+    /// samma mekanism i russh, bara en tidsskala som ryms i en testsvit.
+    #[tokio::test]
+    async fn a_blackholed_connection_is_detected_with_keepalive_and_not_without() {
+        let Some(sshd) = TestSshd::start() else {
+            eprintln!("hoppar: kunde inte starta en test-sshd i den här miljön");
+            return;
+        };
+
+        /// Ansluter genom en egen relä, svarthålar den och svarar på om
+        /// anslutningen dog inom fönstret.
+        async fn dies_within(
+            sshd: &TestSshd,
+            keepalive: Option<Duration>,
+            window: Duration,
+        ) -> Option<bool> {
+            let (relay_port, blackhole) = spawn_blackhole_relay(sshd.port)?;
+            let mut host = host_for(sshd, "keepalive");
+            host.port = relay_port as i64;
+
+            let config = Arc::new(client::Config {
+                keepalive_interval: keepalive,
+                keepalive_max: 1,
+                ..client::Config::default()
+            });
+            let handler = ClientHandler {
+                host: host.host_name.clone(),
+                port: relay_port,
+                known_hosts: Arc::new(
+                    KnownHosts::open(Some(crate::test_support::known_hosts_path())).ok()?,
+                ),
+                remote_forwards: RemoteForwards::default(),
+            };
+            let mut session =
+                client::connect(config, ("127.0.0.1", relay_port), handler).await.ok()?;
+            authenticate(&mut session, &host, None).await.ok()?;
+
+            // Sessionen ska bevisligen LEVA innan vi river nätet under den,
+            // annars mäter testet bara en anslutning som aldrig kom upp.
+            let alive = run_command_on_session(&session, "echo levande", false).await.ok()?;
+            assert_eq!(alive.trim(), "levande");
+
+            let mut channel = session.channel_open_session().await.ok()?;
+            channel.request_pty(false, "xterm-256color", 80, 24, 0, 0, &[]).await.ok()?;
+            channel.request_shell(true).await.ok()?;
+
+            blackhole.store(true, std::sync::atomic::Ordering::Relaxed);
+
+            // Kanalen tar slut när russh river sessionen. Timeout = den
+            // överlevde fönstret.
+            Some(
+                tokio::time::timeout(window, async {
+                    while channel.wait().await.is_some() {}
+                })
+                .await
+                .is_ok(),
+            )
+        }
+
+        let window = Duration::from_secs(15);
+        let Some(with_keepalive) = dies_within(&sshd, Some(Duration::from_secs(1)), window).await
+        else {
+            eprintln!("hoppar: kunde inte sätta upp reläet i den här miljön");
+            return;
+        };
+        assert!(
+            with_keepalive,
+            "med keepalive PÅ ska en svarthålad anslutning upptäckas — \
+             det är hela död-detekteringen"
+        );
+
+        let Some(without_keepalive) = dies_within(&sshd, None, Duration::from_secs(6)).await else {
+            eprintln!("hoppar: kunde inte sätta upp reläet i den här miljön");
+            return;
+        };
+        assert!(
+            !without_keepalive,
+            "utan keepalive ska samma svarthålning INTE märkas — gör den det \
+             är det något annat än keepalive som river anslutningen, och då \
+             bevisar testet ovan ingenting"
+        );
+    }
+
+    /// Kärnan i död-detekteringen. Att kanalen tar slut säger ingenting i
+    /// sig — det gör den vid ett rent `exit` också. Det som skiljer är om
+    /// fjärrsidan hann säga varför, och om det var vi själva som stängde.
+    /// Får den här klassificeringen fel svar syns det på två sätt, båda
+    /// illa: antingen larmar appen om en död anslutning varje gång någon
+    /// skriver `exit`, eller så försvinner en riktig anslutningsförlust
+    /// tyst tillsammans med terminalfönstret.
+    #[test]
+    fn only_an_end_without_explanation_counts_as_a_lost_connection() {
+        assert_eq!(
+            classify_session_end(false, false),
+            SessionEnd::ConnectionLost,
+            "kanalen tog slut utan exit-status och utan att vi stängde — anslutningen dog"
+        );
+        assert_eq!(
+            classify_session_end(true, false),
+            SessionEnd::RemoteExited,
+            "fjärrsidan skickade exit-status, alltså ett rent avslut"
+        );
+        assert_eq!(
+            classify_session_end(false, true),
+            SessionEnd::ClosedLocally,
+            "vi stängde rutan själva"
+        );
+    }
+
+    /// Ett kapplöpningsfall som faktiskt inträffar: användaren stänger
+    /// fliken i samma ögonblick som fjärrshellen avslutas, så BÅDA
+    /// flaggorna är satta. Lokal stängning måste väga tyngst — annars
+    /// skulle en avsiktligt stängd flik kunna rapporteras som något
+    /// användaren behöver agera på.
+    #[test]
+    fn closing_locally_wins_over_whatever_the_remote_side_said() {
+        assert_eq!(classify_session_end(true, true), SessionEnd::ClosedLocally);
+    }
+
+    /// Meddelandet ska inte lova att sessionen återupptas — den kan inte
+    /// det (`cubic`-fyndet på PR #199: fjärrprocessens tillstånd är borta
+    /// när transporten faller). Och tiden som nämns måste följa av de
+    /// faktiska keepalive-konstanterna, inte vara en siffra som står kvar
+    /// när någon justerar dem.
+    #[test]
+    fn the_disconnect_message_states_a_real_timeout_and_promises_no_resume() {
+        let msg = connection_lost_message();
+        let expected_seconds = KEEPALIVE_INTERVAL.as_secs() * (KEEPALIVE_MAX as u64 + 1);
+        assert!(
+            msg.contains(&expected_seconds.to_string()),
+            "tiden ska härledas ur konstanterna, fick: {msg}"
+        );
+        assert!(msg.contains("går inte att återuppta"), "fick: {msg}");
+    }
+
+    /// Hela poängen med `client_config`: russh har keepalive OCH
+    /// död-detektering inbyggt men AVSTÄNGT som standard. Faller den här
+    /// tillbaka på `Config::default()` är båda borta igen utan att något
+    /// annat test märker det.
+    #[test]
+    fn the_shared_client_config_actually_turns_keepalive_on() {
+        let config = client_config();
+        assert_eq!(config.keepalive_interval, Some(KEEPALIVE_INTERVAL));
+        assert_eq!(config.keepalive_max, KEEPALIVE_MAX);
+        assert!(
+            client::Config::default().keepalive_interval.is_none(),
+            "om russh någon gång slår på det här som standard är den här funktionen \
+             överflödig — men just nu är den inte det, och det är varför den finns"
+        );
+    }
 }

@@ -139,4 +139,42 @@ public enum ProxmoxService {
             )
         }
     }
+
+    // MARK: - Körning över SSH
+
+    public static func vms(over session: SSHSession) async throws -> [ProxmoxGuest] {
+        parseVMs(try await session.run(vmsCommand()))
+    }
+
+    public static func containers(over session: SSHSession) async throws -> [ProxmoxGuest] {
+        parseContainers(try await session.run(containersCommand()))
+    }
+
+    public static func storage(over session: SSHSession) async throws -> [ProxmoxStorage] {
+        parseStorage(try await session.run(storageCommand()))
+    }
+
+    public static func start(
+        _ kind: ProxmoxGuestKind, _ vmid: String, over session: SSHSession
+    ) async throws {
+        _ = try await session.run(try startCommand(kind, vmid))
+    }
+
+    public static func shutdown(
+        _ kind: ProxmoxGuestKind, _ vmid: String, over session: SSHSession
+    ) async throws {
+        _ = try await session.run(try shutdownCommand(kind, vmid))
+    }
+
+    public static func stop(
+        _ kind: ProxmoxGuestKind, _ vmid: String, over session: SSHSession
+    ) async throws {
+        _ = try await session.run(try stopCommand(kind, vmid))
+    }
+
+    public static func config(
+        _ kind: ProxmoxGuestKind, _ vmid: String, over session: SSHSession
+    ) async throws -> String {
+        try await session.run(try configCommand(kind, vmid))
+    }
 }

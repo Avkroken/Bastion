@@ -162,6 +162,17 @@ pub struct SyncConfig {
     /// önskas, frasen matas in på nytt varje "Synka nu".
     #[serde(default)]
     pub encrypted: bool,
+    /// Full URL till synkfilen på en WebDAV-server, t.ex. en Nextcloud
+    /// eller `rclone serve webdav`. `None` betyder mapptransport.
+    ///
+    /// Alternativ till, inte utöver, mappen: en synk har en källa.
+    #[serde(default)]
+    pub webdav_url: Option<String>,
+    /// Användarnamnet på WebDAV-servern. LÖSENORDET sparas aldrig här —
+    /// samma regel som för lösenfrasen ovan, och av samma skäl: den här
+    /// filen är oskyddad JSON i hemkatalogen.
+    #[serde(default)]
+    pub webdav_username: Option<String>,
 }
 
 impl SyncConfig {
@@ -339,6 +350,8 @@ mod tests {
         let config = SyncConfig {
             folder_path: Some("/mnt/syncthing/bastion".into()),
             encrypted: false,
+            webdav_url: None,
+            webdav_username: None,
         };
         config.save(&path).unwrap();
 
@@ -347,6 +360,51 @@ mod tests {
             reloaded.folder_path.as_deref(),
             Some("/mnt/syncthing/bastion")
         );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// En config skriven av en ÄLDRE version saknar webdav-fälten helt.
+    /// `#[serde(default)]` ska göra det till None, inte till ett läsfel —
+    /// annars tappar en uppgradering användarens synkmapp.
+    #[test]
+    fn a_config_written_before_webdav_existed_still_loads() {
+        let dir = std::env::temp_dir().join(format!("bastion-syncconfig-old-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sync-config.json");
+        std::fs::write(&path, r#"{"folder_path":"/mnt/gammal","encrypted":true}"#).unwrap();
+
+        let loaded = SyncConfig::load(&path);
+        assert_eq!(loaded.folder_path.as_deref(), Some("/mnt/gammal"));
+        assert!(loaded.encrypted);
+        assert_eq!(loaded.webdav_url, None);
+        assert_eq!(loaded.webdav_username, None);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// WebDAV-uppgifterna ska överleva en tur till disk — men lösenordet
+    /// finns inte ens som fält, så det KAN inte råka sparas.
+    #[test]
+    fn webdav_settings_round_trip_but_there_is_no_password_field_at_all() {
+        let dir = std::env::temp_dir().join(format!("bastion-syncconfig-dav-{}", Uuid::new_v4()));
+        let path = dir.join("sync-config.json");
+        let config = SyncConfig {
+            folder_path: None,
+            encrypted: false,
+            webdav_url: Some("https://moln.example/dav/bastion.json".into()),
+            webdav_username: Some("anders".into()),
+        };
+        config.save(&path).unwrap();
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("password"), "lösenordet får aldrig nå disk: {raw}");
+        assert!(!raw.contains("hemligt"));
+
+        let reloaded = SyncConfig::load(&path);
+        assert_eq!(
+            reloaded.webdav_url.as_deref(),
+            Some("https://moln.example/dav/bastion.json")
+        );
+        assert_eq!(reloaded.webdav_username.as_deref(), Some("anders"));
         std::fs::remove_dir_all(dir).ok();
     }
 }

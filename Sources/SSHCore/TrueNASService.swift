@@ -153,4 +153,30 @@ public enum TrueNASService {
             )
         }
     }
+
+    // MARK: - Körning över SSH
+
+    public static func pools(over session: SSHSession) async throws -> [TrueNASPool] {
+        parsePools(try await session.run(poolsCommand()))
+    }
+
+    public static func services(over session: SSHSession) async throws -> [TrueNASServiceState] {
+        parseServices(try await session.run(servicesCommand()))
+    }
+
+    public static func alerts(over session: SSHSession) async throws -> [TrueNASAlert] {
+        parseAlerts(try await session.run(alertsCommand()))
+    }
+
+    public static func startService(_ id: String, over session: SSHSession) async throws {
+        _ = try await session.run(try startServiceCommand(id))
+    }
+
+    public static func stopService(_ id: String, over session: SSHSession) async throws {
+        _ = try await session.run(try stopServiceCommand(id))
+    }
+
+    public static func restartService(_ id: String, over session: SSHSession) async throws {
+        _ = try await session.run(try restartServiceCommand(id))
+    }
 }
