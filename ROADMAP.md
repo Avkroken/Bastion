@@ -229,7 +229,20 @@ ordning nyttan per arbetsinsats är störst):
    tystade Info.plist-nycklar) — ingen av dem en gissning som råkade
    fungera, alla verifierade direkt mot antingen App Store Connect
    API:t eller det faktiska byggda innehållet.
-3. **Windows-GUI via `WinUIBackend`** — ✅ **`windowsapp-build` grönt för
+3. **Windows-GUI via `WinUIBackend`** — ⚠️ **beskriver en ERSATT
+   arkitektur, läs med det i åtanke.** `WindowsApp/` är idag ett C#/
+   WinUI3-projekt med en HELT egen SSH-kärna (`Bastion.Core`, byggd på
+   SSH.NET), inte den Swift/`WinUIBackend`-app texten nedan handlar om.
+   **Och den har ingen CI alls**: kontrollerat 2026-08-19, det finns inget
+   workflow i `.github/workflows/` som bygger eller testar `WindowsApp/`
+   (`Bastion.Core.Tests` körs alltså aldrig automatiskt). Det säger inget
+   om vad som gällde när texten nedan skrevs — den här klonen är grund
+   (`--depth`), så historiken går inte att spåra härifrån — men det är
+   läget i dag, och konsekvensen är att Windows-koden saknar
+   verifieringsväg både lokalt och i CI. Historiken nedan bevaras för
+   swift-nio-lärdomarna, som fortfarande gäller `Package.swift`.
+
+   ✅ **`windowsapp-build` grönt för
    första gången någonsin (2026-07-10)**, efter 74 raka misslyckade
    körningar sedan CI:t skapades (2026-07-04). Rotorsaken var två
    bekräftade uppströmsbuggar i swift-nio, inte något i Bastions egen kod
