@@ -287,10 +287,11 @@ mod tests {
     /// Kontrollen ska ske FÖRE anropet, så inget skickas ens en gång.
     #[test]
     fn an_insecure_url_fails_before_anything_is_sent() {
+        let (user, password) = generated_credentials();
         let provider = WebDavSyncProvider::new(
             "http://moln.example/dav/b.json".into(),
-            "anders".into(),
-            "hemligt".into(),
+            user,
+            password,
         );
         let pull = provider.pull().expect_err("http skulle avvisats");
         assert_eq!(pull.kind(), std::io::ErrorKind::InvalidInput);
@@ -315,6 +316,19 @@ mod tests {
         assert_eq!(malformed.kind(), std::io::ErrorKind::InvalidData);
     }
 
+    /// Uppgifter som genereras per körning i stället för att stå i klartext
+    /// i källan. Två skäl, båda verkliga: ett hårdkodat lösenord i ett repo
+    /// är ett fynd även när det bara är ett test (CodeQL flaggar det, och
+    /// den flaggan är svår att skilja från ett äkta läckage vid en snabb
+    /// genomläsning), och ett unikt värde per körning gör att ett test inte
+    /// kan råka bli grönt på uppgifter en annan körning lämnat kvar.
+    fn generated_credentials() -> (String, String) {
+        (
+            format!("user-{}", uuid::Uuid::new_v4()),
+            format!("pw-{}", uuid::Uuid::new_v4()),
+        )
+    }
+
     /// End-to-end mot en RIKTIG HTTP-server som talar det WebDAV faktiskt
     /// behöver här: GET, PUT och basic auth.
     ///
@@ -330,11 +344,13 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("server.py");
         std::fs::write(&script, PYTHON_STUB).unwrap();
+        let (user, password) = generated_credentials();
 
         let mut child = std::process::Command::new("python3")
             .arg(&script)
             .arg(port.to_string())
             .arg(dir.join("store.json"))
+            .arg(format!("{user}:{password}"))
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -352,8 +368,7 @@ mod tests {
         assert!(ready, "stubben började aldrig lyssna");
 
         let url = format!("http://127.0.0.1:{port}/bastion.json");
-        let provider =
-            WebDavSyncProvider::new(url.clone(), "anders".into(), "hemligt".into());
+        let provider = WebDavSyncProvider::new(url.clone(), user.clone(), password);
 
         // 1. Inget synkat än -> None, inte ett fel.
         assert!(provider.pull().expect("pull mot tom server").is_none());
@@ -372,7 +387,8 @@ mod tests {
         assert_eq!(back.hosts[0].alias, "webdav-test");
 
         // 3. Fel lösenord ska ge Unauthorized och inget annat.
-        let wrong = WebDavSyncProvider::new(url, "anders".into(), "fel".into());
+        let (_, other_password) = generated_credentials();
+        let wrong = WebDavSyncProvider::new(url, user, other_password);
         let err = wrong.pull().expect_err("fel lösenord skulle avvisats");
         assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
 
@@ -387,7 +403,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT = int(sys.argv[1])
 STORE = sys.argv[2]
-EXPECTED = "Basic " + base64.b64encode(b"anders:hemligt").decode()
+# Uppgifterna kommer in som argument — inget lösenord står i den här filen.
+EXPECTED = "Basic " + base64.b64encode(sys.argv[3].encode()).decode()
 
 class Handler(BaseHTTPRequestHandler):
     def authed(self):

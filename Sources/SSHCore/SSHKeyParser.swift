@@ -1,7 +1,10 @@
 import Crypto
 import Foundation
 
-public enum SSHKeyError: Error, Sendable {
+// `Equatable` så tester (och anropare) kan jämföra ett fel direkt mot
+// det förväntade fallet i stället för att mönstermatcha varje gång.
+// Alla nyttolaster är `String`, så konformansen härleds.
+public enum SSHKeyError: Error, Sendable, Equatable {
     case notOpenSSHFormat
     case unsupportedKeyType(String)
     case encrypted          // lösenfras-skyddad — stöds inte än
