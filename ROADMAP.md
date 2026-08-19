@@ -33,7 +33,7 @@ delvis andra, av konkreta skäl:
 | known_hosts / TOFU (SHA256-fingeravtryck, MITM-skydd) | ✅ testad, `~/.bastion/known_hosts` |
 | ssh-config-parsing (`Host`-alias, jokertecken, `IdentityFile`) | ✅ testad, CLI slår upp alias |
 | Host-databas (JSON, taggar, CRUD) | ✅ testad, `~/.bastion/hosts.json` |
-| Dashboard-data (last/minne/disk/uptime/OS/Docker via SSH) | ✅ parser testad, ett kommando — App/-UI (Xcode-only) — ✅ (2026-08-05) LinuxApp Rust (`dashboard.rs`), egen flik, ingen auto-poll än (se "Klart") |
+| Dashboard-data (last/minne/disk/uptime/OS/Docker via SSH) | ✅ parser testad, ett kommando — App/-UI (Xcode-only) — ✅ (2026-08-05) LinuxApp Rust (`dashboard.rs`), egen flik, auto-poll var 15:e sekund (se "Klart") |
 | Docker-åtgärder (lista/start/stopp/omstart/logg) | ✅ testad, injektionssäker referens |
 | Sync mellan enheter (LWW-merge + gravstenar, mapp-transport) | ✅ testad, konvergens bevisad |
 | E2E-krypterad sync (AES-256-GCM + PBKDF2, testvektorer) | ✅ testad, chiffertext läcker inget |
@@ -1403,10 +1403,19 @@ ordning nyttan per arbetsinsats är störst):
     så posten är alltid synlig, inte styrd av `FeatureToggles`. Öppnas
     som en egen flik (samma mönster som Docker-vyn) med en
     uppdateringsknapp.
-  - **Kvar**: ingen auto-poll (Swift-sidans `DashboardModel.
-    startPolling()`, 15 s intervall) än — bara manuell uppdatering via
-    knappen. 156/156 `cargo test` gröna totalt, `cargo build`/`clippy`
-    helt tysta.
+  - **Auto-poll**: ✅ klart — var 15:e sekund, samma intervall som
+    Swift-sidans `DashboardModel.startPolling()`. Uppdateringen AWAITAS
+    i loopen i stället för att eldas iväg som en egen task: `ssh::
+    COMMAND_TIMEOUT` är 30 s, alltså längre än intervallet, så en
+    fire-and-forget-variant hade kunnat starta en andra, överlappande
+    uppdatering mot samma `ListBox` när en anslutning är långsam.
+    Stoppvillkoret är `tab_view_contains` — en levande fråga mot
+    flikvyns widget-träd, inte en `#[weak]`-uppgradering (den sker bara
+    en gång, vid start av `async move`-blocket).
+    (Den här punkten stod kvar som "Kvar: ingen auto-poll" långt efter
+    att den byggts — rättad 2026-08-19 efter att en stale statusrad
+    tidigare i samma dokument fått ett test skrivet mot dokumentationen
+    i stället för mot koden. Läs koden, inte raden.)
 
 - **Terminalfärgteman i den NYA Rust/GTK4-`LinuxApp`** (2026-08-05,
   `LinuxApp/src/terminal_theme.rs`): fanns i Swift-sidan
@@ -2748,6 +2757,20 @@ Inget nytt att bygga, bara verifiera/lansera:
     Två tester med kontroll: en server som TYSTNAR (slutar svara, håller
     anslutningen öppen) ska rapporteras, och en som fortsätter svara ska
     INTE rapporteras hur många intervall som än passerar.
+  - **Död-detektering, WindowsApp (C#)**: ⬜ inte gjord. `Bastion.Core`
+    är en HELT egen implementation på SSH.NET (`Renci.SshNet`), inte
+    `SSHCore` — ingenting av Swift-arbetet ovan gäller där. Kontrollerat
+    2026-08-19: noll träffar på `KeepAlive` i `WindowsApp/`, alltså varken
+    keep-alive eller död-detektering. SSH.NET:s egna `KeepAliveInterval`
+    skickar `SSH_MSG_IGNORE`, som INTE kräver svar — den skulle alltså
+    lösa "håll NAT varm" men inte upptäckt, exakt samma halva lösning som
+    Swift-sidan hade. Ett svar-bärande alternativ behöver undersökas i
+    SSH.NET:s API (`IChannelSession.SendEnvironmentVariableRequest` ser ut
+    att vänta in svaret, men det är LÄST, inte provkört).
+    Medvetet inte byggd blint i samma omgång: det finns ingen
+    .NET-toolchain i utvecklingsmiljön, så påståendet hade inte kunnat
+    beläggas på samma sätt som Rust- och Swift-sidorna (där båda har ett
+    test med kontrollarm).
   - **Död-detektering + återanslutning, LinuxApp (Rust)**: ✅ klart
     (2026-08-19, `LinuxApp/src/ssh.rs` + `main.rs`). LinuxApp hade
     ingenting av det här — varken keep-alive eller död-detektering
