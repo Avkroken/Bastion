@@ -2670,8 +2670,22 @@ Inget nytt att bygga, bara verifiera/lansera:
     Fungerar redan utan resten av kedjan för alla som själva kör
     `tailscaled --socks5-server` eller en företagsproxy.
 
+    **Apple-sidan bär fältet men HEDRAR det inte än.** `Host.socksProxy`
+    finns i modellen enbart för att synken inte ska radera det (samma
+    bugg `forwardAgent`/`jumpHostID` redan orsakat) — `SSHSession`
+    ansluter fortfarande alltid direkt. Därför finns medvetet INGEN
+    inställning för det i `App/HostEditView.swift`: ett fält som går att
+    sätta men inte gör något är sämre än ett som saknas, för användaren
+    tror att trafiken går genom proxyn. Kräver en
+    SOCKS5-handskakningshandler före `NIOSSHHandler` i pipelinen,
+    motsvarande `socks_proxy.rs`.
+    Samma sak gäller `forwardAgent` på Apple, men av en HÅRDARE orsak:
+    agent-forwarding till fjärrserver är blockerad i swift-nio-ssh (se
+    statustabellen), så där handlar det inte om arbete som återstår utan
+    om något som inte går att bygga utan att forka uppströms.
+
     Kvar: UI-lagret som anropar `tool_release` + `external_binary_fetcher`,
-    och att faktiskt starta `tailscaled` från appen) vid första användning
+    att faktiskt starta `tailscaled` från appen, och SOCKS5 i SSHCore) vid första användning
     eller på begäran, verifiera checksum/signatur mot projektens egna
     publicerade värden (leverantörskedjesäkerhet — vi kör en nedladdad
     binär, samma tillitsnivå som ett `curl | sudo bash`-installations-

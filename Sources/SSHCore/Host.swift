@@ -86,6 +86,12 @@ public struct Host: Codable, Identifiable, Sendable, Equatable {
     /// tills vidare bara genom modellen och synken — utan det skulle
     /// inställningen raderas så fort tillståndet passerade en Apple-enhet,
     /// exakt den bugg `forwardAgent` och `jumpHostID` redan orsakat.
+    ///
+    /// **Ingen UI här förrän `SSHSession` faktiskt ansluter genom proxyn.**
+    /// Ett fält som går att sätta men inte gör något är sämre än ett som
+    /// saknas: användaren tror att anslutningen går genom proxyn. Det
+    /// kräver en SOCKS5-handskakningshandler före `NIOSSHHandler` i
+    /// pipelinen — samma sak LinuxApp gör i `socks_proxy.rs`, se ROADMAP.md.
     public var socksProxy: String?
     /// När värden senast ändrades. Styr sync-mergen (nyaste ändringen vinner).
     public var modifiedAt: Date
