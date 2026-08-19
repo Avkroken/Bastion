@@ -365,4 +365,52 @@ final class HostStoreTests: XCTestCase {
             Host.self, from: try JSONSerialization.data(withJSONObject: obj))
         XCTAssertEqual(decoded.jumpHostID, newID)
     }
+
+    /// Guldfixtur som LinuxApp avkodar från SAMMA fil, i
+    /// `host::tests::the_shared_wire_format_fixture_decodes_to_the_expected_host`.
+    ///
+    /// Nyckeljämförelsen ovan fångar att ett fält HETER samma sak. Den säger
+    /// ingenting om nyttolastens FORM — att `HostAuth` bär sina fält som
+    /// `{"certificateFile": {"keyPath": …}}` och att `platform` är en rå
+    /// sträng, inte ett objekt. Går den formen isär tappas fältet lika tyst
+    /// som ett felstavat nyckelnamn.
+    ///
+    /// Ändra aldrig fixturen för att få testet grönt. Faller den har
+    /// trådformatet ändrats, och då är frågan vad som händer med redan
+    /// sparade filer hos användarna.
+    func testTheSharedWireFormatFixtureDecodesIdentically() throws {
+        let fixture = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()      // SSHCoreTests
+            .deletingLastPathComponent()      // Tests
+            .appendingPathComponent("fixtures/host-wire-format.json")
+        let host = try JSONDecoder().decode(Host.self, from: Data(contentsOf: fixture))
+
+        XCTAssertEqual(host.id, UUID(uuidString: "6f1c9b2e-3a4d-4f57-8b91-0c2d5e7a1234"))
+        XCTAssertEqual(host.alias, "guld")
+        XCTAssertEqual(host.hostName, "10.0.0.7")
+        XCTAssertEqual(host.user, "anders")
+        XCTAssertEqual(host.port, 2222)
+        XCTAssertEqual(host.tags, ["prod", "eu"])
+        XCTAssertEqual(
+            host.auth,
+            .certificateFile(
+                keyPath: "/home/anders/.ssh/id_ed25519",
+                certPath: "/home/anders/.ssh/id_ed25519-cert.pub"),
+            "HostAuth-nyttolasten måste ha samma form som LinuxApps handskrivna serde-kod")
+        XCTAssertTrue(host.isFavorite)
+        XCTAssertEqual(host.colorTag, "blue")
+        XCTAssertEqual(host.platform, .windowsAdmin)
+        XCTAssertEqual(host.startupCommand, "tmux attach")
+        XCTAssertEqual(host.jumpHostID, UUID(uuidString: "b7e4d1a0-8c33-4e29-9f6b-1d5a3c8e9876"))
+        XCTAssertEqual(host.macAddress, "AA:BB:CC:DD:EE:FF")
+        XCTAssertTrue(host.forwardAgent)
+        XCTAssertEqual(host.modifiedAt.timeIntervalSinceReferenceDate, 800_000_000, accuracy: 0.001)
+
+        // Och tillbaka: det vi skriver ska gå att läsa som samma sak igen.
+        let roundTripped = try JSONDecoder().decode(
+            Host.self, from: try JSONEncoder().encode(host))
+        XCTAssertEqual(roundTripped.jumpHostID, host.jumpHostID)
+        XCTAssertEqual(roundTripped.auth, host.auth)
+        XCTAssertEqual(roundTripped.forwardAgent, host.forwardAgent)
+    }
 }

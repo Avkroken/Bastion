@@ -773,6 +773,60 @@ mod tests {
         );
     }
 
+    /// Guldfixtur som Swift-sidan avkodar från SAMMA fil, i
+    /// `HostStoreTests.testTheSharedWireFormatFixtureDecodesIdentically`.
+    ///
+    /// Nyckeljämförelsen i testet ovan fångar att ett fält HETER samma sak.
+    /// Den säger ingenting om nyttolastens FORM — att `HostAuth` bär sina
+    /// fält som `{"certificateFile": {"keyPath": …}}` och att `platform` är
+    /// en rå sträng, inte ett objekt. Går den formen isär tappas fältet lika
+    /// tyst som ett felstavat nyckelnamn.
+    ///
+    /// Ändra aldrig fixturen för att få testet grönt. Faller den har
+    /// trådformatet ändrats, och då är frågan vad som händer med redan
+    /// sparade filer hos användarna.
+    #[test]
+    fn the_shared_wire_format_fixture_decodes_to_the_expected_host() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../Tests/fixtures/host-wire-format.json");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("kunde inte läsa {}: {e}", path.display()));
+        let host: Host = serde_json::from_str(&text).expect("fixturen ska gå att avkoda");
+
+        assert_eq!(host.id.to_string(), "6f1c9b2e-3a4d-4f57-8b91-0c2d5e7a1234");
+        assert_eq!(host.alias, "guld");
+        assert_eq!(host.host_name, "10.0.0.7");
+        assert_eq!(host.user, "anders");
+        assert_eq!(host.port, 2222);
+        assert_eq!(host.tags, vec!["prod".to_string(), "eu".to_string()]);
+        assert_eq!(
+            host.auth,
+            HostAuth::CertificateFile {
+                key_path: "/home/anders/.ssh/id_ed25519".into(),
+                cert_path: "/home/anders/.ssh/id_ed25519-cert.pub".into(),
+            },
+            "HostAuth-nyttolasten måste ha samma form som Swifts syntetiserade Codable"
+        );
+        assert!(host.is_favorite);
+        assert_eq!(host.color_tag.as_deref(), Some("blue"));
+        assert_eq!(host.platform, RemotePlatform::WindowsAdmin);
+        assert_eq!(host.startup_command.as_deref(), Some("tmux attach"));
+        assert_eq!(
+            host.jump_host_id.map(|i| i.to_string()).as_deref(),
+            Some("b7e4d1a0-8c33-4e29-9f6b-1d5a3c8e9876")
+        );
+        assert_eq!(host.mac_address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
+        assert!(host.forward_agent);
+        assert_eq!(host.modified_at.0, 800_000_000.0);
+
+        // Och tillbaka: det vi skriver ska gå att läsa som samma sak igen.
+        let round_tripped: Host =
+            serde_json::from_str(&serde_json::to_string(&host).unwrap()).unwrap();
+        assert_eq!(round_tripped.jump_host_id, host.jump_host_id);
+        assert_eq!(round_tripped.auth, host.auth);
+        assert_eq!(round_tripped.forward_agent, host.forward_agent);
+    }
+
     /// En `hosts.json` skriven före namnbytet ska INTE tappa sin
     /// ProxyJump-koppling vid uppgraderingen.
     #[test]

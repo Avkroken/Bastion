@@ -1,0 +1,22 @@
+{
+  "id": "6f1c9b2e-3a4d-4f57-8b91-0c2d5e7a1234",
+  "alias": "guld",
+  "hostName": "10.0.0.7",
+  "user": "anders",
+  "port": 2222,
+  "tags": ["prod", "eu"],
+  "auth": {
+    "certificateFile": {
+      "keyPath": "/home/anders/.ssh/id_ed25519",
+      "certPath": "/home/anders/.ssh/id_ed25519-cert.pub"
+    }
+  },
+  "isFavorite": true,
+  "colorTag": "blue",
+  "platform": "windowsAdmin",
+  "startupCommand": "tmux attach",
+  "jumpHostID": "b7e4d1a0-8c33-4e29-9f6b-1d5a3c8e9876",
+  "macAddress": "AA:BB:CC:DD:EE:FF",
+  "forwardAgent": true,
+  "modifiedAt": 800000000
+}
