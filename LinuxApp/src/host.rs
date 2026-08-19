@@ -189,6 +189,20 @@ pub struct Host {
     /// heller. OpenSSH har samma förval av samma skäl.
     #[serde(default)]
     pub forward_agent: bool,
+    /// Adress (`värd:port`) till en SOCKS5-proxy som anslutningen ska gå
+    /// GENOM. `None` = anslut direkt, precis som innan fältet fanns.
+    ///
+    /// Två verkliga användningar: en företagsproxy, och `tailscaled
+    /// --tun=userspace-networking --socks5-server=…`, som exponerar hela
+    /// tailnet:et utan att kräva ett TUN-gränssnitt. Namnet på målvärden
+    /// slås upp i PROXYN, inte här — se `socks_proxy::connect_via_socks5`.
+    ///
+    /// Skilt från `jump_host_id`: en jump-host är en SSH-server vi
+    /// autentiserar mot och tunnlar genom, en SOCKS-proxy är ren
+    /// TCP-transport utan egen inloggning. De går att kombinera — proxyn
+    /// gäller då anslutningen till jump-hosten.
+    #[serde(default)]
+    pub socks_proxy: Option<String>,
     pub modified_at: ReferenceDate,
 }
 
@@ -213,6 +227,7 @@ impl Host {
             jump_host_id: None,
             mac_address: None,
             forward_agent: false,
+            socks_proxy: None,
             modified_at: ReferenceDate::now(),
         }
     }
@@ -800,8 +815,8 @@ mod tests {
 
         let mut expected = vec![
             "alias", "auth", "colorTag", "forwardAgent", "hostName", "id", "isFavorite",
-            "jumpHostID", "macAddress", "modifiedAt", "platform", "port", "startupCommand",
-            "tags", "user",
+            "jumpHostID", "macAddress", "modifiedAt", "platform", "port", "socksProxy",
+            "startupCommand", "tags", "user",
         ];
         expected.sort();
         assert_eq!(
@@ -855,6 +870,7 @@ mod tests {
         );
         assert_eq!(host.mac_address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
         assert!(host.forward_agent);
+        assert_eq!(host.socks_proxy.as_deref(), Some("127.0.0.1:1080"));
         assert_eq!(host.modified_at.0, 800_000_000.0);
 
         // Och tillbaka: det vi skriver ska gå att läsa som samma sak igen.

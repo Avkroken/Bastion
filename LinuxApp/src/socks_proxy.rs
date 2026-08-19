@@ -235,12 +235,6 @@ async fn negotiate(stream: &mut TcpStream) -> Result<(String, u16), SocksError> 
 /// `min-server.tailnet.ts.net` betyder ingenting för vår lokala resolver, men
 /// allt för den i andra änden. Slår vi upp namnet själva först får vi ett fel
 /// i stället för en anslutning.
-// `dead_code`: klienten är byggd och bevisad mot vår egen server, men ingen
-// anslutningsväg VÄLJER den än — det kräver ett fält på `Host` för
-// proxyadressen, med allt vad det innebär av UI, synk och trådformatsvakt.
-// Samma medvetna ordning som `external_binary_fetcher`/`tool_release`:
-// bevisa mekaniken först, koppla in den sedan. Se ROADMAP.md.
-#[allow(dead_code)]
 pub async fn connect_via_socks5(
     proxy_addr: &str,
     target_host: &str,
@@ -330,7 +324,6 @@ pub async fn connect_via_socks5(
     Ok(stream)
 }
 
-#[allow(dead_code)]
 async fn drain(stream: &mut TcpStream, n: usize) -> Result<(), String> {
     let mut buf = vec![0u8; n];
     stream
@@ -342,7 +335,6 @@ async fn drain(stream: &mut TcpStream, n: usize) -> Result<(), String> {
 
 /// RFC 1928 §6. Ett nummer säger användaren ingenting; "Connection refused"
 /// och "Host unreachable" kräver olika åtgärder.
-#[allow(dead_code)]
 fn socks5_reply_text(code: u8) -> &'static str {
     match code {
         0x01 => "allmänt serverfel",

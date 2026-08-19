@@ -70,6 +70,23 @@ public struct Host: Codable, Identifiable, Sendable, Equatable {
     /// nyckeln, kodningen skrev inte tillbaka den. Ingen felutskrift, ingen
     /// synlig ändring förrän nästa anslutning betedde sig annorlunda.
     public var forwardAgent: Bool
+    /// Adress (`värd:port`) till en SOCKS5-proxy som anslutningen ska gå
+    /// GENOM. `nil` = anslut direkt, precis som innan fältet fanns.
+    ///
+    /// Två verkliga användningar: en företagsproxy, och `tailscaled
+    /// --tun=userspace-networking --socks5-server=…`, som exponerar hela
+    /// tailnet:et utan att kräva ett TUN-gränssnitt. Målets namn slås upp i
+    /// PROXYN, inte lokalt.
+    ///
+    /// Skilt från ``jumpHostID``: en jump-host är en SSH-server vi
+    /// autentiserar mot och tunnlar genom, en SOCKS-proxy är ren
+    /// TCP-transport utan egen inloggning.
+    ///
+    /// LinuxApp ANVÄNDER fältet redan (`ssh::connect_direct`). Här bärs det
+    /// tills vidare bara genom modellen och synken — utan det skulle
+    /// inställningen raderas så fort tillståndet passerade en Apple-enhet,
+    /// exakt den bugg `forwardAgent` och `jumpHostID` redan orsakat.
+    public var socksProxy: String?
     /// När värden senast ändrades. Styr sync-mergen (nyaste ändringen vinner).
     public var modifiedAt: Date
 
@@ -88,6 +105,7 @@ public struct Host: Codable, Identifiable, Sendable, Equatable {
         jumpHostID: UUID? = nil,
         macAddress: String? = nil,
         forwardAgent: Bool = false,
+        socksProxy: String? = nil,
         modifiedAt: Date = Date()
     ) {
         self.id = id
@@ -104,11 +122,12 @@ public struct Host: Codable, Identifiable, Sendable, Equatable {
         self.jumpHostID = jumpHostID
         self.macAddress = macAddress
         self.forwardAgent = forwardAgent
+        self.socksProxy = socksProxy
         self.modifiedAt = modifiedAt
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, alias, hostName, user, port, tags, auth, isFavorite, colorTag, platform, startupCommand, jumpHostID, macAddress, forwardAgent, modifiedAt
+        case id, alias, hostName, user, port, tags, auth, isFavorite, colorTag, platform, startupCommand, jumpHostID, macAddress, forwardAgent, socksProxy, modifiedAt
         /// LinuxApp skrev fältet som `jumpHostId` (serdes `camelCase` av
         /// `jump_host_id`) medan den här sidan alltid skrivit `jumpHostID`
         /// (Apples konvention versaliserar initialförkortningar). Nycklarna
@@ -145,6 +164,7 @@ public struct Host: Codable, Identifiable, Sendable, Equatable {
             ?? c.decodeIfPresent(UUID.self, forKey: .legacyJumpHostID)
         macAddress = try c.decodeIfPresent(String.self, forKey: .macAddress)
         forwardAgent = try c.decodeIfPresent(Bool.self, forKey: .forwardAgent) ?? false
+        socksProxy = try c.decodeIfPresent(String.self, forKey: .socksProxy)
         modifiedAt = try c.decode(Date.self, forKey: .modifiedAt)
     }
 
@@ -168,6 +188,7 @@ public struct Host: Codable, Identifiable, Sendable, Equatable {
         try c.encodeIfPresent(jumpHostID, forKey: .jumpHostID)
         try c.encodeIfPresent(macAddress, forKey: .macAddress)
         try c.encode(forwardAgent, forKey: .forwardAgent)
+        try c.encodeIfPresent(socksProxy, forKey: .socksProxy)
         try c.encode(modifiedAt, forKey: .modifiedAt)
     }
 

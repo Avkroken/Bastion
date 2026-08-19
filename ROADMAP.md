@@ -2657,9 +2657,21 @@ Inget nytt att bygga, bara verifiera/lansera:
     varje svarskod, alla tre adresstyperna i svaret, för långt värdnamn)
     mot en stubbserver, eftersom vår egen server aldrig svarar så.
 
-    Kvar: ett `Host`-fält för proxyadressen (med UI, synk och
-    trådformatsvakt), UI-lagret som anropar `tool_release` +
-    `external_binary_fetcher`, och att faktiskt starta `tailscaled`) vid första användning
+    **INKOPPLAD** (samma dag): `Host.socks_proxy` finns på båda
+    plattformarna, `ssh::connect_direct` byter transport när fältet är
+    satt (`connect_stream` gör exakt samma handskakning och
+    värdnyckelkontroll ovanpå en ström vi öppnat själva), och LinuxApp har
+    en rad i värddialogen. Bevisat end-to-end: en värd med `socks_proxy`
+    når en RIKTIG sshd genom Bastions EGEN SOCKS5-proxy, som i sin tur är
+    tunnlad genom en andra riktig sshd.
+    Trådformatsvakten gjorde exakt sitt jobb när fältet lades till — den
+    föll med "Uppdatera Swift-sidans CodingKeys i samma veva", vilket är
+    hela anledningen att den finns.
+    Fungerar redan utan resten av kedjan för alla som själva kör
+    `tailscaled --socks5-server` eller en företagsproxy.
+
+    Kvar: UI-lagret som anropar `tool_release` + `external_binary_fetcher`,
+    och att faktiskt starta `tailscaled` från appen) vid första användning
     eller på begäran, verifiera checksum/signatur mot projektens egna
     publicerade värden (leverantörskedjesäkerhet — vi kör en nedladdad
     binär, samma tillitsnivå som ett `curl | sudo bash`-installations-

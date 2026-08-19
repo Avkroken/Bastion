@@ -317,6 +317,7 @@ final class HostStoreTests: XCTestCase {
         h.jumpHostID = UUID()
         h.macAddress = "AA:BB:CC:DD:EE:FF"
         h.forwardAgent = true
+        h.socksProxy = "127.0.0.1:1080"
 
         let obj = try JSONSerialization.jsonObject(
             with: try JSONEncoder().encode(h)) as! [String: Any]
@@ -324,8 +325,8 @@ final class HostStoreTests: XCTestCase {
             obj.keys.sorted(),
             [
                 "alias", "auth", "colorTag", "forwardAgent", "hostName", "id", "isFavorite",
-                "jumpHostID", "macAddress", "modifiedAt", "platform", "port", "startupCommand",
-                "tags", "user",
+                "jumpHostID", "macAddress", "modifiedAt", "platform", "port", "socksProxy",
+                "startupCommand", "tags", "user",
             ].sorted(),
             "JSON-formen ändrades. Uppdatera LinuxApps serde-attribut i samma veva, annars "
                 + "släpps det nya fältet tyst vid synk.")
@@ -404,6 +405,7 @@ final class HostStoreTests: XCTestCase {
         XCTAssertEqual(host.jumpHostID, UUID(uuidString: "b7e4d1a0-8c33-4e29-9f6b-1d5a3c8e9876"))
         XCTAssertEqual(host.macAddress, "AA:BB:CC:DD:EE:FF")
         XCTAssertTrue(host.forwardAgent)
+        XCTAssertEqual(host.socksProxy, "127.0.0.1:1080")
         XCTAssertEqual(host.modifiedAt.timeIntervalSinceReferenceDate, 800_000_000, accuracy: 0.001)
 
         // Och tillbaka: det vi skriver ska gå att läsa som samma sak igen.
