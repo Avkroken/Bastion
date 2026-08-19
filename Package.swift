@@ -50,6 +50,7 @@ let package = Package(
             name: "SSHCoreTests",
             dependencies: [
                 "SSHCore",
+                .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOEmbedded", package: "swift-nio"),
             ]
         ),

@@ -1,5 +1,7 @@
 import Crypto
 import Foundation
+import NIOCore
+import NIOEmbedded
 import NIOSSH
 import XCTest
 @testable import SSHCore
@@ -81,5 +83,143 @@ final class HostKeyFingerprintTests: XCTestCase {
         // SHA-256 i base64 utan utfyllnad är alltid 43 tecken.
         XCTAssertEqual(info.sha256Fingerprint.count, "SHA256:".count + 43)
         XCTAssertEqual(info.keyType, "ssh-ed25519")
+    }
+}
+
+/// `TOFUHostKeyValidator` är beslutet: lär in okänd värd, acceptera
+/// oförändrad, AVVISA ändrad. Den sista är hela MITM-skyddet, och det
+/// var otestat — bara fingeravtrycksfunktionen bredvid hade tester.
+///
+/// `EmbeddedEventLoop` gör det testbart utan nätverk: promisen löses
+/// synkront, så utfallet går att läsa direkt.
+final class TOFUHostKeyValidatorTests: XCTestCase {
+
+    private let ed25519Line =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP0LeaRw74HwUKygzYCYT5ZroEZ0R/Zszy3kpAPzrT1B golden@bastion"
+    private let otherLine =
+        "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBHGafI4FczaW7rVd/oyg9oeW8xhptPF90WmC2gqWTVJ3h6/rk4F9Rx7sfMPxqLaJYNvSzO2XwQ2g3pWWR7GykR0= golden@bastion"
+
+    /// Egen fil per test — annars läcker inlärda värdar mellan dem och
+    /// ordningen börjar spela roll.
+    private func temporaryStore() -> (KnownHosts, String) {
+        let path = NSTemporaryDirectory() + "bastion-knownhosts-\(UUID().uuidString)"
+        return (KnownHosts(path: path), path)
+    }
+
+    /// Promisen aldrig infriad — då har validatorn varken accepterat
+    /// eller avvisat, vilket i skarp drift betyder att anslutningen hänger.
+    private struct NeverCompleted: Error {}
+
+    /// `whenComplete` tar en `@Sendable`-closure, och att mutera en fångad
+    /// lokal `var` inifrån en sådan är ett kompileringsfel. En referensbox
+    /// går bra: det är boxen som fångas, inte variabeln. `@unchecked` är
+    /// korrekt här — allt sker på en enda tråd via `EmbeddedEventLoop`.
+    private final class Box: @unchecked Sendable {
+        var value: Result<Void, Error>?
+    }
+
+    /// `futureResult.wait()` går INTE att använda här: den kräver att
+    /// anropet sker utanför event-loopen, och `EmbeddedEventLoop.inEventLoop`
+    /// är alltid `true` — precondition-krasch i stället för ett testresultat.
+    /// `whenComplete` + `run()` läser utfallet utan det antagandet.
+    private func validate(
+        _ validator: TOFUHostKeyValidator,
+        _ line: String,
+        on loop: EmbeddedEventLoop
+    ) throws -> Result<Void, Error> {
+        let key = try NIOSSHPublicKey(openSSHPublicKey: line)
+        let promise = loop.makePromise(of: Void.self)
+        let box = Box()
+        promise.futureResult.whenComplete { box.value = $0 }
+        validator.validateHostKey(hostKey: key, validationCompletePromise: promise)
+        loop.run()
+        guard let outcome = box.value else { throw NeverCompleted() }
+        return outcome
+    }
+
+    /// En värd vi aldrig sett ska LÄRAS IN, inte avvisas. Annars vore
+    /// första anslutningen omöjlig.
+    func testUnknownHostIsLearnedAndAccepted() throws {
+        let loop = EmbeddedEventLoop()
+        let (store, path) = temporaryStore()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        var rejections: [HostKeyInfo] = []
+        let validator = TOFUHostKeyValidator(
+            host: "srv.example", port: 22, store: store, onReject: { rejections.append($0) }
+        )
+
+        guard case .success = try validate(validator, ed25519Line, on: loop) else {
+            return XCTFail("en okänd värd ska lära in, inte avvisas")
+        }
+        XCTAssertTrue(rejections.isEmpty)
+    }
+
+    /// Samma nyckel igen ska accepteras tyst — det normala fallet vid
+    /// varje anslutning efter den första.
+    func testKnownUnchangedHostIsAccepted() throws {
+        let loop = EmbeddedEventLoop()
+        let (store, path) = temporaryStore()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        var rejections: [HostKeyInfo] = []
+        let validator = TOFUHostKeyValidator(
+            host: "srv.example", port: 22, store: store, onReject: { rejections.append($0) }
+        )
+
+        _ = try validate(validator, ed25519Line, on: loop)   // lär in
+        guard case .success = try validate(validator, ed25519Line, on: loop) else {
+            return XCTFail("oförändrad nyckel ska accepteras")
+        }
+        XCTAssertTrue(rejections.isEmpty)
+    }
+
+    /// Hela MITM-skyddet: en ANNAN nyckel för samma värd ska avvisas,
+    /// promisen ska FAILA, och onReject ska anropas med fingeravtrycket
+    /// — det senare är vad sessionen behöver för att stänga anslutningen
+    /// i stället för att hänga.
+    func testChangedHostKeyIsRejectedAndReported() throws {
+        let loop = EmbeddedEventLoop()
+        let (store, path) = temporaryStore()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        var rejections: [HostKeyInfo] = []
+        let validator = TOFUHostKeyValidator(
+            host: "srv.example", port: 22, store: store, onReject: { rejections.append($0) }
+        )
+
+        _ = try validate(validator, ed25519Line, on: loop)   // lär in den äkta
+
+        guard case .failure(let error) = try validate(validator, otherLine, on: loop) else {
+            return XCTFail("en ändrad värdnyckel MÅSTE avvisas — annars finns inget MITM-skydd")
+        }
+        guard let sshError = error as? SSHError,
+              case .hostKeyRejected(let info) = sshError else {
+            return XCTFail("fel typ av fel: \(error)")
+        }
+        XCTAssertEqual(info.keyType, "ecdsa-sha2-nistp256", "avtrycket ska gälla den NYA nyckeln")
+
+        XCTAssertEqual(rejections.count, 1, "sessionen måste få veta, annars hänger anropet")
+        XCTAssertEqual(rejections[0].sha256Fingerprint, info.sha256Fingerprint)
+    }
+
+    /// Samma värdnamn på en annan PORT är en annan värd. Slås de ihop
+    /// avvisas en helt legitim andra server på samma maskin.
+    func testSameHostOnADifferentPortIsTrackedSeparately() throws {
+        let loop = EmbeddedEventLoop()
+        let (store, path) = temporaryStore()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        let onPort22 = TOFUHostKeyValidator(
+            host: "srv.example", port: 22, store: store, onReject: { _ in }
+        )
+        let onPort2222 = TOFUHostKeyValidator(
+            host: "srv.example", port: 2222, store: store, onReject: { _ in }
+        )
+
+        _ = try validate(onPort22, ed25519Line, on: loop)
+        guard case .success = try validate(onPort2222, otherLine, on: loop) else {
+            return XCTFail("port ingår i identiteten — en annan port är en annan värd")
+        }
     }
 }
