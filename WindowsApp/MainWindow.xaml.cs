@@ -4,6 +4,7 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Data;
 using Microsoft.UI.Xaml.Media;
 using Renci.SshNet.Common;
 using System.Text;
@@ -21,6 +22,18 @@ public sealed class HostRow
 }
 
 /// <summary>
+/// En taggsektion i värdlistan. Grupperingen och filtreringen görs av
+/// <see cref="HostGrouping"/> i kärnan (testad); det här är bara skalet
+/// <see cref="CollectionViewSource"/> vill ha — <c>Title</c> för rubriken,
+/// <c>Hosts</c> som <c>ItemsPath</c>.
+/// </summary>
+public sealed class HostSection
+{
+    public required string Title { get; init; }
+    public required ObservableCollection<HostRow> Hosts { get; init; }
+}
+
+/// <summary>
 /// En session/vy per flik i <see cref="MainWindow.SessionTabView"/> — motsvarar
 /// LinuxApps <c>AdwTabView</c> (en flik per SSH-session eller Docker-vy) och
 /// iOS <c>MultiSessionView</c>. Terminalflikar bär sin <see cref="SshSession"/>
@@ -32,8 +45,16 @@ public sealed partial class MainWindow : Window
 {
     private readonly HostStore _store = new(HostStore.DefaultPath);
     private readonly KnownHosts _knownHosts = new(Bastion.Core.KnownHosts.DefaultPath);
-    private readonly ObservableCollection<HostRow> _rows = new();
-    private readonly DispatcherQueue _dispatcher = DispatcherQueue.GetForCurrentThread();
+    private readonly ObservableCollection<HostSection> _sections = new();
+    private readonly CollectionViewSource _hostSource = new()
+    {
+        IsSourceGrouped = true,
+        ItemsPath = new PropertyPath("Hosts"),
+    };
+    // Fullt kvalificerad: både Microsoft.UI.Dispatching och Windows.System (som
+    // `Launcher` behöver) har en DispatcherQueue, och CS0104 stoppade hela bygget.
+    private readonly Microsoft.UI.Dispatching.DispatcherQueue _dispatcher =
+        Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
     private readonly SnippetStore _snippetStore = new(SnippetStore.DefaultPath);
     private readonly AppSettingsStore _settingsStore = new();
     private SyncConfig _syncConfig = SyncConfig.Load(SyncConfig.DefaultPath);
@@ -42,23 +63,35 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent();
         Title = "Bastion";
-        HostListView.ItemsSource = _rows;
+        _hostSource.Source = _sections;
+        HostListView.ItemsSource = _hostSource.View;
         Refresh();
     }
 
+    /// <summary>
+    /// Bygger om värdlistan: taggsektioner med favoriter först, filtrerade på
+    /// sökrutans text. Ordningen bestäms av <see cref="HostGrouping"/> så
+    /// Windows visar samma sektioner som iOS/macOS och Linux.
+    /// </summary>
     private void Refresh()
     {
-        _rows.Clear();
-        foreach (var h in _store.All())
+        _sections.Clear();
+        foreach (var group in HostGrouping.GroupedAndFiltered(_store.All(), HostSearchBox.Text ?? ""))
         {
-            _rows.Add(new HostRow
+            _sections.Add(new HostSection
             {
-                Id = h.Id,
-                Alias = h.Alias,
-                Subtitle = $"{h.User}@{h.HostName}:{h.Port}",
+                Title = group.Tag,
+                Hosts = new ObservableCollection<HostRow>(group.Hosts.Select(h => new HostRow
+                {
+                    Id = h.Id,
+                    Alias = h.Alias,
+                    Subtitle = $"{h.User}@{h.HostName}:{h.Port}",
+                })),
             });
         }
     }
+
+    private void OnHostSearchChanged(object sender, TextChangedEventArgs e) => Refresh();
 
     private Host? FindHost(Guid id) => _store.All().FirstOrDefault(h => h.Id == id);
 
@@ -246,7 +279,7 @@ public sealed partial class MainWindow : Window
             if (password is null) return; // avbrutet
         }
 
-        await OpenTerminalTabAsync(host, password);
+        await OpenDashboardTabAsync(host, password);
     }
 
     /// <summary>
@@ -261,6 +294,9 @@ public sealed partial class MainWindow : Window
         var toggles = _settingsStore.Current();
 
         var menu = new MenuFlyout();
+        var terminalItem = new MenuFlyoutItem { Text = "Terminal" };
+        terminalItem.Click += (_, _) => _ = OpenHostFeatureTabAsync(row, (h, p) => OpenTerminalTabAsync(h, p));
+        menu.Items.Add(terminalItem);
         if (toggles.ShowDocker)
         {
             var item = new MenuFlyoutItem { Text = "Docker" };
@@ -472,6 +508,242 @@ public sealed partial class MainWindow : Window
         SessionTabView.Visibility = hasTabs ? Visibility.Visible : Visibility.Collapsed;
         PlaceholderPanel.Visibility = hasTabs ? Visibility.Collapsed : Visibility.Visible;
     }
+
+    // MARK: - Översikt (port av App/DashboardView.swift, samma probe som LinuxApps dashboard.rs)
+
+    /// <summary>
+    /// Öppnar värdens översikt: ETT SSH-kommando ger last, minne, disk, temperatur,
+    /// drifttid, OS, kärna, IP-adresser, inloggade användare, authorized_keys och
+    /// Docker — ingen agent på värden. Samma vy som prototypen i docs/prototyp/
+    /// ritar, och samma sak iOS/macOS visar när man trycker på en värd.
+    /// </summary>
+    private async Task OpenDashboardTabAsync(Host host, string? password)
+    {
+        var body = new StackPanel { Spacing = 12, Padding = new Thickness(16, 12, 16, 16) };
+        var scrolled = new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+
+        var refreshButton = new Button { Content = "\uE72C", FontFamily = new FontFamily("Segoe MDL2 Assets") };
+        ToolTipService.SetToolTip(refreshButton, "Uppdatera");
+        var terminalButton = new Button { Content = "Terminal" };
+
+        var toolbar = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            Padding = new Thickness(12, 8, 12, 8),
+        };
+        toolbar.Children.Add(new TextBlock
+        {
+            Text = $"{host.Alias} — {host.User}@{host.HostName}:{host.Port}",
+            VerticalAlignment = VerticalAlignment.Center,
+            FontWeight = FontWeights.SemiBold,
+        });
+        toolbar.Children.Add(refreshButton);
+        toolbar.Children.Add(terminalButton);
+
+        var content = new Grid();
+        content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        content.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        Grid.SetRow(toolbar, 0);
+        Grid.SetRow(scrolled, 1);
+        content.Children.Add(toolbar);
+        content.Children.Add(scrolled);
+
+        var tab = new TabViewItem
+        {
+            Header = $"Översikt: {host.Alias}",
+            IconSource = new FontIconSource { FontFamily = new FontFamily("Segoe MDL2 Assets"), Glyph = "\uE9D9" },
+            Content = content,
+        };
+        SessionTabView.TabItems.Add(tab);
+        SessionTabView.SelectedItem = tab;
+        UpdateSessionAreaVisibility();
+
+        refreshButton.Click += (_, _) => _ = RefreshDashboardAsync(host, password, body);
+        terminalButton.Click += (_, _) => _ = OpenTerminalTabAsync(host, password);
+        await RefreshDashboardAsync(host, password, body);
+    }
+
+    private async Task RefreshDashboardAsync(Host host, string? password, StackPanel body)
+    {
+        body.Children.Clear();
+        body.Children.Add(StatusText("Läser av värden…"));
+
+        SystemSnapshot snapshot;
+        try
+        {
+            snapshot = await Task.Run(() => SystemProbe.Snapshot(host, password, _knownHosts));
+        }
+        catch (Exception ex)
+        {
+            body.Children.Clear();
+            body.Children.Add(StatusText($"Fel: {ex.Message}"));
+            return;
+        }
+
+        body.Children.Clear();
+        body.Children.Add(BuildMetricTiles(snapshot));
+        body.Children.Add(SectionHeader("System"));
+        body.Children.Add(BuildFactList(host, snapshot));
+        body.Children.Add(SectionHeader("Docker"));
+        body.Children.Add(BuildContainerSummary(snapshot));
+    }
+
+    private static TextBlock SectionHeader(string text) => new()
+    {
+        Text = text,
+        FontWeight = FontWeights.SemiBold,
+        FontSize = 12,
+        Opacity = 0.7,
+        Margin = new Thickness(0, 8, 0, 0),
+    };
+
+    /// <summary>Belastning, minne, disk och temperatur som mätarkort, två per rad.</summary>
+    private static FrameworkElement BuildMetricTiles(SystemSnapshot snapshot)
+    {
+        var tiles = new List<FrameworkElement>();
+
+        if (snapshot.Load is { } load)
+        {
+            var cores = snapshot.CpuCount ?? 0;
+            var percent = cores > 0 ? DashboardFormat.Percent(load.One / cores) : 0;
+            tiles.Add(MetricTile("Belastning", DashboardFormat.Load(load),
+                cores > 0 ? $"{cores} kärnor" : "okänt antal kärnor",
+                cores > 0 ? percent : null));
+        }
+
+        if (snapshot.Memory is { } memory)
+        {
+            var percent = DashboardFormat.Percent(memory.UsedFraction);
+            tiles.Add(MetricTile("Minne", $"{percent} %",
+                $"{DashboardFormat.Bytes(memory.UsedBytes)} av {DashboardFormat.Bytes(memory.TotalBytes)}", percent));
+        }
+
+        if ((snapshot.RootDisk ?? snapshot.Disks.FirstOrDefault()) is { } disk)
+        {
+            tiles.Add(MetricTile($"Disk {disk.Mount}", $"{disk.CapacityPercent} %",
+                $"{DashboardFormat.Bytes(disk.UsedBytes)} av {DashboardFormat.Bytes(disk.SizeBytes)}",
+                disk.CapacityPercent));
+        }
+
+        if (snapshot.Temperatures.Count > 0)
+        {
+            var warmest = snapshot.Temperatures.MaxBy(t => t.Celsius)!;
+            tiles.Add(MetricTile("Temperatur", $"{warmest.Celsius:0} °C", warmest.Label, null));
+        }
+
+        if (tiles.Count == 0)
+        {
+            return StatusText("Värden svarade utan mätvärden — /proc kan vara otillgängligt.");
+        }
+
+        var grid = new Grid { ColumnSpacing = 12, RowSpacing = 12 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        for (var i = 0; i < tiles.Count; i++)
+        {
+            if (i % 2 == 0) grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            Grid.SetRow(tiles[i], i / 2);
+            Grid.SetColumn(tiles[i], i % 2);
+            grid.Children.Add(tiles[i]);
+        }
+        return grid;
+    }
+
+    /// <summary>Ett kort: etikett, stort värde, mätare färgad efter allvarlighetsgrad, fottext.</summary>
+    private static FrameworkElement MetricTile(string label, string value, string foot, int? percent)
+    {
+        var panel = new StackPanel { Spacing = 6 };
+        panel.Children.Add(new TextBlock { Text = label.ToUpperInvariant(), FontSize = 11, Opacity = 0.6, FontWeight = FontWeights.SemiBold });
+        panel.Children.Add(new TextBlock { Text = value, FontSize = 22, FontWeight = FontWeights.SemiBold });
+        if (percent is { } p)
+        {
+            panel.Children.Add(new ProgressBar
+            {
+                Value = p,
+                Maximum = 100,
+                Foreground = LevelBrush(DashboardFormat.Level(p)),
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+            });
+        }
+        panel.Children.Add(new TextBlock { Text = foot, FontSize = 12, Opacity = 0.7 });
+
+        return new Border
+        {
+            Child = panel,
+            Padding = new Thickness(12),
+            CornerRadius = new CornerRadius(8),
+            BorderThickness = new Thickness(1),
+            BorderBrush = ThemeBrush("CardStrokeColorDefaultBrush"),
+            Background = ThemeBrush("CardBackgroundFillColorDefaultBrush"),
+        };
+    }
+
+    /// <summary>Systemets textfakta — resten av det VISION räknar upp för dashboarden.</summary>
+    private static FrameworkElement BuildFactList(Host host, SystemSnapshot snapshot)
+    {
+        var panel = new StackPanel { Spacing = 4 };
+        void Fact(string key, string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return;
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+            row.Children.Add(new TextBlock { Text = key, Opacity = 0.6, Width = 150 });
+            row.Children.Add(new TextBlock { Text = value, TextWrapping = TextWrapping.Wrap });
+            panel.Children.Add(row);
+        }
+
+        Fact("Värdnamn", snapshot.Hostname ?? host.HostName);
+        Fact("Operativsystem", snapshot.Os);
+        Fact("Kärna", snapshot.Kernel);
+        Fact("Processorer", snapshot.CpuCount?.ToString());
+        Fact("Drifttid", snapshot.UptimeSeconds is { } up ? DashboardFormat.Uptime(up) : null);
+        Fact("IP-adresser", string.Join(", ", snapshot.Addresses.Select(a => $"{a.Address} ({a.Interface})")));
+        Fact("Inloggade", string.Join(", ", snapshot.ActiveUsers.Select(u => u.From is null ? $"{u.User} @ {u.Tty}" : $"{u.User} från {u.From}")));
+        Fact("SSH-nycklar", string.Join(", ", snapshot.AuthorizedKeys.Select(k =>
+            k.Comment.Length > 0 ? $"{k.Algorithm} {k.Comment}" : k.Algorithm)));
+
+        if (panel.Children.Count == 0) return StatusText("Inga systemuppgifter kunde läsas.");
+        return panel;
+    }
+
+    private static FrameworkElement BuildContainerSummary(SystemSnapshot snapshot)
+    {
+        if (snapshot.Containers.Count == 0)
+        {
+            return StatusText("Ingen container körs (eller docker saknas på värden).");
+        }
+
+        var panel = new StackPanel { Spacing = 2 };
+        panel.Children.Add(new TextBlock
+        {
+            Text = $"{snapshot.Containers.Count(c => c.IsRunning)} av {snapshot.Containers.Count} kör",
+            Opacity = 0.7,
+            FontSize = 12,
+        });
+        foreach (var container in snapshot.Containers)
+        {
+            panel.Children.Add(new TextBlock
+            {
+                Text = $"{container.Name} — {container.Image} ({container.Status})",
+                TextWrapping = TextWrapping.Wrap,
+            });
+        }
+        return panel;
+    }
+
+    private static Brush LevelBrush(MetricLevel level) => ThemeBrush(level switch
+    {
+        MetricLevel.Critical => "SystemFillColorCriticalBrush",
+        MetricLevel.Warning => "SystemFillColorCautionBrush",
+        _ => "SystemFillColorSuccessBrush",
+    });
+
+    /// <summary>Systemets temafärger, med en neutral reserv — en saknad nyckel ska
+    /// inte ta ner översikten.</summary>
+    private static Brush ThemeBrush(string key) =>
+        Application.Current.Resources.TryGetValue(key, out var value) && value is Brush brush
+            ? brush
+            : new SolidColorBrush(Microsoft.UI.Colors.Gray);
 
     // MARK: - Docker-flik (port av LinuxApps open_docker_view/refresh_docker_list)
 

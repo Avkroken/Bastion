@@ -12,6 +12,7 @@
         <Grid Grid.Column="0" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="0,0,1,0">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
 
@@ -22,7 +23,10 @@
                 <Button x:Name="AddHostButton" Content="+" Click="OnAddHostClicked" HorizontalAlignment="Right" />
             </StackPanel>
 
-            <ListView x:Name="HostListView" Grid.Row="1" SelectionMode="None" ItemClick="OnHostItemClicked" IsItemClickEnabled="True">
+            <TextBox x:Name="HostSearchBox" Grid.Row="1" Margin="12,0,12,8"
+                     PlaceholderText="Sök värd eller tagg" TextChanged="OnHostSearchChanged" />
+
+            <ListView x:Name="HostListView" Grid.Row="2" SelectionMode="None" ItemClick="OnHostItemClicked" IsItemClickEnabled="True">
                 <ListView.ItemTemplate>
                     <DataTemplate>
                         <Grid Margin="8,4">
@@ -40,6 +44,16 @@
                         </Grid>
                     </DataTemplate>
                 </ListView.ItemTemplate>
+                <ListView.GroupStyle>
+                    <GroupStyle HidesIfEmpty="True">
+                        <GroupStyle.HeaderTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Title}" FontSize="12" FontWeight="SemiBold"
+                                           Opacity="0.7" Margin="4,10,0,2" />
+                            </DataTemplate>
+                        </GroupStyle.HeaderTemplate>
+                    </GroupStyle>
+                </ListView.GroupStyle>
             </ListView>
         </Grid>
 
