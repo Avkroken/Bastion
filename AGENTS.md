@@ -28,27 +28,29 @@ inte via delad kod:
   `libvte-2.91-gtk4-dev` + `libgtksourceview-5-dev`)
 - OAuth är PKCE-baserat — inga klienthemligheter i koden, bara publika klient-ID:n
 
-## Allowed
-- Committa på dev
-- Skapa arbetsgrenar för PR:er (`claude/*`)
-- Modify code
-- Run tests
-- Open PRs
+## Tillåtet
+- Ändra kod
+- Köra tester
+- Öppna ändringsförslag från `dev` till standardgrenen
 
-## Forbidden
-- Push directly to main/master
-- Merge PRs på eget initiativ (be uttryckligen så är det okej)
-- Ta bort grenar
-- Disable workflows
-- Modify secrets
-- Change GitHub org settings
+## Förbjudet
+- Skicka ändringar direkt till `main` eller `master`
+- Radera grenar
+- Stänga av arbetsflöden
+- Ändra hemligheter
+- Ändra inställningar för GitHub-organisationen
 
-## Requirements
-- All tests must pass (`swift test` i repo-roten)
-- Keep PRs focused
-- Never include unrelated changes
-- Never commit credentials
-- Never force push
+## Krav
+- Överlämna kodändringar endast på `dev`
+- Alla tester måste godkännas (`swift test` i repo-roten)
+- Håll varje ändringsförslag avgränsat till en uppgift
+- Ta aldrig med orelaterade ändringar
+- Överlämna aldrig inloggningsuppgifter eller andra hemligheter till versionshistoriken
+- Tvinga aldrig igenom en skickning
+- Skapa ändringsförslag som klara för granskning, aldrig som utkast
+- Aktivera automatisk sammanfogning med en sammanfogningsöverlämning direkt efter att ändringsförslaget skapats
+- Automatisk sammanfogning får slutföras först när alla regelkrav och kontrollkörningar har godkänts
+- Om automatisk sammanfogning inte kan aktiveras: rapportera det exakta felet
 
 ## Svarsformat
 
