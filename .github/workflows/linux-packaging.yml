@@ -4,7 +4,7 @@ name: Linux-paketering (.deb)
 # när root-SwiftPM/CLI eller workflowet självt ändras.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - 'Sources/SSHCore/**'
       - 'Sources/bastion-cli/**'
@@ -12,7 +12,7 @@ on:
       - 'Package.resolved'
       - '.github/workflows/linux-packaging.yml'
   pull_request:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - 'Sources/SSHCore/**'
       - 'Sources/bastion-cli/**'
