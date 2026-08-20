@@ -2,14 +2,15 @@ name: Android-bygge
 
 # Bygger Android/ (Kotlin/Gradle, Apache MINA SSHD). Workflowet är inte
 # required och körs bara när Android-koden eller workflowet självt ändras.
+# PR-CI körs mot main; separat push-CI på dev skulle dubblera samma commit.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - 'Android/**'
       - '.github/workflows/android-build.yml'
   pull_request:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - 'Android/**'
       - '.github/workflows/android-build.yml'
