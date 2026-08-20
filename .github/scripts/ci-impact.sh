@@ -32,19 +32,23 @@ fi
 
 base="${CI_BASE_SHA:-}"
 head="${CI_HEAD_SHA:-${GITHUB_SHA:-HEAD}}"
+changed="${CI_CHANGED_FILES:-}"
 
-# A zero SHA is used for the first push to a new ref. There is no safe diff
-# base in that case, so fail open and run everything.
-if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
-  all=true
-fi
-
-changed=""
-if [[ "$all" != true ]]; then
-  if ! git cat-file -e "${base}^{commit}" 2>/dev/null || ! git cat-file -e "${head}^{commit}" 2>/dev/null; then
+# CI_CHANGED_FILES is a test/local override. In real CI the detector derives
+# the list from the exact base/head SHAs below.
+if [[ -z "${CI_CHANGED_FILES+x}" ]]; then
+  # A zero SHA is used for the first push to a new ref. There is no safe diff
+  # base in that case, so fail open and run everything.
+  if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
     all=true
-  else
-    changed="$(git diff --name-only --diff-filter=ACMRDTUXB "$base" "$head")"
+  fi
+
+  if [[ "$all" != true ]]; then
+    if ! git cat-file -e "${base}^{commit}" 2>/dev/null || ! git cat-file -e "${head}^{commit}" 2>/dev/null; then
+      all=true
+    else
+      changed="$(git diff --name-only --diff-filter=ACMRDTUXB "$base" "$head")"
+    fi
   fi
 fi
 
@@ -57,27 +61,21 @@ while IFS= read -r file; do
   [[ -n "$file" ]] || continue
 
   case "$file" in
-    # Apple UI/project. This does not require the standalone Swift CLI/package.
     App/*)
       apple_app=true
       ;;
 
-    # Shared Swift SSHCore is consumed by the Apple app and the root SwiftPM
-    # package. CLI packages also embed it.
     Sources/SSHCore/*)
       apple_app=true
       swift_core=true
       cli_package=true
       ;;
 
-    # The CLI is a root SwiftPM product but is not linked into the Apple app.
     Sources/bastion-cli/*)
       swift_core=true
       cli_package=true
       ;;
 
-    # SSHCore tests exercise root SwiftPM only; rebuilding the Apple UI adds no
-    # signal for a test-only change.
     Tests/SSHCoreTests/*)
       swift_core=true
       ;;
@@ -101,7 +99,7 @@ while IFS= read -r file; do
       ;;
 
     # A protocol/spec change is intentionally cross-platform. These patterns
-    # also reserve a stable place for future machine-readable protocol specs.
+    # reserve a stable place for future machine-readable protocol specs.
     docs/protocol/*|Protocol/*|PROTOCOL.md|SYNC_PROTOCOL.md)
       apple_app=true
       swift_core=true
@@ -132,9 +130,8 @@ while IFS= read -r file; do
       cli_package=true
       ;;
 
-    # The impact detector itself is security-critical routing logic. Any change
-    # to it proves the full matrix before it is trusted.
-    .github/scripts/ci-impact.sh)
+    # Routing logic must prove the full matrix before it is trusted.
+    .github/scripts/ci-impact.sh|.github/scripts/test-ci-impact.sh|.github/workflows/ci-impact-test.yml)
       all=true
       ;;
 
