@@ -1,27 +1,10 @@
 name: LinuxApp-bygge (Rust/GTK4)
 
-# Bygger+testar den native Rust/GTK4/libadwaita-klienten i LinuxApp/ — se
-# ROADMAP.md "Arkitekturbeslut" (2026-07-29): SwiftCrossUI-spåret (byggdes
-# tidigare av det nu borttagna linux-gui.yml) är riven och ersatt av detta.
-#
-# Jobbnamnet `linuxapp-build` matchar EXAKT branch-rulesetets
-# required_status_checks-lista på main (samma namn den gamla SwiftCrossUI-
-# byggningen hade) — utan denna workflow skulle den obligatoriska checken
-# aldrig kunna bli grön, oavsett vad koden gör.
-#
-# GTK4/libadwaita/vte4-headers krävs för att ens KOMPILERA gtk4-rs-
-# bindningarna (inte bara länka) — verifierat genom att faktiskt köra
-# `cargo build` lokalt efter att paketen installerats, inte antaget.
-#
-# MEDVETET INGEN `paths:`-filtrering här, trots att jobbet bara rör
-# LinuxApp/: detta är ett REQUIRED-check-namn i branch-rulesetet på main
-# (`linuxapp-build`). Ett required-check-jobb som inte triggas för en PR
-# (t.ex. en ren SSHCore/dokumentationsändring) rapporterar ALDRIG något
-# värde — GitHub låser då PR:en permanent på "Expected — waiting for
-# status" istället för att bara hoppa förbi. Samma mönster som redan syns
-# i `xcode.yml` (`xcodegen-and-build`/`swiftpm-macos`, också required,
-# också opathfiltrerade) — måste köra på VARJE PR mot main, inte bara de
-# som råkar röra LinuxApp/.
+# Bygger+testar den native Rust/GTK4/libadwaita-klienten i LinuxApp/.
+# `linuxapp-build` är required på main, därför får WORKFLOWET inte filtreras
+# bort med `paths:`. I stället körs ett billigt impact-jobb varje gång och de
+# dyra jobben skippar med `if:` när LinuxApp inte påverkas. GitHub rapporterar
+# ett villkorligt skippat jobb som success, så required-checken kan bli klar.
 on:
   push:
     branches: [main, dev]
@@ -37,7 +20,25 @@ permissions:
   contents: read
 
 jobs:
+  impact:
+    runs-on: ubuntu-latest
+    outputs:
+      linuxapp: ${{ steps.impact.outputs.linuxapp }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bestäm CI-påverkan
+        id: impact
+        env:
+          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: bash .github/scripts/ci-impact.sh
+
   linuxapp-build:
+    needs: impact
+    if: ${{ needs.impact.outputs.linuxapp == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -63,30 +64,12 @@ jobs:
       - name: cargo build
         run: cargo build --workspace --verbose
 
-      # --workspace, inte bara `cargo test`. Integrationerna
-      # (Docker/Kubernetes/Proxmox) ligger i ett eget paket sedan de bröts
-      # ut, och utan flaggan kör kommandot BARA rotpaketet — 39 tester
-      # hade tyst slutat köras utan att något blev rött. Uppmätt: 288 mot
-      # 327 passerade.
       - name: cargo test
         run: cargo test --workspace --verbose
 
-  # Bygger med EXAKT den toolchain `rust-version` i Cargo.toml utlovar, så
-  # siffran inte tyst blir fel. Den sätts nämligen inte av vår egen kod
-  # (edition 2024 kräver bara 1.85) utan av beroendena — gtk4-rs-stacken
-  # höjde t.ex. sitt krav till 1.92 utan att vi märkte det. Utan den här
-  # kontrollen upptäcks en föråldrad MSRV först när någon med en äldre
-  # toolchain försöker bygga, vilket är precis den situation fältet finns
-  # för att undvika.
-  #
-  # Versionen LÄSES ur Cargo.toml i stället för att dupliceras här — annars
-  # hade de två kunnat glida isär, och då vore kontrollen värdelös.
-  #
-  # Bygger bara (ingen testkörning): en MSRV-överträdelse är alltid ett
-  # KOMPILERINGSfel, så `cargo build` räcker och håller jobbet snabbt.
-  # Jobbet står medvetet UTANFÖR required_status_checks — det ska
-  # informera, inte blockera en brådskande fix.
   linuxapp-msrv:
+    needs: impact
+    if: ${{ needs.impact.outputs.linuxapp == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
