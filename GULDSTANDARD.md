@@ -115,6 +115,190 @@ träffar aldrig rulesetsen eftersom båda har target `branch`.
 "Release-immunitet" är alltså inget konfigurerat koncept, bara en konsekvens
 av att taggar och grenar är olika saker.
 
+### Avstämning mot alla sju repons ruleset 2026-08-20
+
+Avläst via `GET /repos/blixten85/{repo}/rulesets`. Beskrivningen ovan är från
+2026-08-17 och stämmer inte längre på fem punkter. Ta ställning till vilken
+sida som är sanningen innan nästa repo synkas mot den här filen.
+
+**1. `Block other branches` blockerar all grenskapelse — i alla sju repon.**
+Rulesetet (`~ALL` minus `main` och `dev`, reglerna `creation`, `deletion`,
+`non_fast_forward`) skapades 2026-08-19 med tom `bypass_actors`. Verifierat
+genom att försöka pusha en ny gren till bastion:
+
+```
+remote: error: GH013: Repository rule violations found
+remote: - Cannot create ref due to creations being restricted.
+```
+
+Ingen kan skapa en gren — varken repoägaren eller Dependabot. Befintliga
+grenar går att uppdatera, men en raderad gren går inte att återskapa, och
+`Automatically delete head branches` raderar dem efter varje merge. Fixen är
+den texten redan föreskriver för "Dev": repo-admin (`RepositoryRole` 5) och
+Dependabot (`Integration` 29110) som `bypass_actors` med `bypass_mode:
+always`. Rulesetet heter numera `Block other branches`, inte `Dev`, och
+undantar main och dev i stället för att täcka `~ALL` rakt av.
+
+**2. `allowed_merge_methods` är `["merge", "squash", "rebase"]` i alla sju.**
+Texten säger bara `merge`, "gäller alla repon", ändrat 2026-08-17. Antingen
+gjordes ändringen aldrig, eller så är den återställd.
+
+**3. `dismiss_stale_reviews_on_push` är `false` i alla sju.** Texten säger
+`true`.
+
+**4. `bypass_actors` är tom även i `Protect main`, i alla sju.** Texten säger
+repo-admin (`RepositoryRole` 5, `always`).
+
+**5. CodeQL är påslaget i alla sju**, både som required check och som
+`code_scanning`-verktyg. Texten säger "på i bastion, av i övriga repon".
+
+Om bindningen av required checks: de flesta rader saknar `integration_id` och
+är alltså "Any source". De tre som är bundna är bundna rätt — klarsprak
+`CodeQL` till 57789 (felbindningen till 15368 som beskrivs ovan är åtgärdad),
+politiker-webapp `python` och `scan-pr / osv-scan` till 15368 (GitHub
+Actions), product-describer `docker` till 15368.
+
+`code_quality` finns kvar i **politiker-webapp** och ska bort — det är gaten
+som väntar på en Copilot-analys som aldrig blir gjord. Övriga sex är rena.
+
+## Required status checks — per check, per repo
+
+Avläst via `GET /repos/blixten85/{repo}/rulesets/{id}` 2026-08-20. Alla
+required checks nedan hör till rulesetet **Protect main**; `Block other
+branches` har inga.
+
+En check får bara vara required om den **rapporterar på varje PR mot main**.
+Gör den inte det står kravet kvar som pending och PR:en går aldrig att merga,
+utan att gränssnittet förklarar varför. Tre saker diskvalificerar:
+
+1. **`if:` som hoppar över jobbet på PR.** `osv-scanner.yml` har `scan` med
+   `if: github.event_name != 'pull_request'`. Jobbet rapporterar `skipped`,
+   men den återanvända workflowen inuti kör aldrig — så det sammansatta
+   namnet `scan / osv-scan` skapas överhuvudtaget inte på en PR.
+2. **`paths:`-filter på workflowen.** Filtreras workflowen bort skapas ingen
+   check. Gäller `android-build` i bastion (`Android/**`) och `image`/`docker`
+   i politiker-webapp (`kontakter/scraper/**` m.fl.).
+3. **Jobbet finns inte längre.** `typecheck (sender)`, `(campaign)` och
+   `(healthcheck)` låste varje PR i politiker-webapp efter att de fyra Workers
+   slogs ihop 2026-08-20.
+
+Checkens namn är **jobbets id**, inte workflowens `name:`, och det är
+versalkänsligt — `Python` matchar inte jobbet `python`. Matrisjobb heter
+`jobb (värde)`. Ett jobb som anropar en återanvänd workflow heter
+`anropande-jobb / anropat-jobb`. Välj alltid raden ur **Suggestions** i UI:t;
+dyker sökordet bara upp under *Group newEntries* med "Any source" har GitHub
+aldrig sett en check med det namnet — då är namnet fel, inte källan.
+
+Kolumnen **Nu** är läget 2026-08-20: `har` = redan required, `lägg till` =
+kör på varje PR men saknas, `nej` = kör men bör inte gata, `aldrig` = kan
+aldrig uppfyllas.
+
+### bastion
+
+| Check | Kommer från | Nu | Varför |
+|---|---|---|---|
+| `xcodegen-and-build` | `xcode.yml` | har | Enda stället `App/` byggs |
+| `swiftpm-macos` | `xcode.yml` | har | `swift test` mot SSHCore |
+| `CodeQL` | default setup | har | Injektionskänsliga ytor: Docker-kommandobyggare, SSH-nyckelparser |
+| `linuxapp-build` | `linuxapp-build.yml` | har | `cargo build` för LinuxApp |
+| `swiftpm-linux` | `swiftpm-linux.yml` | **lägg till** | Kärnan på Linux-toolchain, kör på varje PR |
+| `linuxapp-msrv` | `linuxapp-build.yml` | **lägg till** | Bryts av en beroendebump som höjer MSRV |
+| `scan-pr / osv-scan` | `osv-scanner.yml` | **lägg till** | Differentiell — rapporterar bara det PR:en inför |
+| `ios-screenshots` | `xcode.yml` | nej | Genererar artefakter, inte ett korrekthetstest |
+| `build-deb` | `linux-packaging.yml` | nej | Paketering ska inte gata kodändringar |
+| `build-rpm` | `linux-packaging-rpm.yml` | nej | Som ovan |
+| `build-deb-linuxapp` | `linuxapp-packaging.yml` | nej | Som ovan |
+| `build-rpm-linuxapp` | `linuxapp-packaging-rpm.yml` | nej | Som ovan |
+| `android-build` | `android-build.yml` | aldrig | `paths: Android/**` |
+| `scan`, `scan / osv-scan` | `osv-scanner.yml` | aldrig | Kör inte på PR |
+
+### politiker-webapp
+
+| Check | Kommer från | Nu | Varför |
+|---|---|---|---|
+| `typecheck (app)` | `ci.yml` | har | Matrisen har en post sedan sammanslagningen; namnet behålls för den här radens skull |
+| `python` | `ci.yml` | har | Bunden till 15368 (GitHub Actions) |
+| `CodeQL` | default setup | har | |
+| `scan-pr / osv-scan` | `osv-scanner.yml` | har | Bunden till 15368 |
+| `image`, `docker` | `docker.yml` | aldrig | `paths`-filtrerad till `kontakter/scraper/**`, `.github/actions/trivy/**` |
+| `scan`, `scan / osv-scan` | `osv-scanner.yml` | aldrig | Kör inte på PR |
+
+Enda repot med fullständig lista. Två saker ska däremot **bort**:
+
+- **`code_quality`-regeln är tillbaka.** Det är gaten som kräver en
+  Copilot-analys som aldrig blir gjord utan abonnemang — se avsnittet om
+  Copilot-beroende regler ovan.
+- **`Trivy` och `osv-scanner` står som required tools** under
+  `code_scanning`, vid sidan av CodeQL. Trivy körs bara via `docker.yml`, som
+  är `paths`-filtrerad — en PR som bara rör `app/` producerar inga
+  Trivy-resultat. Övriga sex repon har bara CodeQL där.
+
+### klarsprak
+
+| Check | Kommer från | Nu | Varför |
+|---|---|---|---|
+| `CodeQL` | default setup | har | Bunden till 57789 — den felbindning som beskrivs ovan är åtgärdad |
+| `scan-pr / osv-scan` | `osv-scanner.yml` | **lägg till** | |
+| `scan`, `scan / osv-scan` | `osv-scanner.yml` | aldrig | Kör inte på PR |
+
+**Repot har ingen `ci.yml`.** Workflowsen är `deploy.yml`, `osv-scanner.yml`,
+`auto-assign.yml` och `dependabot-auto-merge.yml`. Workern är TypeScript men
+ingenting typkontrolleras på en PR. Det är en lucka jämfört med övriga repon,
+inte ett val.
+
+### docker-idempotent-update
+
+| Check | Kommer från | Nu | Varför |
+|---|---|---|---|
+| `lint` | `ci.yml` | har | |
+| `CodeQL` | default setup | har | |
+| `python` | `ci.yml` | **lägg till** | Kör på varje PR, saknas i rulesetet |
+| `docker` | `docker.yml` | **lägg till** | Inget `paths`-filter — bygger imagen på varje PR |
+| `scan-pr / osv-scan` | `osv-scanner.yml` | **lägg till** | |
+| `scan`, `scan / osv-scan` | `osv-scanner.yml` | aldrig | Kör inte på PR |
+
+### routines-relay
+
+| Check | Kommer från | Nu | Varför |
+|---|---|---|---|
+| `repository-checks` | `ci.yml` | har | Repots enda CI-jobb |
+| `CodeQL` | default setup | har | |
+| `scan-pr / osv-scan` | `osv-scanner.yml` | **lägg till** | |
+| `scan`, `scan / osv-scan` | `osv-scanner.yml` | aldrig | Kör inte på PR |
+
+### product-describer
+
+| Check | Kommer från | Nu | Varför |
+|---|---|---|---|
+| `python` | `ci.yml` | har | |
+| `dependency-review` | `dependency-review.yml` | har | |
+| `CodeQL` | default setup | har | |
+| `docker` | `docker.yml` | har | Bunden till 15368. Summeringsjobb: `if: always()`, `needs: [image]`, failar om någon matrisgren failat |
+| `node (app)` | `ci.yml` (matris) | **lägg till** | |
+| `node (engine)` | `ci.yml` (matris) | **lägg till** | |
+| `node (processor)` | `ci.yml` (matris) | **lägg till** | |
+| `scan-pr / osv-scan` | `osv-scanner.yml` | **lägg till** | |
+| `image (…)` | `docker.yml` (matris) | nej | `docker` täcker dem redan, utan matrisens namngivning |
+| `scan`, `scan / osv-scan` | `osv-scanner.yml` | aldrig | Kör inte på PR |
+
+### pastebinit
+
+| Check | Kommer från | Nu | Varför |
+|---|---|---|---|
+| `python` | `ci.yml` | har | Repots enda CI-jobb |
+| `CodeQL` | default setup | har | |
+| `scan-pr / osv-scan` | `osv-scanner.yml` | **lägg till** | |
+| `scan`, `scan / osv-scan` | `osv-scanner.yml` | aldrig | Kör inte på PR |
+
+### Aldrig required, i något repo
+
+- `github-advanced-security` — Copilot-checken. Alltid röd utan abonnemang.
+- `osv-scanner` — code scanning-resultatet, inte jobbet. Hör hemma under
+  *Require code scanning results*, inte bland status checks.
+- `assign`, `auto-merge` — automatiseringsjobb. De utför något, de
+  verifierar ingenting.
+- Deploy-jobb (`deploy.yml`, `deploy-cloudflare.yml`) — kör på main, inte PR.
+
 ## Vilka repon guldstandarden gäller
 
 Sju repon: `bastion`, `klarsprak`, `docker-idempotent-update`,
