@@ -1,22 +1,14 @@
 name: SwiftPM-Linux-bygge
 
-# Kärnan (SSHCore + bastion-cli, rot-paketet) påstås bygga på Linux OCH Apple
-# (se CLAUDE.md/README) — men fram tills nu verifierades det bara på en
-# macOS-runner (swiftpm-macos i xcode.yml). Rot-paketet beror inte på
-# SwiftCrossUI (det ligger i LinuxApp/, ett eget paket), så det drabbas
-# INTE av swift-mutex-kompilatorbuggen (swiftlang/swift#80759) som tvingar
-# LinuxApp/ till en dev-snapshot-toolchain (se linux-gui.yml) — en vanlig
-# stabil release räcker för rot-paketet.
-#
-# Workflowet triggas alltid för PR/push, men det dyra bygget körs bara när
-# den versionsstyrda impact-detektorn visar att root-SwiftPM påverkas. Det
-# undviker GitHubs fälla där workflow-level `paths:` kan lämna en required
-# check permanent Pending.
+# Kärnan (SSHCore + bastion-cli, rot-paketet) verifieras på Linux. PR-CI körs
+# mot main; separat push-CI på dev behövs inte eftersom samma commit annars
+# får både push- och pull_request-körningar när dev har en öppen PR.
+# Det dyra bygget körs bara när impact-detektorn visar att root-SwiftPM påverkas.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
-    branches: [main, dev]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -57,9 +49,6 @@ jobs:
       - name: Visa Swift-version
         run: swift --version
 
-      # ArchiveOperationsTests kör riktiga tar/zip/unzip-underprocesser (se
-      # ROADMAP.md "Zip/Tar") — swift:6.1-noble-avbildningen har tar men
-      # inte zip/unzip förinstallerat (minimal image).
       - name: Installera zip/unzip (för ArchiveOperationsTests)
         run: |
           apt-get update -qq
