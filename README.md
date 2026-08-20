@@ -256,6 +256,16 @@ exec-utdata idag för att bevisa datavägen till skärmen.
 
 Se [ROADMAP.md](ROADMAP.md) för status, nästa steg och avsiktligt uppskjutna delar.
 
+## Projektadministration
+
+Detta repository förvaltas som ett personligt projekt. Issues, Discussions, Wiki
+och Projects används inte. Ändringar görs på `dev` och förs till `main` via
+en pull request med obligatoriska kontroller.
+
+## Sponsring
+
+Stöd utvecklingen via [GitHub Sponsors – @blixten85](https://github.com/sponsors/blixten85).
+
 ## Licens
 
 MIT (se `LICENSE`). Alla valda beroenden (SwiftNIO, SwiftNIO SSH, swift-crypto,
