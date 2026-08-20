@@ -1,18 +1,13 @@
 name: LinuxApp-paketering (.rpm)
 
-# RPM-halvan av linuxapp-packaging.yml. Den är inte required och kan därför
-# filtreras på berörda filer utan att lämna en merge-blockerande Pending-check.
+# `build-rpm-linuxapp` är required i rulesetet och måste därför alltid
+# rapporteras på PR. Den tunga RPM-paketeringen körs bara när LinuxApp faktiskt
+# påverkas; required-checken är en billig aggregator.
 on:
   push:
     branches: [main]
-    paths:
-      - 'LinuxApp/**'
-      - '.github/workflows/linuxapp-packaging-rpm.yml'
   pull_request:
     branches: [main]
-    paths:
-      - 'LinuxApp/**'
-      - '.github/workflows/linuxapp-packaging-rpm.yml'
   workflow_dispatch:
 
 concurrency:
@@ -23,11 +18,30 @@ permissions:
   contents: read
 
 jobs:
-  build-rpm-linuxapp:
+  impact:
+    runs-on: ubuntu-latest
+    outputs:
+      linuxapp: ${{ steps.impact.outputs.linuxapp }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bestäm CI-påverkan
+        id: impact
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: bash .github/scripts/ci-impact.sh
+
+  package-rpm-linuxapp:
+    needs: impact
+    if: ${{ needs.impact.outputs.linuxapp == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -76,8 +90,20 @@ jobs:
           '
 
       - name: Ladda upp .rpm-artefakt
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bastion-linuxapp-rpm
           path: dist-out/*.rpm
           if-no-files-found: error
+
+  build-rpm-linuxapp:
+    if: always()
+    needs: [impact, package-rpm-linuxapp]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sammanfatta LinuxApp RPM-verifieringen
+        run: |
+          echo "impact: ${{ needs.impact.result }}"
+          echo "package-rpm-linuxapp: ${{ needs.package-rpm-linuxapp.result }}"
+          case "${{ needs.impact.result }}" in failure|cancelled) exit 1;; esac
+          case "${{ needs.package-rpm-linuxapp.result }}" in failure|cancelled) exit 1;; esac
