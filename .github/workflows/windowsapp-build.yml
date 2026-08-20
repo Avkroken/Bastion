@@ -1,14 +1,14 @@
 name: WindowsApp-bygge (WinUI 3/.NET)
 
 # Bygger den native WinUI 3-klienten i WindowsApp/ och kör kärnans tester.
-# Det dyra Windows-jobbet körs bara när impact-detektorn visar att WindowsApp
-# faktiskt påverkas. Workflowet självt triggas fortfarande så att routingfel
-# syns som vanliga CI-fel i stället för att tyst hoppa över verifiering.
+# PR-CI körs mot main; separat push-CI på dev skulle annars dubblera samma
+# commit när dev har en öppen PR. Det dyra Windows-jobbet körs bara när
+# impact-detektorn visar faktisk Windows-påverkan.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
-    branches: [main, dev]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
