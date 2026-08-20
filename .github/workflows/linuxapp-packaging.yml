@@ -4,12 +4,12 @@ name: LinuxApp-paketering (.deb)
 # körs bara när LinuxApp eller workflowet självt ändras.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - 'LinuxApp/**'
       - '.github/workflows/linuxapp-packaging.yml'
   pull_request:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - 'LinuxApp/**'
       - '.github/workflows/linuxapp-packaging.yml'
