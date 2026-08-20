@@ -2,13 +2,13 @@ name: CI impact routing tests
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - '.github/scripts/ci-impact.sh'
       - '.github/scripts/test-ci-impact.sh'
       - '.github/workflows/ci-impact-test.yml'
   pull_request:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - '.github/scripts/ci-impact.sh'
       - '.github/scripts/test-ci-impact.sh'
