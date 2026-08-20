@@ -12,7 +12,7 @@ name: LinuxApp-paketering (.rpm)
 # (det senare i en HELT FRISK container, se nedan) — ett jobb-nivå-
 # `container:` har ingen egen docker-daemon-åtkomst (ingen docker-in-
 # docker på GitHub-runners utan extra uppsättning), så hela flödet körs
-# som `docker run`-anrop på den bara `ubuntu-24.04`-runnern i stället.
+# som `docker run`-anrop på den bara `ubuntu-26.04`-runnern i stället.
 # Byggskriptet ligger i packaging/build-rpm.sh (inte inline i YAML) för
 # att undvika skör nästlad bash-i-YAML-citering.
 on:
@@ -31,7 +31,7 @@ permissions:
 
 jobs:
   build-rpm-linuxapp:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7

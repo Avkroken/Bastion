@@ -38,7 +38,7 @@ permissions:
 
 jobs:
   linuxapp-build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     defaults:
       run:
@@ -87,7 +87,7 @@ jobs:
   # Jobbet står medvetet UTANFÖR required_status_checks — det ska
   # informera, inte blockera en brådskande fix.
   linuxapp-msrv:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     defaults:
       run:
