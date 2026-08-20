@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import SSHCore
 
@@ -61,15 +62,140 @@ final class SyncCryptoTests: XCTestCase {
         let provider = EncryptedFolderSyncProvider(path: dir + "/shared.enc", passphrase: "delad-hemlis")
         let deviceA = HostStore(path: dir + "/a.json")
         let deviceB = HostStore(path: dir + "/b.json")
+        // Egna, tomma snippet-databaser: testet handlar om krypteringen, och
+        // den enda synkvägen tar båda.
+        let snipsA = SnippetStore(path: dir + "/a-snippets.json")
+        let snipsB = SnippetStore(path: dir + "/b-snippets.json")
 
         let h = Host(id: UUID(), alias: "nas", hostName: "10.0.0.2", user: "root")
         deviceA.upsert(h)
-        try deviceA.sync(with: provider)
-        try deviceB.sync(with: provider)
+        try deviceA.sync(with: provider, snippets: snipsA)
+        try deviceB.sync(with: provider, snippets: snipsB)
         XCTAssertEqual(deviceB.get(h.id)?.alias, "nas")
 
         // Fel lösenfras på en tredje enhet -> kan inte läsa.
         let wrong = EncryptedFolderSyncProvider(path: dir + "/shared.enc", passphrase: "gissning")
         XCTAssertThrowsError(try wrong.pull())
+    }
+
+    // MARK: - Iterationsgränser
+
+    /// Talet i kuvertet är angriparkontrollerat: filen kommer per design från
+    /// en obetrodd mapp. Utan övre gräns kan några hundra byte begära uppemot
+    /// 4,3 miljarder PBKDF2-rundor, och härledningen körs INNAN AEAD hinner
+    /// avvisa filen — timmar av CPU per synkförsök, vilket på iOS betyder en
+    /// app som hänger tills watchdogen dödar den.
+    ///
+    /// Testet mäter TIDEN, inte bara att ett fel kastas: kontrollen måste
+    /// ligga före `deriveKey`, annars är felet korrekt men skadan redan skedd.
+    func testAnAbsurdIterationCountIsRejectedBeforeAnyDerivationRuns() throws {
+        var envelope = try SyncCrypto.seal(SyncState(), passphrase: "hemlig")
+        // Skriv över iterationsfältet med UInt32.max.
+        let offset = SyncCrypto.magic.count
+        envelope.replaceSubrange(offset..<(offset + 4), with: [0xFF, 0xFF, 0xFF, 0xFF])
+
+        let start = ContinuousClock.now
+        XCTAssertThrowsError(try SyncCrypto.open(envelope, passphrase: "hemlig")) { error in
+            XCTAssertEqual(error as? SyncCryptoError, .badFormat)
+        }
+        XCTAssertLessThan(
+            ContinuousClock.now - start, .seconds(2),
+            "avvisandet måste ske FÖRE nyckelhärledningen — annars har angriparen "
+                + "redan fått betalt i CPU-tid")
+    }
+
+    /// Motsatsen: ett kuvert sparat med en absurt SVAG härledning ska inte
+    /// heller accepteras, så ingen kan göra en senare bruteforce billig genom
+    /// att skriva `iterations: 1`.
+    func testAnAbsurdlyWeakIterationCountIsRejected() throws {
+        var envelope = try SyncCrypto.seal(SyncState(), passphrase: "hemlig")
+        let offset = SyncCrypto.magic.count
+        envelope.replaceSubrange(offset..<(offset + 4), with: [0, 0, 0, 1])
+        XCTAssertThrowsError(try SyncCrypto.open(envelope, passphrase: "hemlig")) { error in
+            XCTAssertEqual(error as? SyncCryptoError, .badFormat)
+        }
+    }
+
+    /// Gränserna får inte vara så snäva att de avvisar riktiga kuvert.
+    /// Standardvärdet, och båda ändpunkterna, ska gå igenom.
+    func testTheDefaultAndBothBoundsAreAccepted() throws {
+        for iterations in [SyncCrypto.minIterations, SyncCrypto.defaultIterations] {
+            let envelope = try SyncCrypto.seal(
+                SyncState(), passphrase: "hemlig", iterations: iterations)
+            XCTAssertNoThrow(
+                try SyncCrypto.open(envelope, passphrase: "hemlig"),
+                "iterations = \(iterations) ska accepteras")
+        }
+    }
+
+    /// Värdena MÅSTE vara samma som LinuxApps (`sync_crypto.rs`). Går de isär
+    /// blir ett kuvert som ena plattformen skrivit oläsbart på den andra —
+    /// en synk som slutar fungera utan att någon ändrat något.
+    func testTheBoundsMatchTheOnesLinuxAppUses() {
+        XCTAssertEqual(SyncCrypto.minIterations, 1_000)
+        XCTAssertEqual(SyncCrypto.maxIterations, 10_000_000)
+        XCTAssertEqual(SyncCrypto.defaultIterations, 210_000)
+    }
+
+    // MARK: - Storlekstak på synkfilen
+
+    /// Filen kommer från en mapp vi INTE kontrollerar. Utan tak allokerar
+    /// `Data(contentsOf:)` hela längden innan något tittat på innehållet — på
+    /// en telefon en omedelbar OOM-död.
+    ///
+    /// Testet skriver en fil som är EN byte över taket, inte flera gigabyte:
+    /// det är gränsen som ska bevisas, och en gigabytefil i en testsvit vore
+    /// ett självmål.
+    func testAFileOverTheCapIsRefusedInsteadOfReadIntoMemory() throws {
+        let dir = NSTemporaryDirectory() + "bastion-cap-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let path = dir + "/state.json"
+        try Data(repeating: 0x78, count: SyncFileLimits.maxBytes + 1)
+            .write(to: URL(fileURLWithPath: path))
+
+        XCTAssertThrowsError(try SyncFileLimits.read(path)) { error in
+            XCTAssertEqual(error as? SyncFileError, .tooLarge(maxBytes: SyncFileLimits.maxBytes))
+        }
+
+        // Och providern ska föra felet vidare, inte svälja det och låtsas att
+        // mappen var tom — "inget att synka" och "någon la en gigabytefil
+        // här" är olika saker.
+        let provider = EncryptedFolderSyncProvider(path: path, passphrase: "hemlig")
+        XCTAssertThrowsError(try provider.pull())
+    }
+
+    /// Taket får inte avvisa något verkligt. En fil precis PÅ gränsen ska
+    /// läsas — annars är det inte ett skydd utan en godtycklig begränsning.
+    func testAFileExactlyAtTheCapIsStillRead() throws {
+        let dir = NSTemporaryDirectory() + "bastion-cap-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let path = dir + "/stor.bin"
+        try Data(repeating: 0x79, count: SyncFileLimits.maxBytes)
+            .write(to: URL(fileURLWithPath: path))
+
+        XCTAssertEqual(try SyncFileLimits.read(path).count, SyncFileLimits.maxBytes)
+    }
+
+    /// Ett vanligt, krypterat tillstånd ska gå igenom precis som förut.
+    func testANormalEnvelopeRoundTripsThroughTheCappedRead() throws {
+        let dir = NSTemporaryDirectory() + "bastion-cap-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let provider = EncryptedFolderSyncProvider(path: dir + "/state.enc", passphrase: "hemlig")
+
+        var state = SyncState()
+        state.hosts.append(Host(alias: "a", hostName: "10.0.0.1", user: "u"))
+        try provider.push(state)
+        let back = try provider.pull()
+        XCTAssertEqual(back?.hosts.count, 1)
+    }
+
+    /// Värdet MÅSTE vara samma som LinuxApps `MAX_SYNC_FILE_BYTES`. Går de
+    /// isär accepterar ena plattformen en fil den andra vägrar, vilket ser ut
+    /// som en synk som fungerar på en enhet men inte på nästa.
+    func testTheCapMatchesTheOneLinuxAppUses() {
+        XCTAssertEqual(SyncFileLimits.maxBytes, 64 * 1024 * 1024)
     }
 }

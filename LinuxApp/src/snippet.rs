@@ -72,7 +72,17 @@ fn occurrences(template: &str) -> Vec<((usize, usize), String)> {
 }
 
 /// Persistent snippet-databas, `~/.bastion/snippets.json` — samma mönster
-/// som `HostStore` men en ren array (ingen sync-integration, se ROADMAP.md).
+/// som `HostStore`, men en ren array.
+///
+/// Gravstenarna ligger MEDVETET inte här utan i sync-tillståndet
+/// (`hosts.json`, som i sin helhet ÄR en serialiserad `SyncState`). Skälet
+/// är att gravstenar bara betyder något för synken, och en delad karta för
+/// båda posttyperna slipper både ett andra fält på tråden och en
+/// formatändring av `snippets.json` som varje plattform hade behövt följa.
+/// Radering av en snippet går därför via [`SnippetStore::delete_synced`],
+/// som får sync-tillståndet med sig — `delete` utan gravsten finns kvar för
+/// den som inte synkar, men en snippet raderad så ÅTERUPPSTÅR vid nästa
+/// synk mot en enhet som fortfarande har den.
 pub struct SnippetStore {
     path: std::path::PathBuf,
     snippets: Vec<Snippet>,
@@ -117,6 +127,27 @@ impl SnippetStore {
 
     pub fn delete(&mut self, id: Uuid) -> std::io::Result<()> {
         self.snippets.retain(|s| s.id != id);
+        self.persist()
+    }
+
+    /// Raderar OCH skriver en gravsten i sync-tillståndet, så raderingen
+    /// överlever en synk. Använd den här i allt som kan synkas; se
+    /// typkommentaren för varför gravstenen bor i `HostStore`.
+    pub fn delete_synced(
+        &mut self,
+        id: Uuid,
+        state: &mut crate::host::HostStore,
+    ) -> std::io::Result<()> {
+        self.delete(id)?;
+        state.record_tombstone(id)
+    }
+
+    /// Ersätter hela innehållet — används av synken när det sammanslagna
+    /// resultatet ska skrivas tillbaka. Rör INTE `modified_at`, till skillnad
+    /// från `upsert`: tidsstämplarna kommer från hopslagningen och är precis
+    /// det som avgjorde vem som vann.
+    pub fn replace_all(&mut self, snippets: Vec<Snippet>) -> std::io::Result<()> {
+        self.snippets = snippets;
         self.persist()
     }
 
@@ -200,5 +231,42 @@ mod tests {
             "en trunkerad/skadad fil ska propagera ett fel, inte tyst bli en tom lista"
         );
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Låser JSON-formen för `Snippet`, som Swift-sidan avkodar ur samma
+    /// `SyncState`.
+    ///
+    /// `Host` fick den här vakten efter att TVÅ fält gått isär tyst mellan
+    /// plattformarna — `forwardAgent` saknades helt på ena sidan och
+    /// `jumpHostID` stavades `jumpHostId` på den andra. Snippet råkade vara
+    /// oskadd, men hade ingen vakt alls: nästa fält någon lägger till kunde
+    /// gå isär precis lika tyst, och symptomet är en synk som slutar
+    /// överföra en inställning utan ett enda felmeddelande.
+    ///
+    /// Kravet är EXAKT nyckeluppsättning, inte "innehåller". Ett test som
+    /// bara kollar de fält man råkar tänka på hittar inte nästa.
+    #[test]
+    fn the_json_shape_of_snippet_is_exactly_what_the_other_platforms_expect() {
+        let snippet = Snippet::new("namn".into(), "docker restart {{tjanst}}".into());
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&snippet).unwrap()).unwrap();
+        let mut keys: Vec<String> = json.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+
+        let mut expected = vec!["id", "modifiedAt", "name", "template"];
+        expected.sort();
+        assert_eq!(
+            keys, expected,
+            "JSON-formen ändrades. Uppdatera Swift-sidans Snippet i samma veva, \
+             annars släpps det nya fältet tyst vid synk."
+        );
+
+        // Datumet är Apples referensdatum (2001), inte Unix-epok. Går de isär
+        // blir varje snippet från den ena plattformen 31 år äldre än den
+        // andras, och LWW-mergen väljer alltid fel sida.
+        assert!(
+            json["modifiedAt"].is_number(),
+            "modifiedAt måste vara ett tal (sekunder sedan 2001), inte en textsträng"
+        );
     }
 }

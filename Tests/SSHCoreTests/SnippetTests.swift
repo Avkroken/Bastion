@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import SSHCore
 
@@ -72,5 +73,35 @@ final class SnippetStoreTests: XCTestCase {
         }
         let s2 = SnippetStore(path: path)
         XCTAssertEqual(s2.get(s.id), stored)
+    }
+
+    /// Låser JSON-formen för `Snippet`, som LinuxApp avkodar ur samma
+    /// `SyncState`.
+    ///
+    /// `Host` fick den här vakten efter att TVÅ fält gått isär tyst mellan
+    /// plattformarna — `forwardAgent` saknades helt här och `jumpHostID`
+    /// stavades `jumpHostId` där. Snippet råkade vara oskadd, men hade ingen
+    /// vakt alls: nästa fält någon lägger till kunde gå isär precis lika
+    /// tyst, och symptomet är en synk som slutar överföra en inställning utan
+    /// ett enda felmeddelande.
+    ///
+    /// Kravet är EXAKT nyckeluppsättning, inte "innehåller". Ett test som
+    /// bara kollar de fält man råkar tänka på hittar inte nästa.
+    func testTheJSONShapeOfSnippetIsExactlyWhatTheOtherPlatformsExpect() throws {
+        let snippet = Snippet(name: "namn", template: "docker restart {{tjanst}}")
+        let obj = try JSONSerialization.jsonObject(
+            with: try JSONEncoder().encode(snippet)) as! [String: Any]
+
+        XCTAssertEqual(
+            obj.keys.sorted(), ["id", "modifiedAt", "name", "template"],
+            "JSON-formen ändrades. Uppdatera LinuxApps Snippet i samma veva, annars "
+                + "släpps det nya fältet tyst vid synk.")
+
+        // Datumet är Apples referensdatum (2001), inte Unix-epok. Går de isär
+        // blir varje snippet från den ena plattformen 31 år äldre än den
+        // andras, och LWW-mergen väljer alltid fel sida.
+        XCTAssertTrue(
+            obj["modifiedAt"] is NSNumber,
+            "modifiedAt måste vara ett tal (sekunder sedan 2001), inte en textsträng")
     }
 }

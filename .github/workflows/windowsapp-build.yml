@@ -1,0 +1,79 @@
+name: WindowsApp-bygge (WinUI 3/.NET)
+
+# Bygger den native WinUI 3-klienten i WindowsApp/ och kör kärnans tester.
+#
+# Fanns inte förrän nu: WindowsApp/ har byggts helt utan CI, och XAML-
+# kompilatorn KAN inte köras någon annanstans än på Windows (`dotnet build`
+# på Linux dör i Microsoft.UI.Xaml.Markup.Compiler innan C#-koden ens
+# kompileras). All kod bakom gränssnittet har därför bara verifierats
+# genom att någon råkat ha en Windows-maskin. Det här jobbet är den
+# verifieringen.
+#
+# `claude/**` finns med bland push-grenarna av samma skäl: en arbetsgren
+# måste kunna visa att WinUI-koden kompilerar innan den blir en PR, annars
+# är det enda sättet att få veta att någon öppnar en PR.
+#
+# Jobbet står UTANFÖR required_status_checks på main tills det har visat
+# sig stabilt — det ska informera först, blockera sedan.
+on:
+  push:
+    branches: [main, dev, 'claude/**']
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+
+concurrency:
+  group: windowsapp-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Kärnan (Bastion.Core) är ren .NET utan Windows-beroenden och testas
+  # därför på ubuntu — snabbare, och det är samma kod som WinUI-appen
+  # bygger på. Testerna startar en riktig sshd på en slumpport, så
+  # openssh-server måste finnas.
+  windowsapp-core-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+
+      - name: Installera OpenSSH (testerna kör mot en riktig sshd)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq openssh-server openssh-client
+
+      # Tag-pinnad, inte SHA-pinnad som övriga steg: SHA:n gick inte att
+      # slå upp från utvecklingsmiljön. Pinna den gärna vid nästa besök.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: dotnet test (Bastion.Core)
+        run: dotnet test WindowsApp/Bastion.Core.Tests/Bastion.Core.Tests.csproj -c Release --verbosity normal
+
+  # Själva WinUI-appen: XAML-kompilatorn kräver Windows, så det här är
+  # enda stället där MainWindow.xaml och dess kodbakgrund faktiskt
+  # kompileras.
+  windowsapp-build:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: dotnet build (WinUI 3, x64)
+        run: dotnet build WindowsApp/WindowsApp.csproj -c Release -p:Platform=x64

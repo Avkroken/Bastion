@@ -50,6 +50,31 @@ public final class SnippetStore {
         }
     }
 
+    /// Raderar OCH skriver en gravsten i sync-tillståndet, så raderingen
+    /// överlever en synk. Använd den här i allt som kan synkas — utan
+    /// gravsten kommer motparten glatt tillbaka med sin kopia, och snippeten
+    /// återuppstår varje gång användaren raderar den.
+    ///
+    /// Gravstenarna bor i `HostStore` och inte här: de betyder bara något för
+    /// synken, och en delad karta för båda posttyperna slipper både ett andra
+    /// fält på tråden och en formatändring av snippet-filen som varje
+    /// plattform hade behövt följa.
+    public func delete(_ id: UUID, recordingTombstoneIn hosts: HostStore) {
+        delete(id)
+        hosts.recordTombstone(id)
+    }
+
+    /// Ersätter hela innehållet — används av synken när det sammanslagna
+    /// resultatet ska skrivas tillbaka. Rör INTE `modifiedAt`, till skillnad
+    /// från `upsert`: tidsstämplarna kommer från hopslagningen och är precis
+    /// det som avgjorde vem som vann.
+    public func replaceAll(_ snippets: [Snippet]) {
+        lock.withLock {
+            byID = Dictionary(snippets.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            persist()
+        }
+    }
+
     // Anropas med låset hållet.
     private func persist() {
         guard let path else { return }

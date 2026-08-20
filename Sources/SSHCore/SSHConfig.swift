@@ -7,15 +7,30 @@ public struct ResolvedHost: Sendable, Equatable {
     public var port: Int
     public var identityFile: String?
     public var proxyJump: String?
+    /// OpenSSH:s `ForwardAgent`. Bara ett uttryckligt ja räknas — allt annat,
+    /// inklusive nyckelns frånvaro, är nej. Att gissa fel åt det hållet vore
+    /// att slå på agentvidarebefordran åt någon som inte bett om det, och då
+    /// kan vem som helst med root på fjärrvärden använda deras nycklar så
+    /// länge sessionen lever.
+    public var forwardAgent: Bool = false
+    /// OpenSSH:s `RemoteCommand` — kommandot som körs direkt efter anslutning.
+    /// Motsvarar ``Host/startupCommand``.
+    public var remoteCommand: String?
 }
 
 /// Minimal läsare av OpenSSH:s klientkonfiguration (`~/.ssh/config`). Stöder
 /// `Host`-block med jokertecken (`*`, `?`) och negation (`!`), `Include`, samt
 /// de vanligaste nycklarna. Semantik enligt OpenSSH: **första värdet vinner**
-/// per nyckel. `Match`-block hoppas medvetet över (ännu ej stött).
+/// per nyckel. `Match` stöds för de kriterier som går att avgöra utan en
+/// pågående anslutning (`all`, `host`); allt annat lämnar blocket inaktivt —
+/// se ``matchIsActive(_:_:)``.
 public struct SSHConfig: Sendable {
     private enum Entry: Sendable {
         case host([String])
+        /// Ett `Match`-block, med kriterieraden bevarad rå. Utvärderas först
+        /// i `resolve`, eftersom `host`-kriteriet beror på vilket alias som
+        /// slås upp — till skillnad från `host`, vars mönster står i posten.
+        case match(String)
         case setting(String, String)
     }
     private let entries: [Entry]
@@ -74,8 +89,7 @@ public struct SSHConfig: Sendable {
             case "host":
                 out.append(.host(value.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)))
             case "match":
-                // Ej stött — tomt mönster matchar aldrig, så blockets nycklar ignoreras.
-                out.append(.host([]))
+                out.append(.match(value))
             case "include":
                 guard let baseDir, depth < maxIncludeDepth else { continue }
                 for included in resolveInclude(value, baseDir: baseDir) {
@@ -154,6 +168,8 @@ public struct SSHConfig: Sendable {
             switch entry {
             case .host(let patterns):
                 active = SSHConfig.hostMatches(patterns, alias)
+            case .match(let criteria):
+                active = SSHConfig.matchIsActive(criteria, alias)
             case .setting(let key, let value):
                 if active, found[key] == nil { found[key] = value }
             }
@@ -165,7 +181,9 @@ public struct SSHConfig: Sendable {
             identityFile: found["identityfile"].map {
                 ($0 as NSString).expandingTildeInPath
             },
-            proxyJump: found["proxyjump"])
+            proxyJump: found["proxyjump"],
+            forwardAgent: found["forwardagent"]?.lowercased() == "yes",
+            remoteCommand: found["remotecommand"])
     }
 
     // MARK: - Parsning
@@ -188,6 +206,83 @@ public struct SSHConfig: Sendable {
     }
 
     /// En värd matchar om minst ett positivt mönster matchar och inget negerat gör det.
+    /// Plockar ut värdaliaset ur ett `ProxyJump`-värde.
+    ///
+    /// Syntaxen är `[user@]host[:port]`, och flera hopp kan anges
+    /// kommaseparerat. Bara FÖRSTA hoppet returneras — anslutningskedjan
+    /// stöder ändå bara ett hopp, så att importera en längre kedja skulle
+    /// skapa en koppling som inte går att använda.
+    ///
+    /// `nil` när värdet är tomt eller `none` (OpenSSH:s sätt att stänga av
+    /// ett ärvt `ProxyJump`).
+    public static func proxyJumpAlias(_ value: String) -> String? {
+        guard let first = value.split(separator: ",").first.map(String.init)?
+            .trimmingCharacters(in: .whitespaces), !first.isEmpty else { return nil }
+        if first.lowercased() == "none" { return nil }
+        let withoutUser = first.split(separator: "@").last.map(String.init) ?? first
+        // IPv6-literaler skrivs `[::1]:22` — allt före den avslutande
+        // klammern hör till adressen, inte till porten.
+        let host: String
+        if let end = withoutUser.firstIndex(of: "]") {
+            host = String(withoutUser[...end])
+        } else {
+            host = withoutUser.split(separator: ":").first.map(String.init) ?? withoutUser
+        }
+        return host.isEmpty ? nil : host
+    }
+
+    /// Avgör om ett `Match`-blocks kriterier gäller för `alias`.
+    ///
+    /// OpenSSH kräver att ALLA kriterier på raden är uppfyllda. Här kan bara
+    /// två av dem avgöras: `all` (alltid) och `host <mönster>` (samma
+    /// jokertecken- och negationsregler som `Host`). Resten — `exec`, `user`,
+    /// `originalhost`, `localuser`, `tagged`, `final`, `canonical` — beror på
+    /// en pågående anslutning, en kommandokörning eller en andra
+    /// upplösningsomgång, inget av det finns här.
+    ///
+    /// Ett okänt eller oavgörbart kriterium gör blocket INAKTIVT, aldrig
+    /// aktivt. Det är den enda riktning som är säker: ett block som felaktigt
+    /// hoppas över ger samma resultat som innan `Match` stöddes alls, medan
+    /// ett block som felaktigt aktiveras tyst byter ut användarens värdnamn,
+    /// användare eller nyckel mot någon annans.
+    ///
+    /// `Match exec "..."` kommer aldrig att köras härifrån. Att köra ett
+    /// godtyckligt skalkommando för att avgöra en konfigurationsrad är inte
+    /// en funktion som saknas, det är en vi inte vill ha.
+    static func matchIsActive(_ criteria: String, _ alias: String) -> Bool {
+        // Delas BARA på blanksteg. Ett `host`-kriterium tar en kommaseparerad
+        // mönsterlista (`Match host *.internal,!hemlig.internal`); delas
+        // kommatecknen redan här blir listans andra mönster ett eget, okänt
+        // kriterium — vilket tyst gör varje negation till en avaktivering av
+        // hela blocket. (Exakt den buggen fanns i Rust-porten först, och
+        // fångades av dess negationstest.)
+        let tokens = criteria
+            .split(whereSeparator: { $0 == " " || $0 == "\t" })
+            .map(String.init)
+        guard !tokens.isEmpty else { return false }
+
+        var i = 0
+        var matchedSomething = false
+        while i < tokens.count {
+            switch tokens[i].lowercased() {
+            case "all":
+                matchedSomething = true
+                i += 1
+            case "host":
+                // Kriteriet tar ett argument. Saknas det är raden trasig.
+                guard i + 1 < tokens.count else { return false }
+                let patterns = tokens[i + 1].split(separator: ",").map(String.init)
+                guard SSHConfig.hostMatches(patterns, alias) else { return false }
+                matchedSomething = true
+                i += 2
+            default:
+                // Vi kan inte avgöra det, alltså gäller blocket inte.
+                return false
+            }
+        }
+        return matchedSomething
+    }
+
     static func hostMatches(_ patterns: [String], _ host: String) -> Bool {
         guard !patterns.isEmpty else { return false }
         var matched = false

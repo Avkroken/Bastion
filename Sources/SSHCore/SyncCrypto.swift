@@ -18,6 +18,26 @@ public enum SyncCrypto {
     public static let defaultIterations = 210_000
     static let saltLength = 16
 
+    /// Gränser för `iterations` LÄST UR EN FIL. Kuvertet kommer per design
+    /// från en obetrodd mapp (en delad Dropbox/Drive/iCloud-katalog), så
+    /// talet är angriparkontrollerat.
+    ///
+    /// Utan övre gräns kan en planterad fil på några hundra byte begära
+    /// uppemot 4,3 miljarder PBKDF2-rundor, och härledningen körs INNAN
+    /// AEAD-autentiseringen hunnit avvisa filen — alltså timmar av CPU per
+    /// synkförsök, om och om igen. På iOS betyder det en app som hänger
+    /// tills systemets watchdog dödar den.
+    ///
+    /// Den undre gränsen skyddar mot motsatsen: ett kuvert sparat med
+    /// `iterations: 1` av någon som vill göra en senare bruteforce billig.
+    ///
+    /// LinuxApp har haft de här gränserna sedan `sync_crypto.rs` skrevs, med
+    /// exakt samma resonemang. Den här sidan saknade dem — samma sorts
+    /// asymmetri som lät `forwardAgent` finnas på en plattform och inte den
+    /// andra. Värdena hålls medvetet identiska.
+    static let minIterations = 1_000
+    static let maxIterations = 10_000_000
+
     public static func seal(_ state: SyncState, passphrase: String,
                             iterations: Int = SyncCrypto.defaultIterations) throws -> Data {
         let salt = randomBytes(saltLength)
@@ -40,6 +60,11 @@ public enum SyncCrypto {
         }
         let bytes = Array(data)
         let iterations = Int(readUInt32BE(Array(bytes[magic.count..<magic.count + 4])))
+        // Kontrolleras FÖRE `deriveKey` — hela poängen är att aldrig starta
+        // en härledning vars kostnad en angripare valt.
+        guard (minIterations...maxIterations).contains(iterations) else {
+            throw SyncCryptoError.badFormat
+        }
         let salt = Array(bytes[magic.count + 4..<header])
         let combined = Data(bytes[header...])
 
@@ -114,7 +139,10 @@ public struct EncryptedFolderSyncProvider: SyncProvider {
 
     public func pull() throws -> SyncState? {
         guard FileManager.default.fileExists(atPath: path) else { return nil }
-        return try SyncCrypto.open(Data(contentsOf: URL(fileURLWithPath: path)), passphrase: passphrase)
+        // Samma tak som den okrypterade transporten. Här spelar det ännu
+        // större roll: kuvertet är per definition obetrott innehåll från en
+        // mapp vi inte kontrollerar.
+        return try SyncCrypto.open(SyncFileLimits.read(path), passphrase: passphrase)
     }
 
     public func push(_ state: SyncState) throws {

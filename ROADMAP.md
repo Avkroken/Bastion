@@ -31,13 +31,13 @@ delvis andra, av konkreta skäl:
 | Misslyckad auth utan att hänga | ✅ testad |
 | Interaktiv shell + PTY (stdin/stdout, resize) | ✅ testad end-to-end |
 | known_hosts / TOFU (SHA256-fingeravtryck, MITM-skydd) | ✅ testad, `~/.bastion/known_hosts` |
-| ssh-config-parsing (`Host`-alias, jokertecken, `IdentityFile`, `Include`) | ✅ testad, CLI slår upp alias — `Include` i BÅDE LinuxApp Rust och `SSHConfig.swift` (2026-08-19) |
+| ssh-config-parsing (`Host`, jokertecken, `IdentityFile`, `Include`, `Match`) | ✅ testad, CLI slår upp alias — `Include` och `Match` i BÅDE LinuxApp Rust och `SSHConfig.swift` (2026-08-19). `Match` stöder `all` och `host`; övriga kriterier (`exec`/`user`/`originalhost`/`localuser`/`tagged`/`final`/`canonical`) lämnar blocket INAKTIVT, aldrig aktivt |
 | Host-databas (JSON, taggar, CRUD) | ✅ testad, `~/.bastion/hosts.json` |
-| Dashboard-data (last/minne/disk/uptime/OS/Docker via SSH) | ✅ parser testad, ett kommando — App/-UI (Xcode-only) — ✅ (2026-08-05) LinuxApp Rust (`dashboard.rs`), egen flik, auto-poll var 15:e sekund (se "Klart") |
+| Dashboard-data (last/minne/disk/uptime/OS/Docker via SSH) | ✅ parser testad, ett kommando — App/-UI (Xcode-only) — ✅ (2026-08-05) LinuxApp Rust (`dashboard.rs`), egen flik, auto-poll var 15:e sekund (se "Klart") — ✅ (2026-08-19) WindowsApp C# (`SystemProbe.cs`, samma 11 fält som Rust-sidan, egen Översikt-flik som öppnas när man klickar på en värd) |
 | Docker-åtgärder (lista/start/stopp/omstart/logg) | ✅ testad, injektionssäker referens |
 | Sync mellan enheter (LWW-merge + gravstenar, mapp-transport) | ✅ testad, konvergens bevisad |
-| E2E-krypterad sync (AES-256-GCM + PBKDF2, testvektorer) | ✅ testad, chiffertext läcker inget |
-| Importera `~/.ssh/config` → host-DB | ✅ testad (parser + dedup + `Include`, LinuxApp läser filen från disk) |
+| E2E-krypterad sync (AES-256-GCM + PBKDF2, testvektorer) | ✅ testad, chiffertext läcker inget. `iterations` LÄST UR EN FIL klampas nu på BÅDA plattformarna (1 000–10 000 000) — Swift-sidan saknade gränsen och körde PBKDF2 med ett angriparvalt tal före AEAD-kontrollen (2026-08-19) |
+| Importera `~/.ssh/config` → host-DB | ✅ testad (parser + dedup + `Include`/`Match`, LinuxApp läser filen från disk). Importerar även `ForwardAgent`, `RemoteCommand` → `startup_command` och `ProxyJump` → `jump_host_id` på BÅDA plattformarna (2026-08-19). TVÅ tysta dataförluster vid synk hittade och fixade: `Host.forwardAgent` saknades helt i Swift-modellen, och `jumpHostID` stavades `jumpHostId` av serde men `jumpHostID` av Swift, så ProxyJump-kopplingen försvann i BÅDA riktningarna. Båda sidor läser nu den gamla stavningen och skriver den nya, och ett test per plattform låser HELA nyckeluppsättningen så nästa fält inte kan gå isär tyst |
 | Docker-shell-kommando (`docker exec -it`, injektionssäkert) | ✅ testad |
 | Kontoinloggning (OAuth2 + PKCE, Dropbox/Google Drive/OneDrive) | ✅ PKCE-kärna testad mot RFC 7636; alla tre `SyncProvider`-implementationer klara, kräver eget klient-ID (se README "Konton") |
 | iOS-app (host-lista, dashboard, Docker+shell, sync, import) | 🧩 `App/`, byggs i Xcode via XcodeGen |
@@ -56,6 +56,9 @@ delvis andra, av konkreta skäl:
 | ssh-agent-protokollklient | ✅ `SSHAgentClient.swift`, testad mot en RIKTIG `ssh-agent` — 🚫 kanal-forwarding till fjärrserver BLOCKERAD (se ROADMAP) |
 | Tailscale-värdförslag | ✅ `TailscaleStatus.swift` (fetch/fetchLocal) — LinuxApp OCH App/-UI (2026-07-08, Xcode-only; `fetchLocal` villkorsstyrd bort på iOS, `Foundation.Process` saknas där) |
 | S3-kompatibel objektlagring | ✅ `S3Client.swift` + `S3ConnectionStore` — LinuxApp OCH App/-UI (2026-07-08, Xcode-only) |
+| Värdlista grupperad på tagg + sök | ✅ App/ OCH LinuxApp (`host_grouping.rs`) — ✅ (2026-08-19) WindowsApp (`HostGrouping.cs`, samma semantik, 7 tester) |
+| WindowsApp-CI | ✅ (2026-08-19) `windowsapp-build.yml` — kärnans tester på ubuntu, WinUI-bygget på en Windows-runner. Innan dess byggdes `WindowsApp/` aldrig automatiskt: XAML-kompilatorn kräver Windows |
+| Gränssnittsprototyp (alla fem plattformar) | ✅ (2026-08-19) `docs/prototyp/bastion-gui.html`, interaktivt designunderlag för Windows- och Linux-klienterna |
 
 ## Riktmärke: Termius (2026-08-05)
 
@@ -2455,7 +2458,7 @@ Inget nytt att bygga, bara verifiera/lansera:
   den otrimmade nyckeln, så `{{ mellanslag }}` aldrig matchade). UI: knapp
   i värddetaljvyn, fyll i variabler, kör som startkommando i en ny terminal
   (samma `ConnectRequest.running(_:)`/`initialCommand`-mönster som Docker-
-  shell). Ingen sync av snippets mellan enheter än (medvetet, v1).
+  shell). Synkas mellan enheter sedan 2026-08-19 (`SyncState.snippets`, samma LWW-regler och gravstenar som värdarna, en rundtur för båda databaserna).
 - **Favoriter/färgkodning i host-listan** — ✅ klart, både App/ (`Host.isFavorite`/
   `colorTag` i SSHCore, `HostColorPicker`, egen "★ Favoriter"-sektion) och
   LinuxApp (samma fält, favoriter sorterade överst, "☆/★ Favorit"-knapp
@@ -2597,9 +2600,103 @@ Inget nytt att bygga, bara verifiera/lansera:
     redan fristående här, `.deb`/`.rpm`/direktnedladdning — se "Paketering"
     nedan): ladda ner OFFICIELLA, plattforms-/arkitekturmatchade
     förbyggda binärer (`wireguard-go` — WireGuards egen userspace Go-
-    implementation, INGEN kärnmodul krävs, finns för i princip alla
-    plattformar som EN binär — samt `tailscale`/`tailscaled`, som
-    Tailscale själva distribuerar på samma sätt) vid första användning
+    implementation, INGEN kärnmodul krävs — samt `tailscale`/`tailscaled`).
+
+    **RÄTTELSE (2026-08-19, mätt mot de riktiga tjänsterna):** påståendet
+    ovan att `wireguard-go` "finns för i princip alla plattformar som EN
+    binär" STÄMMER INTE. Projektet publicerar bara KÄLLKODSTARBALLS
+    (`wireguard-go-<datum>.tar.xz` från git.zx2c4.com) och har inga
+    binärsläpp alls. En färdig binär kräver därför antingen en
+    Go-verktygskedja på användarens maskin eller ett tredjepartsbygge vi
+    skulle få lita på — två helt andra tillitsfrågor än "hämta och
+    verifiera mot projektets egen checksumma", och skälet till att
+    WireGuard-delen fortfarande är öppen.
+
+    **Tailscale går däremot att hämta verifierat idag**, och den delen är
+    byggd: `LinuxApp/src/tool_release.rs` löser upp
+    `https://pkgs.tailscale.com/{stable,unstable}/?mode=json` → arkitektur
+    → filnamn → nedladdnings-URL + `<filnamn>.sha256`. Formen är
+    verifierad mot den skarpa tjänsten (fixtur i `Tests/fixtures/`, plus
+    ett `#[ignore]`-märkt test som går mot riktiga nätet), inte läst i
+    dokumentation. Kanalvalet finns med eftersom VISION-punkten uttryckligen
+    vill kunna fästa en version.
+
+    `external_binary_fetcher` packar dessutom upp arkivet:
+    Tailscale levererar en `.tgz` med binärerna i en versionsnamngiven
+    mapp, inte en naken binär, så utan det steget hade cachen innehållit
+    en körbarhetsmarkerad tarball. Uppackningen tar BARA sista
+    namnkomponenten och skriver till en sökväg vi själva bygger — ett
+    entry som heter `../../.ssh/authorized_keys` kan alltså inte styra
+    vart något hamnar. Medvetet valt framför `Archive::unpack`, som
+    packar upp allt och vars skydd man får lita på i stället för att äga.
+
+    **Hela kedjan bevisad mot de skarpa tjänsterna** (`#[ignore]`-märkt,
+    laddar ner ~30 MB): lös upp utgåvan → hämta publicerad checksumma →
+    ladda ner → verifiera → packa upp → kontrollera att resultatet
+    verkligen är en ELF-binär och inte tarballen som råkat få
+    körbarhetsbiten satt.
+
+    **Hur `tailscaled` ska köras, verifierat mot binären 1.102.2 (inte
+    läst i dokumentation):** `--tun=userspace-networking` kör HELT utan
+    TUN-gränssnitt, och `--socks5-server=[ip]:port` exponerar då hela
+    tailnet:et som en SOCKS5-proxy. `--socket`, `--statedir` och `--state`
+    pekar alla om till skrivbara sökvägar, så inget behöver ligga i
+    `/var/run` eller `/var/lib`. Det är exakt rätt form för Bastion, som
+    bara behöver sina EGNA anslutningar över tailnet:et — inte att
+    dirigera om hela systemets trafik.
+    **Inte bevisat här:** att det faktiskt räcker med icke-root. Försöket
+    föll på att den här sandlådan inte låter `nobody` skriva någonstans
+    alls, inte på att `tailscaled` krävde root — men det är en skillnad
+    som måste mätas på en riktig maskin innan den skrivs som ett faktum.
+    Som root startade den rent i userspace-läge utan TUN.
+
+    **SOCKS5-KLIENT byggd** (`LinuxApp/src/socks_proxy.rs`,
+    `connect_via_socks5`): för att nyttja proxyn ovan måste Bastion kunna
+    ringa UT genom en SOCKS5-proxy, och modulen hade bara serversidan
+    (`-D`). Värdnamn skickas som DOMÄN så uppslagningen sker i proxyn —
+    `min-server.tailnet.ts.net` betyder ingenting för en lokal resolver.
+    Bevisad genom att gå mot Bastions EGEN SOCKS5-server, genom en riktig
+    SSH-tunnel, till en riktig ekoserver; felvägarna (autentiseringskrav,
+    varje svarskod, alla tre adresstyperna i svaret, för långt värdnamn)
+    mot en stubbserver, eftersom vår egen server aldrig svarar så.
+
+    **INKOPPLAD** (samma dag): `Host.socks_proxy` finns på båda
+    plattformarna, `ssh::connect_direct` byter transport när fältet är
+    satt (`connect_stream` gör exakt samma handskakning och
+    värdnyckelkontroll ovanpå en ström vi öppnat själva), och LinuxApp har
+    en rad i värddialogen. Bevisat end-to-end: en värd med `socks_proxy`
+    når en RIKTIG sshd genom Bastions EGEN SOCKS5-proxy, som i sin tur är
+    tunnlad genom en andra riktig sshd.
+    Trådformatsvakten gjorde exakt sitt jobb när fältet lades till — den
+    föll med "Uppdatera Swift-sidans CodingKeys i samma veva", vilket är
+    hela anledningen att den finns.
+    Fungerar redan utan resten av kedjan för alla som själva kör
+    `tailscaled --socks5-server` eller en företagsproxy.
+
+    **Apple-sidan bär fältet men HEDRAR det inte än.** `Host.socksProxy`
+    finns i modellen enbart för att synken inte ska radera det (samma
+    bugg `forwardAgent`/`jumpHostID` redan orsakat) — `SSHSession`
+    ansluter fortfarande alltid direkt. Därför finns medvetet INGEN
+    inställning för det i `App/HostEditView.swift`: ett fält som går att
+    sätta men inte gör något är sämre än ett som saknas, för användaren
+    tror att trafiken går genom proxyn. Kräver en
+    SOCKS5-handskakningshandler före `NIOSSHHandler` i pipelinen,
+    motsvarande `socks_proxy.rs`.
+    **Skriv den för hand, dra INTE in `swift-nio-extras` för `NIOSOCKS`.**
+    Kontrollerat 2026-08-19: paketet finns inte i beroendeträdet i dag, och
+    `swift-nio` är EXAKT pinnad till 2.101.3 p.g.a. apple/swift-nio#3647 (se
+    kommentaren i `Package.swift` — 74 raka misslyckade Windows-byggen innan
+    pinningen, och en Renovate-bump som återinförde exakt den bugg som just
+    fixats). Ett nytt paket ur samma familj måste vara versionskompatibelt
+    med den pinningen och kan dra tillbaka samma problem. Handskakningen är
+    ~120 rader och redan skriven en gång i Rust.
+    Samma sak gäller `forwardAgent` på Apple, men av en HÅRDARE orsak:
+    agent-forwarding till fjärrserver är blockerad i swift-nio-ssh (se
+    statustabellen), så där handlar det inte om arbete som återstår utan
+    om något som inte går att bygga utan att forka uppströms.
+
+    Kvar: UI-lagret som anropar `tool_release` + `external_binary_fetcher`,
+    att faktiskt starta `tailscaled` från appen, och SOCKS5 i SSHCore) vid första användning
     eller på begäran, verifiera checksum/signatur mot projektens egna
     publicerade värden (leverantörskedjesäkerhet — vi kör en nedladdad
     binär, samma tillitsnivå som ett `curl | sudo bash`-installations-

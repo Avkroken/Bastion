@@ -54,6 +54,45 @@ public struct Host: Codable, Identifiable, Sendable, Equatable {
     /// användningstillfället, inte vid lagring (samma mönster som `hostName`
     /// inte validerar DNS-syntax vid sparning).
     public var macAddress: String?
+    /// Vidarebefordra den lokala ssh-agenten till värden (OpenSSH:s
+    /// `ForwardAgent`).
+    ///
+    /// FALSKT som förval, och det är ett säkerhetsval snarare än ett
+    /// bekvämlighetsval: med agenten vidarebefordrad kan vem som helst med
+    /// root på fjärrvärden använda DINA nycklar så länge sessionen lever —
+    /// utan att kunna läsa dem, men utan att du märker något heller.
+    /// OpenSSH har samma förval av samma skäl.
+    ///
+    /// Fältet fanns i LinuxApps `Host` men saknades här, och `Codable`
+    /// släpper okända nycklar tyst. Följden var att en värd med
+    /// agentvidarebefordran påslagen FÖRLORADE inställningen så fort
+    /// tillståndet passerade en Apple-enhet vid synk — avkodningen kastade
+    /// nyckeln, kodningen skrev inte tillbaka den. Ingen felutskrift, ingen
+    /// synlig ändring förrän nästa anslutning betedde sig annorlunda.
+    public var forwardAgent: Bool
+    /// Adress (`värd:port`) till en SOCKS5-proxy som anslutningen ska gå
+    /// GENOM. `nil` = anslut direkt, precis som innan fältet fanns.
+    ///
+    /// Två verkliga användningar: en företagsproxy, och `tailscaled
+    /// --tun=userspace-networking --socks5-server=…`, som exponerar hela
+    /// tailnet:et utan att kräva ett TUN-gränssnitt. Målets namn slås upp i
+    /// PROXYN, inte lokalt.
+    ///
+    /// Skilt från ``jumpHostID``: en jump-host är en SSH-server vi
+    /// autentiserar mot och tunnlar genom, en SOCKS-proxy är ren
+    /// TCP-transport utan egen inloggning.
+    ///
+    /// LinuxApp ANVÄNDER fältet redan (`ssh::connect_direct`). Här bärs det
+    /// tills vidare bara genom modellen och synken — utan det skulle
+    /// inställningen raderas så fort tillståndet passerade en Apple-enhet,
+    /// exakt den bugg `forwardAgent` och `jumpHostID` redan orsakat.
+    ///
+    /// **Ingen UI här förrän `SSHSession` faktiskt ansluter genom proxyn.**
+    /// Ett fält som går att sätta men inte gör något är sämre än ett som
+    /// saknas: användaren tror att anslutningen går genom proxyn. Det
+    /// kräver en SOCKS5-handskakningshandler före `NIOSSHHandler` i
+    /// pipelinen — samma sak LinuxApp gör i `socks_proxy.rs`, se ROADMAP.md.
+    public var socksProxy: String?
     /// När värden senast ändrades. Styr sync-mergen (nyaste ändringen vinner).
     public var modifiedAt: Date
 
@@ -71,6 +110,8 @@ public struct Host: Codable, Identifiable, Sendable, Equatable {
         startupCommand: String? = nil,
         jumpHostID: UUID? = nil,
         macAddress: String? = nil,
+        forwardAgent: Bool = false,
+        socksProxy: String? = nil,
         modifiedAt: Date = Date()
     ) {
         self.id = id
@@ -86,11 +127,25 @@ public struct Host: Codable, Identifiable, Sendable, Equatable {
         self.startupCommand = startupCommand
         self.jumpHostID = jumpHostID
         self.macAddress = macAddress
+        self.forwardAgent = forwardAgent
+        self.socksProxy = socksProxy
         self.modifiedAt = modifiedAt
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, alias, hostName, user, port, tags, auth, isFavorite, colorTag, platform, startupCommand, jumpHostID, macAddress, modifiedAt
+        case id, alias, hostName, user, port, tags, auth, isFavorite, colorTag, platform, startupCommand, jumpHostID, macAddress, forwardAgent, socksProxy, modifiedAt
+        /// LinuxApp skrev fältet som `jumpHostId` (serdes `camelCase` av
+        /// `jump_host_id`) medan den här sidan alltid skrivit `jumpHostID`
+        /// (Apples konvention versaliserar initialförkortningar). Nycklarna
+        /// matchade alltså inte, och både `Codable` och serde släpper okända
+        /// nycklar TYST — följden var att en ProxyJump-koppling försvann i
+        /// båda riktningarna så fort tillståndet synkades mellan en Linux-
+        /// och en Apple-enhet. Värst tänkbara fält att tappa: målet är ofta
+        /// bara nåbart genom hoppet.
+        ///
+        /// Båda sidor skriver nu `jumpHostID`. Den här nyckeln finns kvar för
+        /// att LÄSA redan sparade filer, aldrig för att skriva.
+        case legacyJumpHostID = "jumpHostId"
     }
 
     /// Egen init(from:) — isFavorite/colorTag/platform/startupCommand/
@@ -112,8 +167,35 @@ public struct Host: Codable, Identifiable, Sendable, Equatable {
         platform = try c.decodeIfPresent(RemotePlatform.self, forKey: .platform) ?? .posix
         startupCommand = try c.decodeIfPresent(String.self, forKey: .startupCommand)
         jumpHostID = try c.decodeIfPresent(UUID.self, forKey: .jumpHostID)
+            ?? c.decodeIfPresent(UUID.self, forKey: .legacyJumpHostID)
         macAddress = try c.decodeIfPresent(String.self, forKey: .macAddress)
+        forwardAgent = try c.decodeIfPresent(Bool.self, forKey: .forwardAgent) ?? false
+        socksProxy = try c.decodeIfPresent(String.self, forKey: .socksProxy)
         modifiedAt = try c.decode(Date.self, forKey: .modifiedAt)
+    }
+
+    /// Egen `encode(to:)` av ETT skäl: den syntetiserade varianten skriver ut
+    /// varje `CodingKey`, och `legacyJumpHostID` finns bara för att LÄSA gamla
+    /// filer. Utan den här skulle varje sparning skriva båda stavningarna, och
+    /// nästa läsare få två källor till samma sanning.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(alias, forKey: .alias)
+        try c.encode(hostName, forKey: .hostName)
+        try c.encode(user, forKey: .user)
+        try c.encode(port, forKey: .port)
+        try c.encode(tags, forKey: .tags)
+        try c.encode(auth, forKey: .auth)
+        try c.encode(isFavorite, forKey: .isFavorite)
+        try c.encodeIfPresent(colorTag, forKey: .colorTag)
+        try c.encode(platform, forKey: .platform)
+        try c.encodeIfPresent(startupCommand, forKey: .startupCommand)
+        try c.encodeIfPresent(jumpHostID, forKey: .jumpHostID)
+        try c.encodeIfPresent(macAddress, forKey: .macAddress)
+        try c.encode(forwardAgent, forKey: .forwardAgent)
+        try c.encodeIfPresent(socksProxy, forKey: .socksProxy)
+        try c.encode(modifiedAt, forKey: .modifiedAt)
     }
 
     /// Anslutningsmål för `SSHSession`.
@@ -129,7 +211,14 @@ public struct Host: Codable, Identifiable, Sendable, Equatable {
             let r = config.resolve(alias)
             guard let user = r.user, !user.isEmpty else { return nil }
             let auth: HostAuth = r.identityFile.map { .keyFile($0) } ?? .agentDefault
-            return Host(alias: alias, hostName: r.hostName, user: user, port: r.port, auth: auth)
+            // Fälten fanns redan i modellen — importen fyllde dem bara aldrig
+            // i, så en användare som konfigurerat dem i ssh-config fick dem
+            // tyst bortkastade och en värd som betedde sig annorlunda här än
+            // under `ssh`.
+            let startup = r.remoteCommand.flatMap { $0.isEmpty ? nil : $0 }
+            return Host(
+                alias: alias, hostName: r.hostName, user: user, port: r.port, auth: auth,
+                startupCommand: startup, forwardAgent: r.forwardAgent)
         }
     }
 }
