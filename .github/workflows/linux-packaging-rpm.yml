@@ -1,18 +1,24 @@
 name: Linux-paketering (.rpm)
 
-# Paketerar bastion-cli som ett fristående .rpm-paket — RHEL/Fedora-halvan av
-# ROADMAP.md:s "Paketering + BSD-täckning" (Debian/Ubuntu-halvan, .deb, är
-# redan klar i linux-packaging.yml). Samma härledda-beroende-strategi som
-# .deb-jobbet: binärens EGNA DT_NEEDED-lista (readelf), inte en gissning —
-# bara uppslaget mot RPM-paket via `rpm -qf` i stället för `dpkg -S`.
-#
-# Bara bastion-cli hittills — bastion-gui (LinuxApp/, GTK4-beroenden utöver
-# Swift-runtimen) är ett separat, större paketeringssteg, se ROADMAP.md.
+# Paketerar bastion-cli som RPM. Workflowet är inte required och körs därför
+# bara när root-SwiftPM/CLI eller workflowet självt ändras.
 on:
   push:
     branches: [main, dev]
+    paths:
+      - 'Sources/SSHCore/**'
+      - 'Sources/bastion-cli/**'
+      - 'Package.swift'
+      - 'Package.resolved'
+      - '.github/workflows/linux-packaging-rpm.yml'
   pull_request:
     branches: [main, dev]
+    paths:
+      - 'Sources/SSHCore/**'
+      - 'Sources/bastion-cli/**'
+      - 'Package.swift'
+      - 'Package.resolved'
+      - '.github/workflows/linux-packaging-rpm.yml'
   workflow_dispatch:
 
 concurrency:
@@ -56,13 +62,6 @@ jobs:
           command -v rpmbuild >/dev/null 2>&1 && command -v readelf >/dev/null 2>&1 && exit 0
           dnf install -y -q rpm-build binutils
 
-      # Samma resonemang som i linux-packaging.yml (.deb): --static-swift-stdlib
-      # länkar bara Swift-runtimen statiskt — glibc och, via SSHCores
-      # S3Client.swift som drar in FoundationNetworking/FoundationXML på
-      # Linux, sannolikt libcurl/libxml2 förblir dynamiska beroenden. I
-      # stället för att gissa: lista ALLA direkta delade bibliotek
-      # (readelf -d, binärens egen DT_NEEDED-lista) och slå upp vilket
-      # RPM-paket vart och ett kommer från (`rpm -qf`).
       - name: Bestäm faktiska körtidsberoenden (DT_NEEDED → RPM-paket)
         id: deps
         run: |
@@ -80,21 +79,13 @@ jobs:
           PACKAGES=""
           for LIB in $NEEDED; do
             case "$LIB" in
-              # Grundläggande glibc-familjen (samma logiska beroende, täcks
-              # av `glibc` nedan) — utesluts bara från den HÄRLEDDA listan,
-              # inte från kontrollen ovan.
-              libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libutil.so*|ld-linux*|linux-vdso*)
-                continue
-                ;;
+              libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libutil.so*|ld-linux*|linux-vdso*) continue ;;
             esac
             LIBPATH=$(ldconfig -p | awk -v lib="$LIB" '$1 == lib { print $NF; exit }')
             if [ -z "$LIBPATH" ]; then
               echo "::error::hittar inte $LIB via ldconfig — kan inte slå upp vilket RPM-paket det tillhör"
               exit 1
             fi
-            # ldconfig -p svarar ofta med /lib64/... men RPM-databasen känner
-            # bara igen den kanoniska sökvägen (samma symlänk-fälla som
-            # /lib → usr/lib gav på Ubuntu i linux-packaging.yml).
             LIBPATH=$(readlink -f "$LIBPATH")
             PKG=$(rpm -qf --qf '%{NAME}\n' "$LIBPATH" 2>/dev/null | head -1)
             if [ -z "$PKG" ]; then
@@ -104,9 +95,6 @@ jobs:
             PACKAGES="$PACKAGES $PKG"
           done
 
-          # Mellanslag, inte kommatecken — traditionell RPM Requires-syntax.
-          # Utesluter `glibc` ur den härledda listan så den inte dyker upp
-          # dubbelt (redan hårdkodad härnedan).
           EXTRA=$(printf '%s\n' $PACKAGES | sort -u | grep -v '^$' | grep -v '^glibc$' | tr '\n' ' ' | sed 's/ *$//')
           REQUIRES="glibc${EXTRA:+ $EXTRA}"
           echo "Härledd Requires-rad: $REQUIRES"
@@ -114,9 +102,6 @@ jobs:
 
       - name: Bygg .rpm-paket
         env:
-          # Samma skäl som VERSION i linux-packaging.yml — undviker
-          # shell-injektion via en illvilligt utformad git-tagg genom att
-          # gå via env: i stället för direkt ${{ }}-interpolering.
           VERSION: ${{ steps.version.outputs.version }}
           REQUIRES: ${{ steps.deps.outputs.requires }}
         run: |
@@ -152,8 +137,6 @@ jobs:
           mkdir -p dist-out
           find "$TOPDIR/RPMS" -name '*.rpm' -exec mv {} dist-out/ \;
 
-      # Installerar det FAKTISKT byggda .rpm-paketet (inte bara den råa
-      # binären) och kör det — samma smoke-test som .deb-jobbet.
       - name: Installera och kör paketet
         run: |
           set -euo pipefail
