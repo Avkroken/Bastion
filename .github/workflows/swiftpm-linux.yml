@@ -9,7 +9,7 @@ name: SwiftPM-Linux-bygge
 # stabil release räcker för rot-paketet.
 #
 # `apt install swiftlang` (som README påstod fungerar) finns INTE på en
-# vanlig ubuntu-26.04-runner ("swift" i Ubuntus repon är OpenStack Swift,
+# vanlig ubuntu-latest-runner ("swift" i Ubuntus repon är OpenStack Swift,
 # ett helt orelaterat paket) — upptäckt genom att faktiskt köra jobbet, inte
 # gissat. Officiella `swift`-Docker-avbildningen används i stället, samma
 # distro (`noble` = Ubuntu 24.04) som runnern annars kör på.
@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   swiftpm-linux:
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-latest
     container: swift:6.1-noble
     timeout-minutes: 20
     steps:
