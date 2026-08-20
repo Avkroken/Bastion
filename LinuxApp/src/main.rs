@@ -34,6 +34,7 @@ mod socks_proxy;
 mod split;
 mod ssh;
 mod tab_title;
+mod tool_release;
 #[cfg(test)]
 mod test_support;
 mod ssh_config;
@@ -2149,6 +2150,17 @@ fn show_host_dialog(
         .title("Vidarebefordra ssh-agent")
         .subtitle("Låter dig hoppa vidare med dina nycklar. Den som har root på värden kan använda dem så länge sessionen lever — slå bara på för värdar du litar på.")
         .build();
+    // Ren TCP-transport, inte en inloggning — därav ett fritextfält och
+    // ingen värdväljare som `jump_row` har. Undertexten nämner tailnet-fallet
+    // eftersom det är den vanligaste anledningen att någon behöver fältet
+    // utan att veta att det heter SOCKS5.
+    let socks_row = adw::EntryRow::builder()
+        .title("SOCKS5-proxy (värd:port)")
+        .build();
+    socks_row.set_tooltip_text(Some(
+        "Anslut genom en SOCKS5-proxy, t.ex. en företagsproxy eller \
+         `tailscaled --socks5-server`. Målets namn slås upp i proxyn. Lämna tomt för direktanslutning.",
+    ));
     let tags_row = adw::EntryRow::builder().title("Taggar (kommaseparerat)").build();
 
     // Färgmärkning: `host.color_tag` fanns i datamodellen sedan starten men
@@ -2279,6 +2291,9 @@ fn show_host_dialog(
         }
         favorite_row.set_active(h.is_favorite);
         forward_agent_row.set_active(h.forward_agent);
+        if let Some(proxy) = &h.socks_proxy {
+            socks_row.set_text(proxy);
+        }
         if !h.tags.is_empty() {
             tags_row.set_text(&h.tags.join(", "));
         }
@@ -2366,6 +2381,7 @@ fn show_host_dialog(
     group.add(&mac_row);
     group.add(&favorite_row);
     group.add(&forward_agent_row);
+    group.add(&socks_row);
     group.add(&tags_row);
     group.add(&color_row);
     group.add(&auth_row);
@@ -2506,6 +2522,12 @@ fn show_host_dialog(
             let jump_host_id = jump_ids.get(jump_row.selected() as usize).copied().flatten();
             let is_favorite = favorite_row.is_active();
             let forward_agent = forward_agent_row.is_active();
+            // Tom textruta = ingen proxy. Att spara `Some("")` vore att lagra
+            // "anslut till adressen tomma strängen".
+            let socks_proxy = {
+                let text = socks_row.text().trim().to_string();
+                if text.is_empty() { None } else { Some(text) }
+            };
             // Samma tolkning som Swift-sidans `save()`: dela på komma,
             // trimma, kasta bort tomma segment (t.ex. ett kvarglömt
             // avslutande komma).
@@ -2525,6 +2547,7 @@ fn show_host_dialog(
                 h.color_tag = color_tag;
                 h.is_favorite = is_favorite;
                 h.forward_agent = forward_agent;
+                h.socks_proxy = socks_proxy.clone();
                 h.tags = tags;
                 h.jump_host_id = jump_host_id;
                 if !preserve_apple_only_auth {
@@ -2539,6 +2562,7 @@ fn show_host_dialog(
                 h.color_tag = color_tag;
                 h.is_favorite = is_favorite;
                 h.forward_agent = forward_agent;
+                h.socks_proxy = socks_proxy.clone();
                 h.tags = tags;
                 h.jump_host_id = jump_host_id;
                 h.auth = new_auth;
@@ -9107,7 +9131,8 @@ fn spawn_background_sync_plain(
     std::thread::spawn(move || {
         let result = (|| -> std::io::Result<()> {
             let mut store = host::HostStore::open(host::HostStore::default_path())?;
-            store.sync(&provider)
+            let mut snippets = snippet::SnippetStore::open(snippet::SnippetStore::default_path())?;
+            store.sync_with_snippets(&provider, &mut snippets)
         })();
         let _ = tx.send_blocking(result.map_err(|e| e.to_string()));
     });
@@ -9122,7 +9147,8 @@ fn spawn_background_sync_webdav(
     std::thread::spawn(move || {
         let result = (|| -> std::io::Result<()> {
             let mut store = host::HostStore::open(host::HostStore::default_path())?;
-            store.sync(&provider)
+            let mut snippets = snippet::SnippetStore::open(snippet::SnippetStore::default_path())?;
+            store.sync_with_snippets(&provider, &mut snippets)
         })();
         let _ = tx.send_blocking(result.map_err(|e| e.to_string()));
     });
@@ -9136,7 +9162,8 @@ fn spawn_background_sync_encrypted(
     std::thread::spawn(move || {
         let result = (|| -> std::io::Result<()> {
             let mut store = host::HostStore::open(host::HostStore::default_path())?;
-            store.sync(&provider)
+            let mut snippets = snippet::SnippetStore::open(snippet::SnippetStore::default_path())?;
+            store.sync_with_snippets(&provider, &mut snippets)
         })();
         let _ = tx.send_blocking(result.map_err(|e| e.to_string()));
     });
@@ -9567,7 +9594,12 @@ fn build_snippet_row(
         #[strong(rename_to = snippet_id)]
         snippet.id,
         move |_| {
-            if let Err(e) = snippet_store.borrow_mut().delete(snippet_id) {
+            // `delete_synced`, inte `delete`: utan gravsten kommer
+            // snippeten tillbaka vid nästa synk mot en enhet som
+            // fortfarande har den, och användaren får radera om och om igen.
+            let recorded = host::HostStore::open(host::HostStore::default_path())
+                .and_then(|mut hosts| snippet_store.borrow_mut().delete_synced(snippet_id, &mut hosts));
+            if let Err(e) = recorded {
                 eprintln!("kunde inte ta bort snippeten: {e}");
                 return;
             }

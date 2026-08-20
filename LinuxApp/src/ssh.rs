@@ -418,6 +418,38 @@ async fn connect_direct(
     handler: ClientHandler,
 ) -> Result<Handle<ClientHandler>, String> {
     let config = client_config();
+
+    // Genom en SOCKS5-proxy när värden har en. Transporten byts ut, INTE
+    // SSH-lagret: `connect_stream` kör exakt samma handskakning och
+    // värdnyckelkontroll som `connect`, bara ovanpå en ström vi redan
+    // öppnat. Samma mönster som jump-vägen redan använder.
+    //
+    // Notera att MÅLETS namn skickas vidare till proxyn ouppslaget — det är
+    // hela poängen med en tailnet-proxy, där namnet bara betyder något i
+    // andra änden.
+    if let Some(proxy) = host.socks_proxy.as_deref().filter(|p| !p.is_empty()) {
+        let stream = tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            crate::socks_proxy::connect_via_socks5(proxy, &host.host_name, host.port as u16),
+        )
+        .await
+        .map_err(|_| format!("SOCKS5-proxyn {proxy} svarade inte inom {}s", CONNECT_TIMEOUT.as_secs()))?
+        .map_err(|e| format!("kunde inte nå {} genom proxyn: {e}", host.host_name))?;
+
+        return tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            client::connect_stream(config, stream, handler),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "SSH-handskakningen genom proxyn svarade inte inom {}s",
+                CONNECT_TIMEOUT.as_secs()
+            )
+        })?
+        .map_err(|e| format!("anslutning genom proxyn misslyckades: {e}"));
+    }
+
     let addr = (host.host_name.as_str(), host.port as u16);
     tokio::time::timeout(CONNECT_TIMEOUT, client::connect(config, addr, handler))
         .await
@@ -1967,6 +1999,63 @@ mod tests {
             client::Config::default().keepalive_interval.is_none(),
             "om russh någon gång slår på det här som standard är den här funktionen \
              överflödig — men just nu är den inte det, och det är varför den finns"
+        );
+    }
+
+    /// Hela vägen: en värd med `socks_proxy` satt ska nå en RIKTIG sshd
+    /// GENOM en riktig SOCKS5-proxy — och den proxyn är Bastions egen,
+    /// tunnlad över en annan riktig sshd.
+    ///
+    /// Bevisar det som inte går att se på delarna var för sig: att
+    /// `connect_stream` gör samma handskakning och värdnyckelkontroll
+    /// ovanpå en ström vi öppnat själva som `connect` gör på en den öppnar.
+    #[tokio::test]
+    async fn a_host_with_a_socks_proxy_reaches_a_real_sshd_through_it() {
+        let Some(proxy_sshd) = TestSshd::start() else {
+            eprintln!("hoppar: kunde inte starta en test-sshd i den här miljön");
+            return;
+        };
+        let Some(target_sshd) = TestSshd::start() else {
+            eprintln!("hoppar: kunde inte starta en test-sshd i den här miljön");
+            return;
+        };
+
+        // Bastions egen SOCKS5-proxy, tunnlad genom den första sshd:n.
+        let proxy_host = host_for(&proxy_sshd, "proxy");
+        let rx = crate::socks_proxy::spawn_dynamic_forward(
+            proxy_host, None, "127.0.0.1".into(), 0, None,
+        );
+        let forward = rx.recv().await.unwrap().expect("proxyn startade inte");
+
+        // Målvärden når vi BARA genom proxyn, enligt konfigurationen.
+        let mut target = host_for(&target_sshd, "genom-proxy");
+        target.socks_proxy = Some(format!("127.0.0.1:{}", forward.actual_bind_port));
+
+        let session = connect(&target, None, None, None)
+            .await
+            .expect("anslutning genom SOCKS5-proxyn misslyckades");
+        let output = run_command_on_session(&session, "echo bastion-socks-ok", false)
+            .await
+            .expect("kommandot över den proxyade sessionen misslyckades");
+        assert_eq!(output.trim(), "bastion-socks-ok");
+
+        forward.stop();
+    }
+
+    /// Ett tomt proxyfält ska betyda "ingen proxy", inte "anslut till
+    /// adressen tomma strängen". En tom textruta i gränssnittet är hur ett
+    /// bortplockat värde ser ut.
+    #[tokio::test]
+    async fn an_empty_proxy_field_means_no_proxy() {
+        let Some(sshd) = TestSshd::start() else {
+            eprintln!("hoppar: kunde inte starta en test-sshd i den här miljön");
+            return;
+        };
+        let mut host = host_for(&sshd, "tom-proxy");
+        host.socks_proxy = Some(String::new());
+        assert!(
+            connect(&host, None, None, None).await.is_ok(),
+            "tom sträng ska behandlas som ingen proxy alls"
         );
     }
 }

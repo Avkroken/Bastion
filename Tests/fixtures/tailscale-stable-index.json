@@ -1,0 +1,84 @@
+{
+	"Tarballs": {
+		"386": "tailscale_1.102.2_386.tgz",
+		"amd64": "tailscale_1.102.2_amd64.tgz",
+		"arm": "tailscale_1.102.2_arm.tgz",
+		"arm64": "tailscale_1.102.2_arm64.tgz",
+		"geode": "tailscale_1.102.2_geode.tgz",
+		"mips": "tailscale_1.102.2_mips.tgz",
+		"mips64": "tailscale_1.102.2_mips64.tgz",
+		"mips64le": "tailscale_1.102.2_mips64le.tgz",
+		"mipsle": "tailscale_1.102.2_mipsle.tgz",
+		"riscv64": "tailscale_1.102.2_riscv64.tgz"
+	},
+	"TarballsVersion": "1.102.2",
+	"Exes": [
+		"tailscale-setup-1.102.2.exe",
+		"tailscale-setup-full-1.102.2.exe"
+	],
+	"ExesVersion": "1.102.2",
+	"MSIs": {
+		"amd64": "tailscale-setup-1.102.2-amd64.msi",
+		"arm64": "tailscale-setup-1.102.2-arm64.msi",
+		"x86": "tailscale-setup-1.102.2-x86.msi"
+	},
+	"MSIsVersion": "1.102.2",
+	"MacZips": {
+		"universal": "Tailscale-1.102.2-macos.zip",
+		"universal-package": "Tailscale-1.102.2-macos.pkg"
+	},
+	"MacZipsVersion": "1.102.2",
+	"SPKs": {
+		"dsm6": {
+			"88f6281": "tailscale-88f6281-1.102.2-600102002-dsm6.spk",
+			"88f6282": "tailscale-88f6282-1.102.2-600102002-dsm6.spk",
+			"alpine": "tailscale-alpine-1.102.2-600102002-dsm6.spk",
+			"armada370": "tailscale-armada370-1.102.2-600102002-dsm6.spk",
+			"armada375": "tailscale-armada375-1.102.2-600102002-dsm6.spk",
+			"armada38x": "tailscale-armada38x-1.102.2-600102002-dsm6.spk",
+			"armadaxp": "tailscale-armadaxp-1.102.2-600102002-dsm6.spk",
+			"armv5": "tailscale-armv5-1.102.2-600102002-dsm6.spk",
+			"armv7": "tailscale-armv7-1.102.2-600102002-dsm6.spk",
+			"armv8": "tailscale-armv8-1.102.2-600102002-dsm6.spk",
+			"comcerto2k": "tailscale-comcerto2k-1.102.2-600102002-dsm6.spk",
+			"hi3535": "tailscale-hi3535-1.102.2-600102002-dsm6.spk",
+			"i686": "tailscale-i686-1.102.2-600102002-dsm6.spk",
+			"monaco": "tailscale-monaco-1.102.2-600102002-dsm6.spk",
+			"x86_64": "tailscale-x86_64-1.102.2-600102002-dsm6.spk"
+		},
+		"dsm7": {
+			"88f6281": "tailscale-88f6281-1.102.2-700102002-dsm7.spk",
+			"88f6282": "tailscale-88f6282-1.102.2-700102002-dsm7.spk",
+			"alpine": "tailscale-alpine-1.102.2-700102002-dsm7.spk",
+			"armada370": "tailscale-armada370-1.102.2-700102002-dsm7.spk",
+			"armada375": "tailscale-armada375-1.102.2-700102002-dsm7.spk",
+			"armada38x": "tailscale-armada38x-1.102.2-700102002-dsm7.spk",
+			"armadaxp": "tailscale-armadaxp-1.102.2-700102002-dsm7.spk",
+			"armv5": "tailscale-armv5-1.102.2-700102002-dsm7.spk",
+			"armv7": "tailscale-armv7-1.102.2-700102002-dsm7.spk",
+			"armv8": "tailscale-armv8-1.102.2-700102002-dsm7.spk",
+			"comcerto2k": "tailscale-comcerto2k-1.102.2-700102002-dsm7.spk",
+			"hi3535": "tailscale-hi3535-1.102.2-700102002-dsm7.spk",
+			"i686": "tailscale-i686-1.102.2-700102002-dsm7.spk",
+			"monaco": "tailscale-monaco-1.102.2-700102002-dsm7.spk",
+			"x86_64": "tailscale-x86_64-1.102.2-700102002-dsm7.spk"
+		}
+	},
+	"SPKsVersion": "1.102.2",
+	"QPKGs": {
+		"arm-x19": "Tailscale_1.102.2-1_arm-x19.qpkg",
+		"arm-x31": "Tailscale_1.102.2-1_arm-x31.qpkg",
+		"arm-x41": "Tailscale_1.102.2-1_arm-x41.qpkg",
+		"arm_64": "Tailscale_1.102.2-1_arm_64.qpkg",
+		"x86": "Tailscale_1.102.2-1_x86.qpkg",
+		"x86_64": "Tailscale_1.102.2-1_x86_64.qpkg",
+		"x86_ce53xx": "Tailscale_1.102.2-1_x86_ce53xx.qpkg"
+	},
+	"QPKGsVersion": "1.102.2",
+	"APKs": {
+		"universal": "tailscale-android-universal-1.102.2.apk"
+	},
+	"APKsVersion": "1.102.2",
+	"ContainersVersion": "1.102.2",
+	"Version": "1.102.2"
+}

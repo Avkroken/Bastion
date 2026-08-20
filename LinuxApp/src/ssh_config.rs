@@ -2,8 +2,9 @@
 //! av `Sources/SSHCore/SSHConfig.swift`. Stöder `Host`-block med
 //! jokertecken (`*`, `?`) och negation (`!`), `Include`, samt de
 //! vanligaste nycklarna. Semantik enligt OpenSSH: **första värdet vinner**
-//! per nyckel. `Match`-block hoppas medvetet över (ännu ej stött) — samma
-//! avgränsning som Swift-sidan.
+//! per nyckel. `Match` stöds för de kriterier som går att avgöra utan en
+//! pågående anslutning (`all`, `host`); allt annat lämnar blocket
+//! inaktivt — se [`match_is_active`].
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedHost {
@@ -12,10 +13,23 @@ pub struct ResolvedHost {
     pub port: i64,
     pub identity_file: Option<String>,
     pub proxy_jump: Option<String>,
+    /// OpenSSH:s `ForwardAgent`. Bara ett uttryckligt ja räknas — allt
+    /// annat, inklusive nyckelns frånvaro, är nej. Att gissa fel åt det
+    /// hållet vore att slå på agentvidarebefordran åt någon som inte bett
+    /// om det, och då kan vem som helst med root på fjärrvärden använda
+    /// deras nycklar så länge sessionen lever.
+    pub forward_agent: bool,
+    /// OpenSSH:s `RemoteCommand` — kommandot som körs direkt efter
+    /// anslutning. Motsvarar `Host::startup_command`.
+    pub remote_command: Option<String>,
 }
 
 enum Entry {
     Host(Vec<String>),
+    /// Ett `Match`-block, med kriterieraden bevarad rå. Utvärderas först i
+    /// `resolve`, eftersom `host`-kriteriet beror på vilket alias som slås
+    /// upp — till skillnad från `Host`, vars mönster står i posten.
+    Match(String),
     Setting(String, String),
 }
 
@@ -82,6 +96,7 @@ impl SSHConfig {
         for entry in &self.entries {
             match entry {
                 Entry::Host(patterns) => active = host_matches(patterns, alias),
+                Entry::Match(criteria) => active = match_is_active(criteria, alias),
                 Entry::Setting(key, value) => {
                     if active {
                         found.entry(key.clone()).or_insert_with(|| value.clone());
@@ -95,8 +110,94 @@ impl SSHConfig {
             port: found.get("port").and_then(|p| p.parse().ok()).unwrap_or(22),
             identity_file: found.get("identityfile").map(|p| expand_tilde(p)),
             proxy_jump: found.get("proxyjump").cloned(),
+            forward_agent: found
+                .get("forwardagent")
+                .is_some_and(|v| v.eq_ignore_ascii_case("yes")),
+            remote_command: found.get("remotecommand").cloned(),
         }
     }
+}
+
+/// Plockar ut värdaliaset ur ett `ProxyJump`-värde.
+///
+/// Syntaxen är `[user@]host[:port]`, och flera hopp kan anges
+/// kommaseparerat. Bara FÖRSTA hoppet returneras — `HostStore::resolve_jump`
+/// avvisar ändå kedjor längre än ett hopp, så att importera en kedja skulle
+/// skapa en koppling som inte går att använda.
+///
+/// `None` när värdet är tomt eller `none` (OpenSSH:s sätt att stänga av ett
+/// ärvt `ProxyJump`).
+pub fn proxy_jump_alias(value: &str) -> Option<String> {
+    let first = value.split(',').next()?.trim();
+    if first.is_empty() || first.eq_ignore_ascii_case("none") {
+        return None;
+    }
+    let without_user = first.rsplit('@').next().unwrap_or(first);
+    // IPv6-literaler skrivs `[::1]:22` — allt före den avslutande
+    // klammern hör till adressen, inte till porten.
+    let host = if let Some(end) = without_user.find(']') {
+        &without_user[..=end]
+    } else {
+        without_user.split(':').next().unwrap_or(without_user)
+    };
+    if host.is_empty() { None } else { Some(host.to_string()) }
+}
+
+/// Avgör om ett `Match`-blocks kriterier gäller för `alias`.
+///
+/// OpenSSH kräver att ALLA kriterier på raden är uppfyllda. Här kan bara
+/// två av dem avgöras: `all` (alltid) och `host <mönster>` (samma
+/// jokertecken- och negationsregler som `Host`). Resten — `exec`, `user`,
+/// `originalhost`, `localuser`, `tagged`, `final`, `canonical` — beror på
+/// en pågående anslutning, en kommandokörning eller en andra
+/// upplösningsomgång, inget av det finns här.
+///
+/// Ett okänt eller oavgörbart kriterium gör blocket INAKTIVT, aldrig
+/// aktivt. Det är den enda riktning som är säker: ett block som felaktigt
+/// hoppas över ger samma resultat som innan `Match` stöddes alls, medan ett
+/// block som felaktigt aktiveras tyst byter ut användarens värdnamn,
+/// användare eller nyckel mot någon annans.
+///
+/// `Match exec "..."` kommer aldrig att köras härifrån. Att köra ett
+/// godtyckligt skalkommando för att avgöra en konfigurationsrad är inte en
+/// funktion som saknas, det är en vi inte vill ha.
+fn match_is_active(criteria: &str, alias: &str) -> bool {
+    // Delas BARA på blanksteg här. Ett `host`-kriterium tar en
+    // kommaseparerad mönsterlista (`Match host *.internal,!hemlig.internal`),
+    // och delas kommatecknen redan här blir listans andra mönster ett eget,
+    // okänt kriterium — vilket tyst gjorde varje negation till en
+    // avaktivering av hela blocket.
+    let tokens: Vec<&str> = criteria
+        .split([' ', '\t'])
+        .filter(|s| !s.is_empty())
+        .collect();
+    if tokens.is_empty() {
+        return false;
+    }
+
+    let mut i = 0;
+    let mut matched_something = false;
+    while i < tokens.len() {
+        match tokens[i].to_lowercase().as_str() {
+            "all" => {
+                matched_something = true;
+                i += 1;
+            }
+            "host" => {
+                // Kriteriet tar ett argument. Saknas det är raden trasig.
+                let Some(patterns) = tokens.get(i + 1) else { return false };
+                let patterns: Vec<String> = patterns.split(',').map(String::from).collect();
+                if !host_matches(&patterns, alias) {
+                    return false;
+                }
+                matched_something = true;
+                i += 2;
+            }
+            // Allt annat: vi kan inte avgöra det, alltså gäller blocket inte.
+            _ => return false,
+        }
+    }
+    matched_something
 }
 
 /// Byter ut ett ledande `~` mot hemkatalogen — samma effekt som Swifts
@@ -136,11 +237,7 @@ fn collect_entries(
                     .collect();
                 out.push(Entry::Host(patterns));
             }
-            "match" => {
-                // Ej stött — tomt mönster matchar aldrig, så blockets
-                // nycklar ignoreras.
-                out.push(Entry::Host(Vec::new()));
-            }
+            "match" => out.push(Entry::Match(value)),
             "include" => {
                 let Some(base_dir) = base_dir else { continue };
                 if depth >= MAX_INCLUDE_DEPTH {
@@ -287,6 +384,12 @@ pub fn imported_hosts(config: &SSHConfig) -> Vec<crate::host::Host> {
                 Some(path) => crate::host::HostAuth::KeyFile(path),
                 None => crate::host::HostAuth::AgentDefault,
             };
+            // Fälten finns redan i `Host` — importen fyllde dem bara aldrig
+            // i, så en användare som konfigurerat dem i ssh-config fick dem
+            // tyst bortkastade och undrade varför värden betedde sig
+            // annorlunda i Bastion än i `ssh`.
+            host.forward_agent = r.forward_agent;
+            host.startup_command = r.remote_command.filter(|c| !c.is_empty());
             Some(host)
         })
         .collect()
@@ -568,5 +671,202 @@ Host nouser
         let dir = std::env::temp_dir().join(format!("bastion-include-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    // MARK: Match
+
+    /// `Match host` är den enda formen som går att avgöra utan en pågående
+    /// anslutning, och den beter sig som `Host` — samma jokertecken, samma
+    /// negation. Tidigare ignorerades hela blocket, så inställningarna i
+    /// det försvann tyst.
+    #[test]
+    fn match_host_applies_its_settings_just_like_a_host_block() {
+        let config = SSHConfig::parse(
+            "Match host *.internal\n  User admin\n  Port 2200\n\nHost *\n  User fallback\n",
+        );
+        let inner = config.resolve("db.internal");
+        assert_eq!(inner.user.as_deref(), Some("admin"));
+        assert_eq!(inner.port, 2200);
+
+        let outer = config.resolve("db.example.com");
+        assert_eq!(outer.user.as_deref(), Some("fallback"), "blocket ska inte gälla utanför mönstret");
+        assert_eq!(outer.port, 22);
+    }
+
+    /// `Match all` gäller alltid — men bara EFTER sin egen rad, så det
+    /// fungerar som en catch-all i slutet av filen.
+    #[test]
+    fn match_all_applies_to_every_alias() {
+        let config = SSHConfig::parse("Match all\n  User alla\n");
+        assert_eq!(config.resolve("vadsomhelst").user.as_deref(), Some("alla"));
+    }
+
+    /// Kärnan i avgränsningen. Ett kriterium vi inte kan avgöra måste göra
+    /// blocket INAKTIVT, aldrig aktivt — ett felaktigt aktiverat block byter
+    /// tyst ut användarens värdnamn eller nyckel mot någon annans, medan ett
+    /// felaktigt överhoppat block bara ger samma resultat som innan `Match`
+    /// stöddes.
+    ///
+    /// `exec` är det viktigaste fallet: att köra ett godtyckligt skalkommando
+    /// för att avgöra en konfigurationsrad är inte en funktion som saknas.
+    #[test]
+    fn criteria_we_cannot_evaluate_leave_the_block_inactive() {
+        for criteria in [
+            "exec \"test -f /tmp/x\"",
+            "user root",
+            "originalhost jump",
+            "localuser anders",
+            "final",
+            "canonical",
+            "tagged arbete",
+        ] {
+            let config = SSHConfig::parse(&format!(
+                "Match {criteria}\n  User skulle-inte-synas\n\nHost *\n  User riktig\n"
+            ));
+            assert_eq!(
+                config.resolve("nagon-vard").user.as_deref(),
+                Some("riktig"),
+                "kriteriet {criteria:?} går inte att avgöra och blocket ska då inte gälla"
+            );
+        }
+    }
+
+    /// Alla kriterier på raden måste hålla, precis som i OpenSSH. Står ett
+    /// avgörbart och ett oavgörbart kriterium tillsammans räcker det inte att
+    /// det första stämmer.
+    #[test]
+    fn every_criterion_on_the_line_must_hold_not_just_the_first() {
+        let config = SSHConfig::parse(
+            "Match host server user root\n  Port 9999\n\nHost *\n  User a\n",
+        );
+        assert_eq!(
+            config.resolve("server").port, 22,
+            "host stämmer men user går inte att avgöra — blocket gäller inte"
+        );
+    }
+
+    /// Negation fungerar i `Match host` precis som i `Host`.
+    #[test]
+    fn match_host_supports_negation() {
+        let config = SSHConfig::parse(
+            "Match host *.internal,!secret.internal\n  User admin\n\nHost *\n  User a\n",
+        );
+        assert_eq!(config.resolve("db.internal").user.as_deref(), Some("admin"));
+        assert_eq!(
+            config.resolve("secret.internal").user.as_deref(),
+            Some("a"),
+            "negationen ska undanta värden"
+        );
+    }
+
+    /// En `Match`-rad utan kriterier är trasig och ska inte aktivera något.
+    /// `host` utan mönster likaså.
+    #[test]
+    fn a_match_line_without_usable_criteria_never_activates() {
+        for line in ["Match\n", "Match host\n"] {
+            let config = SSHConfig::parse(&format!("{line}  User skulle-inte-synas\n\nHost *\n  User riktig\n"));
+            assert_eq!(config.resolve("x").user.as_deref(), Some("riktig"), "rad: {line:?}");
+        }
+    }
+
+    /// `Match`-block får aldrig bidra med värdalias till importen. De
+    /// beskriver villkor, inte värdar — ett alias därifrån skulle skapa en
+    /// post för något som inte är en server.
+    #[test]
+    fn match_blocks_contribute_no_host_aliases() {
+        let config = SSHConfig::parse("Match host produktion\n  User a\n\nHost riktig\n  User b\n");
+        assert_eq!(config.host_aliases(), vec!["riktig".to_string()]);
+    }
+
+    // MARK: Fält importen tidigare slängde
+
+    /// `ForwardAgent` är ett säkerhetsval, så bara ett uttryckligt `yes`
+    /// räknas. Allt annat — `no`, skräp, eller att nyckeln saknas — är nej.
+    /// Att gissa fel åt andra hållet skulle slå på agentvidarebefordran åt
+    /// någon som inte bett om det.
+    #[test]
+    fn forward_agent_requires_an_explicit_yes() {
+        let config = SSHConfig::parse(
+            "Host ja\n  ForwardAgent yes\n\nHost stort\n  ForwardAgent YES\n\n             Host nej\n  ForwardAgent no\n\nHost skrap\n  ForwardAgent kanske\n\n             Host inget\n  User a\n",
+        );
+        assert!(config.resolve("ja").forward_agent);
+        assert!(config.resolve("stort").forward_agent, "nyckelordet är skiftlägesokänsligt");
+        assert!(!config.resolve("nej").forward_agent);
+        assert!(!config.resolve("skrap").forward_agent, "obegripligt värde är inte ja");
+        assert!(!config.resolve("inget").forward_agent, "frånvaro är nej");
+    }
+
+    /// `RemoteCommand` motsvarar `Host::startup_command`. Fältet fanns redan,
+    /// importen fyllde det bara aldrig i.
+    #[test]
+    fn remote_command_becomes_the_startup_command() {
+        let config = SSHConfig::parse(
+            "Host m\n  HostName m.example\n  User a\n  RemoteCommand tmux attach\n  ForwardAgent yes\n",
+        );
+        let hosts = imported_hosts(&config);
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].startup_command.as_deref(), Some("tmux attach"));
+        assert!(hosts[0].forward_agent);
+    }
+
+    /// `ProxyJump` skrivs `[user@]host[:port]` och kan ange en kedja. Bara
+    /// första hoppets värdnamn är intressant — `HostStore::resolve_jump`
+    /// avvisar ändå längre kedjor, så en importerad kedja vore en koppling
+    /// som inte går att använda.
+    #[test]
+    fn the_proxy_jump_alias_is_extracted_from_every_written_form() {
+        assert_eq!(proxy_jump_alias("bastion").as_deref(), Some("bastion"));
+        assert_eq!(proxy_jump_alias("anders@bastion").as_deref(), Some("bastion"));
+        assert_eq!(proxy_jump_alias("anders@bastion:2222").as_deref(), Some("bastion"));
+        assert_eq!(proxy_jump_alias("bastion,inre").as_deref(), Some("bastion"), "bara första hoppet");
+        assert_eq!(proxy_jump_alias("[::1]:22").as_deref(), Some("[::1]"), "IPv6 får inte klippas vid kolon");
+        assert_eq!(proxy_jump_alias("none"), None, "OpenSSH:s sätt att stänga av ett ärvt ProxyJump");
+        assert_eq!(proxy_jump_alias(""), None);
+    }
+
+    /// Hela vägen: en config med ProxyJump ska ge en värd som faktiskt PEKAR
+    /// på jump-hosten i databasen. Utan kopplingen misslyckas anslutningen
+    /// helt, eftersom målet bara är nåbart genom hoppet.
+    ///
+    /// Jump-hosten står EFTER den som pekar på den, vilket är hela skälet
+    /// till att kopplingen sker i ett andra pass — vid första passet finns
+    /// inget id att peka på än.
+    #[test]
+    fn importing_links_proxy_jump_to_the_actual_jump_host() {
+        let dir = temp_config_dir();
+        let mut store = crate::host::HostStore::open(dir.join("hosts.json")).unwrap();
+        let text = "Host inre\n  HostName 10.0.0.9\n  User a\n  ProxyJump anders@hopp:2222\n\n                    Host hopp\n  HostName hopp.example\n  User anders\n";
+        assert_eq!(store.import_ssh_config(text).unwrap(), 2);
+
+        let all = store.all();
+        let inre = all.iter().find(|h| h.alias == "inre").expect("inre saknas");
+        let hopp = all.iter().find(|h| h.alias == "hopp").expect("hopp saknas");
+        assert_eq!(inre.jump_host_id, Some(hopp.id), "ProxyJump ska peka på den importerade jump-hosten");
+        assert_eq!(hopp.jump_host_id, None, "jump-hosten själv har inget hopp");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Pekar ProxyJump på något som inte importerades ska värden ändå sparas,
+    /// bara utan koppling. Ett halvt resultat är bättre än inget alls.
+    #[test]
+    fn an_unresolvable_proxy_jump_still_imports_the_host() {
+        let dir = temp_config_dir();
+        let mut store = crate::host::HostStore::open(dir.join("hosts.json")).unwrap();
+        let text = "Host inre\n  HostName 10.0.0.9\n  User a\n  ProxyJump finns-inte\n";
+        assert_eq!(store.import_ssh_config(text).unwrap(), 1);
+        assert_eq!(store.all()[0].jump_host_id, None);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// En värd som anger sig själv som ProxyJump får inte länkas — det vore
+    /// ingen kedja, bara en anslutning som aldrig kan lyckas.
+    #[test]
+    fn a_host_that_names_itself_as_proxy_jump_is_not_linked() {
+        let dir = temp_config_dir();
+        let mut store = crate::host::HostStore::open(dir.join("hosts.json")).unwrap();
+        let text = "Host sig-sjalv\n  HostName x.example\n  User a\n  ProxyJump sig-sjalv\n";
+        assert_eq!(store.import_ssh_config(text).unwrap(), 1);
+        assert_eq!(store.all()[0].jump_host_id, None);
+        std::fs::remove_dir_all(dir).ok();
     }
 }

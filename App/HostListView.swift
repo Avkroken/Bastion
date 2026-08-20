@@ -9,6 +9,7 @@ final class HostListModel: ObservableObject {
     // MultiSessionView/HostDetailView (se HostDetailView.swift, CodeRabbit-
     // fynd #126), inte låta dem skapa sina egna.
     let store = HostStore()
+    let snippets = SnippetStore()   // synkas i samma rundtur som värdarna
     @Published var hosts: [Host] = []
 
     init() { reload() }
@@ -69,7 +70,7 @@ final class HostListModel: ObservableObject {
         }
         defer { scopedFolder?.stopAccessingSecurityScopedResource() }
         do {
-            try store.sync(with: provider)
+            try store.sync(with: provider, snippets: snippets)
             reload()
             return "Synkat."
         } catch {

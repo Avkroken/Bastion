@@ -174,4 +174,88 @@ final class SSHConfigTests: XCTestCase {
             SSHConfig.load(path: dir + "/config").resolve("server").user, "fran-huvudfilen",
             "första värdet vinner — den inkluderade filen stod EFTER och ska inte skriva över")
     }
+
+    // MARK: - Match
+
+    /// `Match host` är den enda formen som går att avgöra utan en pågående
+    /// anslutning, och den beter sig som `Host` — samma jokertecken, samma
+    /// negation. Tidigare ignorerades hela blocket, så inställningarna i det
+    /// försvann tyst.
+    func testMatchHostAppliesItsSettingsJustLikeAHostBlock() {
+        let config = SSHConfig(
+            text: "Match host *.internal\n  User admin\n  Port 2200\n\nHost *\n  User fallback\n")
+        let inner = config.resolve("db.internal")
+        XCTAssertEqual(inner.user, "admin")
+        XCTAssertEqual(inner.port, 2200)
+
+        let outer = config.resolve("db.example.com")
+        XCTAssertEqual(outer.user, "fallback", "blocket ska inte gälla utanför mönstret")
+        XCTAssertEqual(outer.port, 22)
+    }
+
+    /// `Match all` gäller alltid — men bara EFTER sin egen rad, så det
+    /// fungerar som en catch-all i slutet av filen.
+    func testMatchAllAppliesToEveryAlias() {
+        XCTAssertEqual(SSHConfig(text: "Match all\n  User alla\n").resolve("vadsomhelst").user, "alla")
+    }
+
+    /// Kärnan i avgränsningen. Ett kriterium vi inte kan avgöra måste göra
+    /// blocket INAKTIVT, aldrig aktivt — ett felaktigt aktiverat block byter
+    /// tyst ut användarens värdnamn eller nyckel mot någon annans, medan ett
+    /// felaktigt överhoppat block bara ger samma resultat som innan `Match`
+    /// stöddes.
+    ///
+    /// `exec` är det viktigaste fallet: att köra ett godtyckligt skalkommando
+    /// för att avgöra en konfigurationsrad är inte en funktion som saknas.
+    func testCriteriaWeCannotEvaluateLeaveTheBlockInactive() {
+        for criteria in [
+            "exec \"test -f /tmp/x\"", "user root", "originalhost jump",
+            "localuser anders", "final", "canonical", "tagged arbete",
+        ] {
+            let config = SSHConfig(
+                text: "Match \(criteria)\n  User skulle-inte-synas\n\nHost *\n  User riktig\n")
+            XCTAssertEqual(
+                config.resolve("nagon-vard").user, "riktig",
+                "kriteriet \(criteria) går inte att avgöra och blocket ska då inte gälla")
+        }
+    }
+
+    /// Alla kriterier på raden måste hålla, precis som i OpenSSH. Står ett
+    /// avgörbart och ett oavgörbart kriterium tillsammans räcker det inte att
+    /// det första stämmer.
+    func testEveryCriterionOnTheLineMustHoldNotJustTheFirst() {
+        let config = SSHConfig(
+            text: "Match host server user root\n  Port 9999\n\nHost *\n  User a\n")
+        XCTAssertEqual(
+            config.resolve("server").port, 22,
+            "host stämmer men user går inte att avgöra — blocket gäller inte")
+    }
+
+    /// Negation fungerar i `Match host` precis som i `Host`. Det här testet
+    /// fångade en riktig bugg i Rust-porten: kriterieraden delades på komma,
+    /// så mönsterlistans andra element blev ett eget okänt kriterium.
+    func testMatchHostSupportsNegation() {
+        let config = SSHConfig(
+            text: "Match host *.internal,!secret.internal\n  User admin\n\nHost *\n  User a\n")
+        XCTAssertEqual(config.resolve("db.internal").user, "admin")
+        XCTAssertEqual(
+            config.resolve("secret.internal").user, "a", "negationen ska undanta värden")
+    }
+
+    /// En `Match`-rad utan kriterier är trasig och ska inte aktivera något.
+    /// `host` utan mönster likaså.
+    func testAMatchLineWithoutUsableCriteriaNeverActivates() {
+        for line in ["Match\n", "Match host\n"] {
+            let config = SSHConfig(text: line + "  User skulle-inte-synas\n\nHost *\n  User riktig\n")
+            XCTAssertEqual(config.resolve("x").user, "riktig", "rad: \(line)")
+        }
+    }
+
+    /// `Match`-block får aldrig bidra med värdalias till importen. De
+    /// beskriver villkor, inte värdar — ett alias därifrån skulle skapa en
+    /// post för något som inte är en server.
+    func testMatchBlocksContributeNoHostAliases() {
+        let config = SSHConfig(text: "Match host produktion\n  User a\n\nHost riktig\n  User b\n")
+        XCTAssertEqual(config.hostAliases, ["riktig"])
+    }
 }

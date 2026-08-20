@@ -163,7 +163,19 @@ pub struct Host {
     pub platform: RemotePlatform,
     #[serde(default)]
     pub startup_command: Option<String>,
-    #[serde(default)]
+    /// Stavningen är ett KONTRAKT mot Swift-sidan, inte en intern detalj.
+    /// `rename_all = "camelCase"` skulle ge `jumpHostId`, men Swifts
+    /// `CodingKeys` stavar den `jumpHostID` (Apples namnkonvention
+    /// versaliserar initialförkortningar). Nycklarna matchade alltså inte,
+    /// och `Codable`/serde släpper okända nycklar tyst — följden var att en
+    /// ProxyJump-koppling FÖRSVANN i båda riktningarna så fort tillståndet
+    /// synkades mellan en Linux- och en Apple-enhet. Värst tänkbara fält att
+    /// tappa: målet är ofta bara nåbart genom hoppet, så anslutningen slutar
+    /// fungera helt.
+    ///
+    /// `alias` läser den gamla stavningen så att redan sparade
+    /// `hosts.json`-filer inte tappar sin koppling vid uppgraderingen.
+    #[serde(default, rename = "jumpHostID", alias = "jumpHostId")]
     pub jump_host_id: Option<Uuid>,
     #[serde(default)]
     pub mac_address: Option<String>,
@@ -177,6 +189,20 @@ pub struct Host {
     /// heller. OpenSSH har samma förval av samma skäl.
     #[serde(default)]
     pub forward_agent: bool,
+    /// Adress (`värd:port`) till en SOCKS5-proxy som anslutningen ska gå
+    /// GENOM. `None` = anslut direkt, precis som innan fältet fanns.
+    ///
+    /// Två verkliga användningar: en företagsproxy, och `tailscaled
+    /// --tun=userspace-networking --socks5-server=…`, som exponerar hela
+    /// tailnet:et utan att kräva ett TUN-gränssnitt. Namnet på målvärden
+    /// slås upp i PROXYN, inte här — se `socks_proxy::connect_via_socks5`.
+    ///
+    /// Skilt från `jump_host_id`: en jump-host är en SSH-server vi
+    /// autentiserar mot och tunnlar genom, en SOCKS-proxy är ren
+    /// TCP-transport utan egen inloggning. De går att kombinera — proxyn
+    /// gäller då anslutningen till jump-hosten.
+    #[serde(default)]
+    pub socks_proxy: Option<String>,
     pub modified_at: ReferenceDate,
 }
 
@@ -201,6 +227,7 @@ impl Host {
             jump_host_id: None,
             mac_address: None,
             forward_agent: false,
+            socks_proxy: None,
             modified_at: ReferenceDate::now(),
         }
     }
@@ -211,6 +238,14 @@ impl Host {
 #[derive(Debug, Clone, Default)]
 pub struct SyncState {
     pub hosts: Vec<Host>,
+    /// Synkade snippets. `#[serde(default)]` på avkodningssidan (se
+    /// `Deserialize` nedan) — ett tillstånd skrivet innan snippets ingick i
+    /// synken saknar fältet helt, och ska läsas som "inga snippets", inte
+    /// avvisas. Samma bakåtkompatibilitet som Swift-sidans
+    /// `decodeIfPresent`.
+    pub snippets: Vec<crate::snippet::Snippet>,
+    /// Delas av BÅDA posttyperna. UUID:n krockar inte mellan typerna, och
+    /// en gemensam karta slipper ett andra fält på tråden.
     pub tombstones: HashMap<Uuid, ReferenceDate>,
 }
 
@@ -227,8 +262,9 @@ impl Serialize for SyncState {
                 ]
             })
             .collect();
-        let mut st = s.serialize_struct("SyncState", 2)?;
+        let mut st = s.serialize_struct("SyncState", 3)?;
         st.serialize_field("hosts", &self.hosts)?;
+        st.serialize_field("snippets", &self.snippets)?;
         st.serialize_field("tombstones", &flat)?;
         st.end()
     }
@@ -240,6 +276,8 @@ impl<'de> Deserialize<'de> for SyncState {
         #[derive(Deserialize)]
         struct Raw {
             hosts: Vec<Host>,
+            #[serde(default)]
+            snippets: Vec<crate::snippet::Snippet>,
             tombstones: Vec<serde_json::Value>,
         }
         let raw = Raw::deserialize(d)?;
@@ -261,6 +299,7 @@ impl<'de> Deserialize<'de> for SyncState {
         }
         Ok(SyncState {
             hosts: raw.hosts,
+            snippets: raw.snippets,
             tombstones,
         })
     }
@@ -303,6 +342,7 @@ impl HostStore {
         if let Ok(hosts) = serde_json::from_str::<Vec<Host>>(&data) {
             return Ok(SyncState {
                 hosts,
+                snippets: Vec::new(),
                 tombstones: HashMap::new(),
             });
         }
@@ -365,21 +405,83 @@ impl HostStore {
             .filter(|h| !existing.contains(&h.alias.to_lowercase()))
             .collect();
         let count = fresh.len();
+        let imported: Vec<(String, Option<String>)> = fresh
+            .iter()
+            .map(|h| {
+                let jump = config.resolve(&h.alias).proxy_jump.as_deref()
+                    .and_then(crate::ssh_config::proxy_jump_alias);
+                (h.alias.clone(), jump)
+            })
+            .collect();
         for host in fresh {
+            self.upsert(host)?;
+        }
+
+        // Andra pass: koppla ihop ProxyJump. Måste ske EFTER att alla
+        // värdar sparats — jump-hosten kan stå efter den som pekar på den i
+        // configen, och en koppling kräver mottagarens id.
+        //
+        // Bara nyimporterade värdar får sin jump satt. Att röra en värd som
+        // redan fanns vore att tyst skriva om något användaren kan ha ställt
+        // in själv, och hela importen bygger på att befintliga alias lämnas
+        // ifred.
+        let by_alias: std::collections::HashMap<String, Uuid> = self
+            .all()
+            .iter()
+            .map(|h| (h.alias.to_lowercase(), h.id))
+            .collect();
+        for (alias, jump_alias) in imported {
+            let Some(jump_alias) = jump_alias else { continue };
+            let Some(&jump_id) = by_alias.get(&jump_alias.to_lowercase()) else { continue };
+            let Some(&id) = by_alias.get(&alias.to_lowercase()) else { continue };
+            // En värd som pekar på sig själv är ingen kedja, bara ett fel.
+            if id == jump_id {
+                continue;
+            }
+            // `all()` ger `Vec<&Host>`, så en `cloned()` på iteratorn ger
+            // fortfarande en referens — klona värden explicit.
+            let Some(mut host) = self.all().into_iter().find(|h| h.id == id).cloned() else {
+                continue;
+            };
+            host.jump_host_id = Some(jump_id);
             self.upsert(host)?;
         }
         Ok(count)
     }
 
     /// Full synkrunda mot en transport: hämta fjärrtillstånd, slå ihop
-    /// lokalt, skriv tillbaka det sammanslagna — motsvarar
+    /// lokalt, skriv tillbaka det sammanslagna. Motsvarar
     /// `HostStore.sync(with:)` i Swift. Se `crate::sync`.
-    pub fn sync(&mut self, provider: &impl crate::sync::SyncProvider) -> std::io::Result<()> {
+    ///
+    /// Tar BÅDA databaserna, och det finns ingen variant som bara tar
+    /// värdarna. Två synkvägar skulle betyda att någon förr eller senare
+    /// väljer den som tyst hoppar över snippets. De delar dessutom
+    /// gravstenskarta, så två separata rundturer vore inte bara långsammare
+    /// utan fel: den andra pushen skulle skriva över den förstas gravstenar.
+    pub fn sync_with_snippets(
+        &mut self,
+        provider: &impl crate::sync::SyncProvider,
+        snippets: &mut crate::snippet::SnippetStore,
+    ) -> std::io::Result<()> {
         let remote = provider.pull()?.unwrap_or_default();
-        let local = std::mem::take(&mut self.state);
-        self.state = crate::sync::merge(local, remote);
-        self.persist()?;
-        provider.push(&self.state)
+        let local = SyncState {
+            hosts: std::mem::take(&mut self.state.hosts),
+            snippets: snippets.all().into_iter().cloned().collect(),
+            tombstones: std::mem::take(&mut self.state.tombstones),
+        };
+        let merged = crate::sync::merge(local, remote);
+
+        provider.push(&merged)?;
+        snippets.replace_all(merged.snippets.clone())?;
+        self.state = SyncState { snippets: Vec::new(), ..merged };
+        self.persist()
+    }
+
+    /// Skriver en gravsten utan att röra värdlistan — för poster som lever i
+    /// en annan databas men delar sync-tillstånd (se `SnippetStore`).
+    pub fn record_tombstone(&mut self, id: Uuid) -> std::io::Result<()> {
+        self.state.tombstones.insert(id, ReferenceDate::now());
+        self.persist()
     }
 
     fn persist(&self) -> std::io::Result<()> {
@@ -489,12 +591,13 @@ mod tests {
         tombstones.insert(id, ReferenceDate(5.0));
         let state = SyncState {
             hosts: vec![],
+            snippets: Vec::new(),
             tombstones,
         };
         let json = serde_json::to_string(&state).unwrap();
         assert_eq!(
             json,
-            r#"{"hosts":[],"tombstones":["00000000-0000-0000-0000-000000000001",5.0]}"#
+            r#"{"hosts":[],"snippets":[],"tombstones":["00000000-0000-0000-0000-000000000001",5.0]}"#
         );
         let back: SyncState = serde_json::from_str(&json).unwrap();
         assert_eq!(back.tombstones.len(), 1);
@@ -672,5 +775,206 @@ mod tests {
                 resolved.err()
             );
         }
+    }
+
+    /// Fältnamnet i JSON är ett KONTRAKT mot Swift-sidan, inte en intern
+    /// detalj: `Host` synkas mellan plattformarna som JSON, och en nyckel
+    /// som inte stavas likadant på båda sidor släpps tyst av mottagaren.
+    /// Precis det hände med `forwardAgent`, som saknades i Swift-modellen
+    /// och därför raderades vid varje synk genom en Apple-enhet.
+    #[test]
+    fn forward_agent_is_serialised_under_the_name_the_other_platforms_expect() {
+        let mut host = Host::new("h".into(), "10.0.0.1".into(), "a".into());
+        host.forward_agent = true;
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&host).unwrap()).unwrap();
+        assert_eq!(
+            json.get("forwardAgent").and_then(|v| v.as_bool()),
+            Some(true),
+            "nyckeln måste heta forwardAgent — Swift-sidans CodingKeys stavar den så"
+        );
+    }
+
+    /// Låser HELA JSON-formen för `Host`, inte bara ett fält.
+    ///
+    /// Två fältnamn har redan tyst gått isär mellan Rust och Swift
+    /// (`forwardAgent` saknades helt på ena sidan, `jumpHostID` stavades
+    /// `jumpHostId` på den andra), och båda gångerna var symptomet
+    /// dataförlust vid synk utan ett enda felmeddelande. Ett test som bara
+    /// kollar de fält man råkar tänka på hittar inte nästa. Det här kräver
+    /// att nyckeluppsättningen är EXAKT den förväntade — lägger någon till
+    /// ett fält faller testet, och då är frågan "har Swift-sidan samma
+    /// stavning?" omöjlig att glömma.
+    #[test]
+    fn the_json_shape_of_host_is_exactly_what_the_other_platforms_expect() {
+        let host = Host::new("h".into(), "10.0.0.1".into(), "a".into());
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&host).unwrap()).unwrap();
+        let mut keys: Vec<String> = json.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+
+        let mut expected = vec![
+            "alias", "auth", "colorTag", "forwardAgent", "hostName", "id", "isFavorite",
+            "jumpHostID", "macAddress", "modifiedAt", "platform", "port", "socksProxy",
+            "startupCommand", "tags", "user",
+        ];
+        expected.sort();
+        assert_eq!(
+            keys, expected,
+            "JSON-formen ändrades. Uppdatera Swift-sidans CodingKeys i samma veva, \
+             annars släpps det nya fältet tyst vid synk."
+        );
+    }
+
+    /// Guldfixtur som Swift-sidan avkodar från SAMMA fil, i
+    /// `HostStoreTests.testTheSharedWireFormatFixtureDecodesIdentically`.
+    ///
+    /// Nyckeljämförelsen i testet ovan fångar att ett fält HETER samma sak.
+    /// Den säger ingenting om nyttolastens FORM — att `HostAuth` bär sina
+    /// fält som `{"certificateFile": {"keyPath": …}}` och att `platform` är
+    /// en rå sträng, inte ett objekt. Går den formen isär tappas fältet lika
+    /// tyst som ett felstavat nyckelnamn.
+    ///
+    /// Ändra aldrig fixturen för att få testet grönt. Faller den har
+    /// trådformatet ändrats, och då är frågan vad som händer med redan
+    /// sparade filer hos användarna.
+    #[test]
+    fn the_shared_wire_format_fixture_decodes_to_the_expected_host() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../Tests/fixtures/host-wire-format.json");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("kunde inte läsa {}: {e}", path.display()));
+        let host: Host = serde_json::from_str(&text).expect("fixturen ska gå att avkoda");
+
+        assert_eq!(host.id.to_string(), "6f1c9b2e-3a4d-4f57-8b91-0c2d5e7a1234");
+        assert_eq!(host.alias, "guld");
+        assert_eq!(host.host_name, "10.0.0.7");
+        assert_eq!(host.user, "anders");
+        assert_eq!(host.port, 2222);
+        assert_eq!(host.tags, vec!["prod".to_string(), "eu".to_string()]);
+        assert_eq!(
+            host.auth,
+            HostAuth::CertificateFile {
+                key_path: "/home/anders/.ssh/id_ed25519".into(),
+                cert_path: "/home/anders/.ssh/id_ed25519-cert.pub".into(),
+            },
+            "HostAuth-nyttolasten måste ha samma form som Swifts syntetiserade Codable"
+        );
+        assert!(host.is_favorite);
+        assert_eq!(host.color_tag.as_deref(), Some("blue"));
+        assert_eq!(host.platform, RemotePlatform::WindowsAdmin);
+        assert_eq!(host.startup_command.as_deref(), Some("tmux attach"));
+        assert_eq!(
+            host.jump_host_id.map(|i| i.to_string()).as_deref(),
+            Some("b7e4d1a0-8c33-4e29-9f6b-1d5a3c8e9876")
+        );
+        assert_eq!(host.mac_address.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
+        assert!(host.forward_agent);
+        assert_eq!(host.socks_proxy.as_deref(), Some("127.0.0.1:1080"));
+        assert_eq!(host.modified_at.0, 800_000_000.0);
+
+        // Och tillbaka: det vi skriver ska gå att läsa som samma sak igen.
+        let round_tripped: Host =
+            serde_json::from_str(&serde_json::to_string(&host).unwrap()).unwrap();
+        assert_eq!(round_tripped.jump_host_id, host.jump_host_id);
+        assert_eq!(round_tripped.auth, host.auth);
+        assert_eq!(round_tripped.forward_agent, host.forward_agent);
+    }
+
+    /// Ett tillstånd skrivet INNAN snippets ingick i synken saknar fältet
+    /// helt. Det ska läsas som "inga snippets", inte avvisas — annars slutar
+    /// synken fungera för alla som inte uppgraderat alla sina enheter
+    /// samtidigt, vilket ingen gör.
+    #[test]
+    fn a_sync_state_written_before_snippets_existed_still_loads() {
+        let json = r#"{"hosts":[],"tombstones":[]}"#;
+        let state: SyncState = serde_json::from_str(json).expect("gammalt tillstånd ska läsas");
+        assert!(state.snippets.is_empty());
+        assert!(state.hosts.is_empty());
+    }
+
+    /// `tombstones` är det ANDRA handskrivna kontraktet mot Swift-sidan.
+    /// Swift kodar `[UUID: Date]` som en PLATT array av omväxlande nycklar
+    /// och värden — inte som ett JSON-objekt — eftersom `UUID` inte är
+    /// `CodingKeyRepresentable`. Rust-sidans egna `Serialize`/`Deserialize`
+    /// finns bara för att härma det.
+    ///
+    /// Går formen isär tappas gravstenarna, och en gravsten som tappas
+    /// betyder att en RADERAD värd återuppstår vid nästa synk. Det är den
+    /// sortens fel som ser ut som ett spöke i gränssnittet och aldrig som
+    /// ett serialiseringsproblem.
+    ///
+    /// Swift-sidan läser samma fil i
+    /// `SyncEngineTests.testTheSharedSyncStateFixtureDecodesIdentically`.
+    #[test]
+    fn the_shared_sync_state_fixture_decodes_to_the_expected_state() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../Tests/fixtures/sync-state-wire-format.json");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("kunde inte läsa {}: {e}", path.display()));
+        let state: SyncState = serde_json::from_str(&text).expect("fixturen ska gå att avkoda");
+
+        // Toppnivåns nycklar är ett kontrakt precis som postens egna. Går de
+        // isär avvisas eller tappas HELA synken, inte bara ett fält.
+        let raw: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let mut keys: Vec<String> = raw.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec!["hosts".to_string(), "snippets".to_string(), "tombstones".to_string()],
+            "SyncStates toppnivå ändrades. Uppdatera Swift-sidans CodingKeys i samma veva."
+        );
+
+        assert_eq!(state.hosts.len(), 1);
+        assert_eq!(state.hosts[0].alias, "synk");
+        assert_eq!(state.snippets.len(), 1, "snippets ingår i tillståndet");
+        assert_eq!(state.snippets[0].name, "starta om plex");
+        assert_eq!(state.snippets[0].template, "docker compose restart {{tjanst}}");
+        assert_eq!(state.snippets[0].modified_at.0, 787_000_000.0);
+        assert_eq!(state.tombstones.len(), 2, "den platta arrayen ska ge TVÅ gravstenar");
+
+        let first = Uuid::parse_str("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").unwrap();
+        let second = Uuid::parse_str("99999999-8888-7777-6666-555555555555").unwrap();
+        assert_eq!(state.tombstones.get(&first).map(|d| d.0), Some(780_000_000.0));
+        assert_eq!(state.tombstones.get(&second).map(|d| d.0), Some(785_000_000.0));
+
+        // Det vi SKRIVER måste ha samma platta form, annars kan Swift-sidan
+        // inte läsa det vi just bevisat att vi kan läsa.
+        let written: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        let flat = written["tombstones"].as_array().expect("tombstones ska vara en array");
+        assert_eq!(flat.len(), 4, "två gravstenar = fyra element, inte ett objekt");
+        assert!(flat[0].is_string() && flat[1].is_number(), "nyckel, värde, nyckel, värde");
+
+        let round_tripped: SyncState =
+            serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        assert_eq!(round_tripped.tombstones.len(), 2);
+    }
+
+    /// En udda array är trasig data, inte "sista gravstenen utan datum" —
+    /// att tyst slänga den sista skulle återuppliva en raderad värd.
+    #[test]
+    fn an_odd_length_tombstone_array_is_an_error_not_a_silent_truncation() {
+        let json = r#"{"hosts":[],"tombstones":["aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"]}"#;
+        assert!(
+            serde_json::from_str::<SyncState>(json).is_err(),
+            "udda antal element måste vara ett fel"
+        );
+    }
+
+    /// En `hosts.json` skriven före namnbytet ska INTE tappa sin
+    /// ProxyJump-koppling vid uppgraderingen.
+    #[test]
+    fn the_old_jump_host_spelling_is_still_read() {
+        let id = Uuid::new_v4();
+        let json = format!(
+            r#"{{"id":"{}","alias":"a","hostName":"h","user":"u","port":22,"tags":[],
+                 "auth":{{"agentDefault":{{}}}},"modifiedAt":789000000.0,
+                 "jumpHostId":"{}"}}"#,
+            Uuid::new_v4(),
+            id
+        );
+        let host: Host = serde_json::from_str(&json).expect("gammal fil ska gå att läsa");
+        assert_eq!(host.jump_host_id, Some(id), "den gamla stavningen måste fortfarande läsas");
     }
 }
