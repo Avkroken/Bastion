@@ -8,6 +8,7 @@ on:
 permissions:
   contents: read
   security-events: read
+  id-token: write
 
 concurrency:
   group: security-alert-snapshot
@@ -27,13 +28,16 @@ jobs:
             -H 'X-GitHub-Api-Version: 2022-11-28' \
             "/repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&per_page=100" \
           | jq 'add | map({number, tool: .tool.name, rule_id: .rule.id, rule_name: .rule.name, severity: (.rule.security_severity_level // .rule.severity), created_at, updated_at, url: .html_url, ref: .most_recent_instance.ref, category: .most_recent_instance.category, file: .most_recent_instance.location.path, start_line: .most_recent_instance.location.start_line, end_line: .most_recent_instance.location.end_line})' > code-scanning-alerts.json
-          count=$(jq 'length' code-scanning-alerts.json)
-          echo "### Code Scanning snapshot" >> "$GITHUB_STEP_SUMMARY"
-          echo "Öppna alerts: **$count**" >> "$GITHUB_STEP_SUMMARY"
-      - name: Ladda upp snapshot
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: code-scanning-alerts
-          path: code-scanning-alerts.json
-          if-no-files-found: error
-          retention-days: 7
+          echo "Öppna alerts: $(jq 'length' code-scanning-alerts.json)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Spara snapshot privat i D1
+        run: |
+          set -euo pipefail
+          oidc=$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=politiker-security-alerts" | jq -r .value)
+          jq -n --slurpfile alerts code-scanning-alerts.json '{alerts: $alerts[0]}' \
+          | curl --fail-with-body -fsS \
+              -H "X-GitHub-OIDC: $oidc" \
+              -H 'Content-Type: application/json' \
+              --data-binary @- \
+              https://security-alerts.denied.se/v1/code-scanning
