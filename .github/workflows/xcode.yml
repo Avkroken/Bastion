@@ -1,13 +1,14 @@
 name: Xcode-bygge (iOS + macOS + tvOS)
 
-# Apple-CI är dyrast i repot. Workflowet triggas alltid så required checks kan
-# rapporteras, men ett billigt impact-jobb avgör vilka macOS-jobb som verkligen
-# behöver köras. `if:`-skippade jobb räknas som success av GitHub.
+# Apple-CI är dyrast i repot. PR-CI körs mot main; separat push-CI på dev
+# skulle annars dubblera samma commit när dev har en öppen PR. Workflowet
+# triggas alltid för PR mot main så required checks kan rapporteras, men ett
+# billigt impact-jobb avgör vilka macOS-jobb som verkligen behöver köras.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
-    branches: [main, dev]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
