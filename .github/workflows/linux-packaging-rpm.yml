@@ -1,24 +1,13 @@
 name: Linux-paketering (.rpm)
 
-# Paketerar bastion-cli som RPM. Workflowet är inte required och körs därför
-# bara när root-SwiftPM/CLI eller workflowet självt ändras.
+# `build-rpm` är ett required checknamn i rulesetet. Workflowet måste därför
+# alltid starta på PR. Impact-jobbet avgör om den tunga RPM-paketeringen behövs;
+# `build-rpm` är en billig aggregator som alltid rapporterar resultat.
 on:
   push:
     branches: [main]
-    paths:
-      - 'Sources/SSHCore/**'
-      - 'Sources/bastion-cli/**'
-      - 'Package.swift'
-      - 'Package.resolved'
-      - '.github/workflows/linux-packaging-rpm.yml'
   pull_request:
     branches: [main]
-    paths:
-      - 'Sources/SSHCore/**'
-      - 'Sources/bastion-cli/**'
-      - 'Package.swift'
-      - 'Package.resolved'
-      - '.github/workflows/linux-packaging-rpm.yml'
   workflow_dispatch:
 
 concurrency:
@@ -29,7 +18,26 @@ permissions:
   contents: read
 
 jobs:
-  build-rpm:
+  impact:
+    runs-on: ubuntu-latest
+    outputs:
+      cli_package: ${{ steps.impact.outputs.cli_package }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bestäm CI-påverkan
+        id: impact
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: bash .github/scripts/ci-impact.sh
+
+  package-rpm:
+    needs: impact
+    if: ${{ needs.impact.outputs.cli_package == 'true' }}
     runs-on: ubuntu-latest
     container: swift:6.1-rhel-ubi9
     timeout-minutes: 20
@@ -37,7 +45,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -133,8 +141,20 @@ jobs:
           echo "$OUTPUT" | grep -q "Användning:" || { echo "::error::väntade användningsmeddelande"; exit 1; }
 
       - name: Ladda upp .rpm-artefakt
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bastion-cli-rpm
           path: dist-out/*.rpm
           if-no-files-found: error
+
+  build-rpm:
+    if: always()
+    needs: [impact, package-rpm]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sammanfatta RPM-verifieringen
+        run: |
+          echo "impact: ${{ needs.impact.result }}"
+          echo "package-rpm: ${{ needs.package-rpm.result }}"
+          case "${{ needs.impact.result }}" in failure|cancelled) exit 1;; esac
+          case "${{ needs.package-rpm.result }}" in failure|cancelled) exit 1;; esac
