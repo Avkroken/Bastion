@@ -41,7 +41,7 @@ För varje uppgift:
 1. Synka `dev` med `main`. Om `dev` redan innehåller ofärdigt arbete, slutför det först.
 2. Implementera och testa den aktuella uppgiften lokalt på `dev`; samla ändringar i så stora sammanhängande batcher som är rimliga.
 3. Commit och push till `dev`, skapa eller uppdatera exakt ett PR `dev` → `main`, och aktivera auto-merge.
-4. Medan CI/review pågår: fortsätt endast lokalt med samma uppgift. Lös relevanta fel och kommentarer och pusha dem samlat, inte en i taget.
+4. Medan CI/review pågår: fortsätt endast lokalt med samma uppgift. Lös relevanta fel och kommentarer och pusha dem samlat, inte en i taget. Efter varje push som ändrar PR-headen, och särskilt efter den sista pushen, verifiera uttryckligen att auto-merge fortfarande är aktiverad; återaktivera den om head-ändringen slog av den.
 5. När PR:n är mergad, synka `dev` till `main`. Först därefter får nästa uppgift börja.
 
 Om uppgiften blockeras av en extern åtgärd som agenten faktiskt inte kan utföra, dokumentera den exakta blockeraren och stanna. Börja inte en annan koduppgift utan uttrycklig instruktion från användaren.
@@ -72,6 +72,7 @@ Om uppgiften blockeras av en extern åtgärd som agenten faktiskt inte kan utfö
 - Överlämna aldrig inloggningsuppgifter eller andra hemligheter till versionshistoriken
 - Skapa ändringsförslag som klara för granskning, aldrig som utkast
 - Aktivera automatisk sammanfogning med en metod som tillåts av förrådets regler direkt efter att ändringsförslaget skapats
+- Efter varje push som ändrar PR-headen: verifiera att automatisk sammanfogning fortfarande är aktiv och återaktivera den vid behov
 - Automatisk sammanfogning får slutföras först när alla regelkrav och kontrollkörningar har godkänts
 - Om CI, review eller auto-merge blockerar leveransen: lös blockeraren för den aktiva uppgiften innan annat kodarbete påbörjas
 - Om automatisk sammanfogning inte kan aktiveras: rapportera det exakta felet
