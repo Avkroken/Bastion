@@ -1,23 +1,14 @@
 name: SwiftPM-Linux-bygge
 
-# Kärnan (SSHCore + bastion-cli, rot-paketet) påstås bygga på Linux OCH Apple
-# (se CLAUDE.md/README) — men fram tills nu verifierades det bara på en
-# macOS-runner (swiftpm-macos i xcode.yml). Rot-paketet beror inte på
-# SwiftCrossUI (det ligger i LinuxApp/, ett eget paket), så det drabbas
-# INTE av swift-mutex-kompilatorbuggen (swiftlang/swift#80759) som tvingar
-# LinuxApp/ till en dev-snapshot-toolchain (se linux-gui.yml) — en vanlig
-# stabil release räcker för rot-paketet.
-#
-# `apt install swiftlang` (som README påstod fungerar) finns INTE på en
-# vanlig ubuntu-latest-runner ("swift" i Ubuntus repon är OpenStack Swift,
-# ett helt orelaterat paket) — upptäckt genom att faktiskt köra jobbet, inte
-# gissat. Officiella `swift`-Docker-avbildningen används i stället, samma
-# distro (`noble` = Ubuntu 24.04) som runnern annars kör på.
+# Kärnan (SSHCore + bastion-cli, rot-paketet) verifieras på Linux. PR-CI körs
+# mot main; separat push-CI på dev behövs inte eftersom samma commit annars
+# får både push- och pull_request-körningar när dev har en öppen PR.
+# Det dyra bygget körs bara när impact-detektorn visar att root-SwiftPM påverkas.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
-    branches: [main, dev]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -28,7 +19,25 @@ permissions:
   contents: read
 
 jobs:
+  impact:
+    runs-on: ubuntu-latest
+    outputs:
+      swift_core: ${{ steps.impact.outputs.swift_core }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bestäm CI-påverkan
+        id: impact
+        env:
+          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: bash .github/scripts/ci-impact.sh
+
   swiftpm-linux:
+    needs: impact
+    if: ${{ needs.impact.outputs.swift_core == 'true' }}
     runs-on: ubuntu-latest
     container: swift:6.1-noble
     timeout-minutes: 20
@@ -40,11 +49,6 @@ jobs:
       - name: Visa Swift-version
         run: swift --version
 
-      # ArchiveOperationsTests kör riktiga tar/zip/unzip-underprocesser (se
-      # ROADMAP.md "Zip/Tar") — swift:6.1-noble-avbildningen har tar men
-      # inte zip/unzip förinstallerat (minimal image). Utan detta misslyckas
-      # testerna med "remoteExit(status: 127)" (command not found) — upptäckt
-      # genom att faktiskt köra jobbet första gången, inte gissat.
       - name: Installera zip/unzip (för ArchiveOperationsTests)
         run: |
           apt-get update -qq

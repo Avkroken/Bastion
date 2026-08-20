@@ -1,24 +1,18 @@
 name: LinuxApp-paketering (.deb)
 
-# Paketerar bastion-linuxapp (den native Rust/GTK4/libadwaita-klienten i
-# LinuxApp/, se ROADMAP.md "Arkitekturbeslut") som ett fristående .deb-paket
-# — samma "Paketering + BSD-täckning"-backloggpunkt som redan täcker
-# bastion-cli (.deb/.rpm). Till skillnad från Swift-CLI:t länkas
-# bastion-linuxapp DYNAMISKT mot systemets GTK4/libadwaita/VTE4-bibliotek
-# (ingen statisk-runtime-motsvarighet för Rust/GTK4-stacken) — paketet
-# deklarerar därför riktiga runtime-Depends i stället för att bunta ihop
-# delade bibliotek (den mycket dyrare vägen som det numera rivna
-# SwiftCrossUI-spårets bastion-gui behövde, se ROADMAP.md).
-#
-# Samma härledda-beroende-strategi som bastion-cli/.deb (`readelf -d` mot
-# binärens EGNA DT_NEEDED-lista, uppslaget mot Debian-paket via `dpkg -S`)
-# — bara en annan biblioteksfamilj (GTK4/GLib/libadwaita/VTE i stället för
-# libcurl/libxml2).
+# Paketerar den native Rust/GTK4-klienten. Workflowet är inte required och
+# körs bara när LinuxApp eller workflowet självt ändras.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
+    paths:
+      - 'LinuxApp/**'
+      - '.github/workflows/linuxapp-packaging.yml'
   pull_request:
-    branches: [main, dev]
+    branches: [main]
+    paths:
+      - 'LinuxApp/**'
+      - '.github/workflows/linuxapp-packaging.yml'
   workflow_dispatch:
 
 concurrency:
@@ -30,8 +24,6 @@ permissions:
 
 jobs:
   build-deb-linuxapp:
-    # Paketet stöds och rökprovas mot Ubuntu 24.04. Nyare byggvärd kan länka
-    # mot glibc/GTK-symboler som saknas på målversionen.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
@@ -64,17 +56,11 @@ jobs:
       - name: cargo build --release
         run: cargo build --release --verbose
 
-      # `readelf -d` läser binärens egen DT_NEEDED-lista (dess faktiska
-      # dynamiska beroenden) — inte en gissning om vilka GTK4-relaterade
-      # paket som "brukar" behövas.
       - name: Bestäm faktiska körtidsberoenden (DT_NEEDED → Debian-paket)
         id: deps
         run: |
           set -euo pipefail
           BIN=target/release/bastion-linuxapp
-          # LC_ALL=C: readelfs "Shared library:"-etikett är lokalberoende
-          # (t.ex. "delat bibliotek:" på en sv_SE-miljö) — matcha alltid mot
-          # den engelska outputen oavsett runnerns/skalets standardlokal.
           NEEDED=$(LC_ALL=C readelf -d "$BIN" | sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p')
           echo "Direkta delade bibliotek (DT_NEEDED):"
           echo "$NEEDED"
@@ -82,19 +68,8 @@ jobs:
           PACKAGES=""
           for LIB in $NEEDED; do
             case "$LIB" in
-              # Grundläggande glibc-familjen (samma logiska beroende, täcks
-              # av `libc6` nedan) — utesluts bara från den HÄRLEDDA listan,
-              # inte från kontrollen.
-              libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libutil.so*|libgcc_s.so*|ld-linux*|linux-vdso*)
-                continue
-                ;;
+              libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libutil.so*|libgcc_s.so*|ld-linux*|linux-vdso*) continue ;;
             esac
-            # ldconfig -p listar SAMMA biblioteksnamn i flera arkitektur-
-            # varianter (t.ex. x32 FÖRE x86-64) på en Ubuntu-runner — matcha
-            # explicit mot x86-64-taggen, annars slår uppslaget fel väg
-            # (CI-fynd, samma symlänk-/arkitekturfälla som redan dokumenterats
-            # för bastion-cli/.deb men här mot ldconfig -p:s flera rader i
-            # stället för /lib→usr/lib-symlänken).
             LIBPATH=$(ldconfig -p | awk -v lib="$LIB" '$1 == lib && $0 ~ /x86-64/ { print $NF; exit }')
             if [ -z "$LIBPATH" ]; then
               echo "::error::hittar inte $LIB (x86-64) via ldconfig — kan inte slå upp vilket Debian-paket det tillhör"
@@ -142,50 +117,13 @@ jobs:
           mkdir -p dist-out
           mv "dist/bastion-linuxapp_${VERSION}_amd64.deb" dist-out/
 
-      # Installeras + körs i en HELT FRISK ubuntu:24.04-container (inte på
-      # byggvärden, som redan har -dev-paketen och deras runtime-bibliotek
-      # på disk sedan installationssteget ovan — samma "fel sak bevisad"-
-      # fälla som CodeRabbit flaggade för bastion-guis .deb-jobb).
-      # `apt-get install ./paket.deb` löser Depends-raden på riktigt via
-      # apt, till skillnad från `dpkg -i` som bara installerar paketet och
-      # lämnar olösta beroenden bakom sig.
       - name: Installera och kör paketet i en frisk container
-        # Skyddsnät: en tidigare hängning i det här steget (needrestart-
-        # prompten, se kommentaren nedan) åt upp hela jobbets 20-minuters-
-        # tak innan felet syntes någonstans (CI-fynd) — ett kort steg-eget
-        # tak ger ett snabbt, tydligt fel i stället.
-        #
-        # CI-fynd (2026-08-04, tredje körningen på PR #241): steget tog
-        # fortfarande hela 5-minuterstaket EFTER DEBIAN_FRONTEND/
-        # NEEDRESTART_MODE-fixen ovan (`-qq` dolde all output, så det gick
-        # inte att se om det satt fast eller bara var långsamt). Troligaste
-        # förklaringen: den fräscha `ubuntu:24.04`-containern har ingen
-        # apt-cache/proxy (till skillnad från byggvärdens EGEN
-        # apt-get-installation två steg upp, som tar ~25 s för en jämförbar
-        # GTK4-paketmängd tack vare runnerns paketcache) — ett fullt
-        # GTK4/libadwaita/VTE4+X11-skrivbordsträd över öppna internet kan
-        # rimligen ta längre än 5 minuter, inte bara hänga. Åtgärdat med:
-        # (1) `--no-install-recommends` för att undvika onödiga extra-paket,
-        # (2) `</dev/null` på varje apt-get-anrop som ett billigt skydd om
-        # någon prompt ändå läser stdin, (3) tidsstämplad progress-output
-        # (utan `-qq`) så nästa körnings logg visar VILKET kommando som
-        # faktiskt tar tiden i stället för att vara helt tyst, (4) taket
-        # höjt 5 → 12 minuter — fortfarande långt under jobbets 20-minuters-
-        # gräns, men rum för en kall paketinstallation.
         timeout-minutes: 12
         run: |
           set -euo pipefail
           docker run --rm -v "$PWD/dist-out:/dist-out:ro" \
             -e DEBIAN_FRONTEND=noninteractive -e NEEDRESTART_MODE=a \
             ubuntu:24.04 bash -euo pipefail -c '
-            # `DEBIAN_FRONTEND=noninteractive`/`NEEDRESTART_MODE=a`: ett
-            # `apt-get install` av ett paket med `dbus`/GTK-bibliotek som
-            # beroende drar in `needrestart`, som annars öppnar en
-            # interaktiv whiptail-dialog ("vilka tjänster ska startas om?")
-            # och HÄNGER hela jobbet till 20-minuters-taket i en tom
-            # container utan TTY (CI-fynd — `xvfb-run`-bytet till manuell
-            # Xvfb ovan löste INTE detta, roten var apt-installationen
-            # själv, inte GUI-uppstarten).
             echo "[$(date -u +%H:%M:%S)] apt-get update"
             apt-get update -q </dev/null
             echo "[$(date -u +%H:%M:%S)] installerar bastion-linuxapp + beroenden"
@@ -193,14 +131,6 @@ jobs:
             echo "[$(date -u +%H:%M:%S)] installerar xvfb + dbus-x11"
             apt-get install -y -q --no-install-recommends xvfb dbus-x11 </dev/null
             echo "[$(date -u +%H:%M:%S)] apt klar"
-
-            # `xvfb-run -a` HÄNGDE hela jobbet till 20-minuters-taket i
-            # CI (ingen output, ingen krasch, bara tyst — CI-fynd) — samma
-            # manuella Xvfb+DISPLAY-mönster som redan verifierat fungerar
-            # (körd interaktivt tidigare i den här sessionen) används i
-            # stället. `dbus-run-session` ger en riktig session-bus +
-            # maskin-ID, annars kraschar GTK ("Cannot spawn a message bus
-            # without a machine-id") i en helt tom container.
             Xvfb :99 -screen 0 1280x800x24 >/tmp/xvfb.log 2>&1 &
             XVFB_PID=$!
             export DISPLAY=:99
@@ -222,9 +152,5 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: bastion-linuxapp-deb
-          # `actions/upload-artifact` respekterar INTE jobbets
-          # `defaults.run.working-directory` (bara `run:`-steg gör det) —
-          # sökvägen måste vara relativ till $GITHUB_WORKSPACE, alltså med
-          # `LinuxApp/`-prefixet (CI-fynd: "No files were found").
           path: LinuxApp/dist-out/*.deb
           if-no-files-found: error

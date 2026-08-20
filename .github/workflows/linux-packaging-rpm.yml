@@ -1,18 +1,24 @@
 name: Linux-paketering (.rpm)
 
-# Paketerar bastion-cli som ett fristående .rpm-paket — RHEL/Fedora-halvan av
-# ROADMAP.md:s "Paketering + BSD-täckning" (Debian/Ubuntu-halvan, .deb, är
-# redan klar i linux-packaging.yml). Samma härledda-beroende-strategi som
-# .deb-jobbet: binärens EGNA DT_NEEDED-lista (readelf), inte en gissning —
-# bara uppslaget mot RPM-paket via `rpm -qf` i stället för `dpkg -S`.
-#
-# Bara bastion-cli hittills — bastion-gui (LinuxApp/, GTK4-beroenden utöver
-# Swift-runtimen) är ett separat, större paketeringssteg, se ROADMAP.md.
+# Paketerar bastion-cli som RPM. Workflowet är inte required och körs därför
+# bara när root-SwiftPM/CLI eller workflowet självt ändras.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
+    paths:
+      - 'Sources/SSHCore/**'
+      - 'Sources/bastion-cli/**'
+      - 'Package.swift'
+      - 'Package.resolved'
+      - '.github/workflows/linux-packaging-rpm.yml'
   pull_request:
-    branches: [main, dev]
+    branches: [main]
+    paths:
+      - 'Sources/SSHCore/**'
+      - 'Sources/bastion-cli/**'
+      - 'Package.swift'
+      - 'Package.resolved'
+      - '.github/workflows/linux-packaging-rpm.yml'
   workflow_dispatch:
 
 concurrency:
@@ -56,13 +62,6 @@ jobs:
           command -v rpmbuild >/dev/null 2>&1 && command -v readelf >/dev/null 2>&1 && exit 0
           dnf install -y -q rpm-build binutils
 
-      # Samma resonemang som i linux-packaging.yml (.deb): --static-swift-stdlib
-      # länkar bara Swift-runtimen statiskt — glibc och, via SSHCores
-      # S3Client.swift som drar in FoundationNetworking/FoundationXML på
-      # Linux, sannolikt libcurl/libxml2 förblir dynamiska beroenden. I
-      # stället för att gissa: lista ALLA direkta delade bibliotek
-      # (readelf -d, binärens egen DT_NEEDED-lista) och slå upp vilket
-      # RPM-paket vart och ett kommer från (`rpm -qf`).
       - name: Bestäm faktiska körtidsberoenden (DT_NEEDED → RPM-paket)
         id: deps
         run: |
@@ -71,52 +70,28 @@ jobs:
           NEEDED=$(readelf -d "$BIN" | sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p')
           echo "Direkta delade bibliotek (DT_NEEDED):"
           echo "$NEEDED"
-
           if echo "$NEEDED" | grep -qi libswift; then
             echo "::error::bastion-cli beror fortfarande dynamiskt på Swift-runtimen — --static-swift-stdlib gav inte en fristående binär"
             exit 1
           fi
-
           PACKAGES=""
           for LIB in $NEEDED; do
             case "$LIB" in
-              # Grundläggande glibc-familjen (samma logiska beroende, täcks
-              # av `glibc` nedan) — utesluts bara från den HÄRLEDDA listan,
-              # inte från kontrollen ovan.
-              libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libutil.so*|ld-linux*|linux-vdso*)
-                continue
-                ;;
+              libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libutil.so*|ld-linux*|linux-vdso*) continue ;;
             esac
             LIBPATH=$(ldconfig -p | awk -v lib="$LIB" '$1 == lib { print $NF; exit }')
-            if [ -z "$LIBPATH" ]; then
-              echo "::error::hittar inte $LIB via ldconfig — kan inte slå upp vilket RPM-paket det tillhör"
-              exit 1
-            fi
-            # ldconfig -p svarar ofta med /lib64/... men RPM-databasen känner
-            # bara igen den kanoniska sökvägen (samma symlänk-fälla som
-            # /lib → usr/lib gav på Ubuntu i linux-packaging.yml).
+            [ -n "$LIBPATH" ] || { echo "::error::hittar inte $LIB via ldconfig"; exit 1; }
             LIBPATH=$(readlink -f "$LIBPATH")
             PKG=$(rpm -qf --qf '%{NAME}\n' "$LIBPATH" 2>/dev/null | head -1)
-            if [ -z "$PKG" ]; then
-              echo "::error::$LIBPATH (från $LIB) tillhör inget känt RPM-paket"
-              exit 1
-            fi
+            [ -n "$PKG" ] || { echo "::error::$LIBPATH tillhör inget känt RPM-paket"; exit 1; }
             PACKAGES="$PACKAGES $PKG"
           done
-
-          # Mellanslag, inte kommatecken — traditionell RPM Requires-syntax.
-          # Utesluter `glibc` ur den härledda listan så den inte dyker upp
-          # dubbelt (redan hårdkodad härnedan).
           EXTRA=$(printf '%s\n' $PACKAGES | sort -u | grep -v '^$' | grep -v '^glibc$' | tr '\n' ' ' | sed 's/ *$//')
           REQUIRES="glibc${EXTRA:+ $EXTRA}"
-          echo "Härledd Requires-rad: $REQUIRES"
           echo "requires=$REQUIRES" >> "$GITHUB_OUTPUT"
 
       - name: Bygg .rpm-paket
         env:
-          # Samma skäl som VERSION i linux-packaging.yml — undviker
-          # shell-injektion via en illvilligt utformad git-tagg genom att
-          # gå via env: i stället för direkt ${{ }}-interpolering.
           VERSION: ${{ steps.version.outputs.version }}
           REQUIRES: ${{ steps.deps.outputs.requires }}
         run: |
@@ -125,7 +100,6 @@ jobs:
           mkdir -p "$TOPDIR"/SPECS "$TOPDIR"/SOURCES "$TOPDIR"/BUILD "$TOPDIR"/BUILDROOT "$TOPDIR"/RPMS "$TOPDIR"/SRPMS
           cat > "$TOPDIR/SPECS/bastion-cli.spec" <<EOF
           %global debug_package %{nil}
-
           Name: bastion-cli
           Version: $VERSION
           Release: 1%{?dist}
@@ -133,18 +107,12 @@ jobs:
           License: MIT
           URL: https://github.com/blixten85/bastion
           Requires: $REQUIRES
-
           %description
-          bastion-cli bevisar SSHCore-kärnan mot en riktig server — exec,
-          interaktiv shell, portvidarebefordran (-L/-R/-D), ProxyJump.
-          Statiskt länkad mot Swift-runtimen, inga körtidsberoenden utöver
-          de i Requires.
-
+          bastion-cli bevisar SSHCore-kärnan mot en riktig server.
           %install
           mkdir -p %{buildroot}/usr/bin
           cp $GITHUB_WORKSPACE/.build/release/bastion-cli %{buildroot}/usr/bin/bastion-cli
           chmod 755 %{buildroot}/usr/bin/bastion-cli
-
           %files
           /usr/bin/bastion-cli
           EOF
@@ -152,8 +120,6 @@ jobs:
           mkdir -p dist-out
           find "$TOPDIR/RPMS" -name '*.rpm' -exec mv {} dist-out/ \;
 
-      # Installerar det FAKTISKT byggda .rpm-paketet (inte bara den råa
-      # binären) och kör det — samma smoke-test som .deb-jobbet.
       - name: Installera och kör paketet
         run: |
           set -euo pipefail
@@ -163,14 +129,8 @@ jobs:
           STATUS=$?
           set -e
           echo "$OUTPUT"
-          if [ "$STATUS" -ne 2 ]; then
-            echo "::error::väntade exitkod 2 (användningsfel utan argument), fick $STATUS"
-            exit 1
-          fi
-          if ! echo "$OUTPUT" | grep -q "Användning:"; then
-            echo "::error::väntade ett användningsmeddelande, fick: $OUTPUT"
-            exit 1
-          fi
+          [ "$STATUS" -eq 2 ] || { echo "::error::väntade exitkod 2, fick $STATUS"; exit 1; }
+          echo "$OUTPUT" | grep -q "Användning:" || { echo "::error::väntade användningsmeddelande"; exit 1; }
 
       - name: Ladda upp .rpm-artefakt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1

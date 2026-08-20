@@ -1,21 +1,16 @@
 name: Xcode-bygge (iOS + macOS + tvOS)
 
-# Verifierar att App/ (iPhone/iPad/Mac) faktiskt kompilerar. Ingen signering
-# eller enhetsinstallation här — det kräver ett Apple Developer-konto, se
-# README "Kontointegration"/"Bygg appen (på en Mac)" för nästa steg dit.
+# Apple-CI är dyrast i repot. PR-CI körs mot main; separat push-CI på dev
+# skulle annars dubblera samma commit när dev har en öppen PR. Workflowet
+# triggas alltid för PR mot main så required checks kan rapporteras, men ett
+# billigt impact-jobb avgör vilka macOS-jobb som verkligen behöver köras.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
-    branches: [main, dev]
+    branches: [main]
   workflow_dispatch:
 
-# Den DYRASTE workflowen i repot — tre macOS-jobb, och macOS-runners är
-# den knappaste resursen GitHub delar ut. Utan den här gruppen köade varje
-# ny push ett HELT NYTT bygge medan de gamla fortsatte köra: sex körningar
-# från samma gren låg samtidigt och konkurrerade om samma runners, så en
-# PR som var klar i övrigt fick vänta på bygget av commits ingen längre
-# brydde sig om. Samma mönster som swiftpm-linux.yml redan använder.
 concurrency:
   group: xcode-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -24,16 +19,32 @@ permissions:
   contents: read
 
 jobs:
+  impact:
+    runs-on: ubuntu-latest
+    outputs:
+      apple_app: ${{ steps.impact.outputs.apple_app }}
+      swift_core: ${{ steps.impact.outputs.swift_core }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bestäm CI-påverkan
+        id: impact
+        env:
+          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: bash .github/scripts/ci-impact.sh
+
   xcodegen-and-build:
+    needs: impact
+    if: ${{ needs.impact.outputs.apple_app == 'true' }}
     runs-on: macos-26
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
-      # macos-26-imagens standard-Xcode kan bytas ut under oss vid en framtida
-      # runner-uppdatering — pinnar explicit till den version som är
-      # verifierad fungera med den här koden.
       - name: Välj Xcode 26.4.1
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
@@ -48,24 +59,8 @@ jobs:
       - name: Generera Xcode-projekt
         run: cd App && xcodegen generate
 
-      # MÅSTE köras FÖRE alla `xcodebuild build`-anrop, inte bara innan
-      # tvOS-schemat byggs — Xcodes nya byggsystem beräknar paketgrafen för
-      # ALLA targets i .xcodeproj:en (ComputePackagePrebuildTargetDependency-
-      # Graph) oavsett vilket scheme som faktiskt byggs, så en saknad tvOS-SDK
-      # bröt även iOS-bygget nedan med "Unable to resolve module dependency"
-      # (PR #191 — tvOS-targeten fanns i projektet, men plattformen var inte
-      # nedladdad på runnern än).
-      # `-downloadPlatform` misslyckas ibland transient på en färsk runner
-      # med "Unable to connect to simulator" (CoreSimulator-daemonen inte
-      # redo än) — hoppar över nedladdningen helt om tvOS-runtime redan
-      # finns förinstallerad (vanligt på GitHub-imagens macOS-runners),
-      # annars några återförsök med kort paus.
       - name: Ladda ner tvOS-simulatorplattform
         run: |
-          # "unavailable"-markerade runtimes (t.ex. en ofullständig/trasig
-          # tidigare nedladdning) matchar annars samma grep och gör att
-          # steget hoppar över nedladdningen trots att ingen ANVÄNDBAR
-          # tvOS-runtime faktiskt finns (cubic-fynd, PR #191).
           if xcrun simctl list runtimes available 2>/dev/null | grep -q "tvOS"; then
             echo "tvOS-runtime redan tillgänglig, hoppar över nedladdning."
             exit 0
@@ -82,26 +77,6 @@ jobs:
           echo "Alla nedladdningsförsök misslyckades." >&2
           exit 1
 
-      # -skipPackagePluginValidation MÅSTE vara med på varje `xcodebuild
-      # build`. SwiftTerm v1.19.0 införde build-pluginet
-      # `SwiftTermBuildInfoPlugin` (v1.18.0 hade det inte), och Xcode
-      # vägrar köra ett ovaliderat build-plugin utan att först fråga om
-      # förtroende — en fråga som inte går att svara på i CI. Utan flaggan
-      # blir felet:
-      #
-      #   Validate plug-in "SwiftTermBuildInfoPlugin" in package "swiftterm"
-      #   ** BUILD FAILED **   (exit 65)
-      #
-      # Varför det slog till plötsligt: App/project.yml deklarerar
-      # SwiftTerm som `from: "1.14.0"`, alltså vilken 1.x som helst, och
-      # inget Package.resolved är committat — xcodegen genererar projektet
-      # färskt varje körning, så SwiftPM tar nyaste taggen varje gång. En
-      # uppströmsrelease kan därför bryta CI utan att något i repot
-      # ändrats, vilket är precis vad som hände 2026-08-18: main var grön
-      # 14:38 och samma commit hade failat 18:05.
-      #
-      # Flaggan hoppar bara över FÖRTROENDEFRÅGAN, inte pluginet — det
-      # körs som vanligt.
       - name: Bygg iOS (simulator, osignerat)
         run: |
           xcodebuild build \
@@ -130,6 +105,8 @@ jobs:
             CODE_SIGNING_ALLOWED=NO
 
   swiftpm-macos:
+    needs: impact
+    if: ${{ needs.impact.outputs.swift_core == 'true' }}
     runs-on: macos-26
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -144,12 +121,9 @@ jobs:
       - name: swift test (SSHCore)
         run: swift test
 
-  # Visuell verifiering utan Mac. Bygget ovan bevisar bara att koden
-  # kompilerar — det fångar inte att appen kraschar vid start eller att
-  # layouten gått sönder. Detta jobb bootar en iOS-simulator, installerar
-  # appen, startar den och laddar upp skärmbilder (ljust + mörkt läge) som
-  # artefakter, så en PR kan granskas visuellt från vilken maskin som helst.
   ios-screenshots:
+    needs: impact
+    if: ${{ needs.impact.outputs.apple_app == 'true' }}
     runs-on: macos-26
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -167,8 +141,6 @@ jobs:
       - name: Generera Xcode-projekt
         run: cd App && xcodegen generate
 
-      # Simulatornamn ändras mellan Xcode-versioner, så hårdkoda inte "iPhone
-      # 17" — välj den första tillgängliga iPhone-enheten i stället.
       - name: Välj simulator
         id: sim
         run: |
@@ -188,9 +160,6 @@ jobs:
           echo "udid=$udid" >> "$GITHUB_OUTPUT"
           xcrun simctl list devices | grep -F "$udid"
 
-      # xcodebuild löser upp HELA paketgrafen för projektet, inte bara det
-      # schema som byggs — så även ett rent iOS-bygge kan falla på en
-      # saknad tvOS-runtime. Samma guardade steg som build-jobbet ovan.
       - name: Ladda ner tvOS-simulatorplattform
         run: |
           if xcrun simctl list runtimes available 2>/dev/null | grep -q "tvOS"; then
@@ -209,9 +178,6 @@ jobs:
           echo "Alla nedladdningsförsök misslyckades." >&2
           exit 1
 
-      # UDID:t går via env i stället för direkt ${{ }}-expansion i skalet
-      # (zizmor template-injection). Värdet kommer från vår egen simctl-
-      # output, men mönstret ska vara rätt oavsett.
       - name: Bygg iOS för simulatorn
         env:
           SIM_UDID: ${{ steps.sim.outputs.udid }}
@@ -233,16 +199,12 @@ jobs:
           app=$(find build/Build/Products -maxdepth 2 -name "Bastion.app" -type d | head -1)
           [ -n "$app" ] || { echo "hittade ingen Bastion.app under build/" >&2; exit 1; }
           echo "installerar $app"
-
-          xcrun simctl boot "$SIM_UDID" || true      # redan bootad är inget fel
+          xcrun simctl boot "$SIM_UDID" || true
           xcrun simctl bootstatus "$SIM_UDID" -b
           xcrun simctl install "$SIM_UDID" "$app"
           xcrun simctl launch "$SIM_UDID" se.denied.bastion
-          sleep 8                                    # låt första vyn rendera klart
+          sleep 8
 
-      # Körs även när bygget eller starten fallerat — då är en bild av
-      # kraschskärmen ofta snabbaste vägen till varför. Kräver bara att
-      # simulatorn faktiskt hittades, annars finns inget att fotografera.
       - name: Ta skärmbilder (ljust + mörkt)
         if: ${{ always() && steps.sim.outcome == 'success' }}
         env:
