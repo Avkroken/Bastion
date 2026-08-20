@@ -1,0 +1,29 @@
+name: CI impact routing tests
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - '.github/scripts/ci-impact.sh'
+      - '.github/scripts/test-ci-impact.sh'
+      - '.github/workflows/ci-impact-test.yml'
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - '.github/scripts/ci-impact.sh'
+      - '.github/scripts/test-ci-impact.sh'
+      - '.github/workflows/ci-impact-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ci-impact-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Testa routingtabellen
+        run: bash .github/scripts/test-ci-impact.sh
