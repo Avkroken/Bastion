@@ -4,7 +4,7 @@ name: Linux-paketering (.rpm)
 # bara när root-SwiftPM/CLI eller workflowet självt ändras.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - 'Sources/SSHCore/**'
       - 'Sources/bastion-cli/**'
@@ -12,7 +12,7 @@ on:
       - 'Package.resolved'
       - '.github/workflows/linux-packaging-rpm.yml'
   pull_request:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - 'Sources/SSHCore/**'
       - 'Sources/bastion-cli/**'
@@ -70,34 +70,24 @@ jobs:
           NEEDED=$(readelf -d "$BIN" | sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p')
           echo "Direkta delade bibliotek (DT_NEEDED):"
           echo "$NEEDED"
-
           if echo "$NEEDED" | grep -qi libswift; then
             echo "::error::bastion-cli beror fortfarande dynamiskt på Swift-runtimen — --static-swift-stdlib gav inte en fristående binär"
             exit 1
           fi
-
           PACKAGES=""
           for LIB in $NEEDED; do
             case "$LIB" in
               libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libutil.so*|ld-linux*|linux-vdso*) continue ;;
             esac
             LIBPATH=$(ldconfig -p | awk -v lib="$LIB" '$1 == lib { print $NF; exit }')
-            if [ -z "$LIBPATH" ]; then
-              echo "::error::hittar inte $LIB via ldconfig — kan inte slå upp vilket RPM-paket det tillhör"
-              exit 1
-            fi
+            [ -n "$LIBPATH" ] || { echo "::error::hittar inte $LIB via ldconfig"; exit 1; }
             LIBPATH=$(readlink -f "$LIBPATH")
             PKG=$(rpm -qf --qf '%{NAME}\n' "$LIBPATH" 2>/dev/null | head -1)
-            if [ -z "$PKG" ]; then
-              echo "::error::$LIBPATH (från $LIB) tillhör inget känt RPM-paket"
-              exit 1
-            fi
+            [ -n "$PKG" ] || { echo "::error::$LIBPATH tillhör inget känt RPM-paket"; exit 1; }
             PACKAGES="$PACKAGES $PKG"
           done
-
           EXTRA=$(printf '%s\n' $PACKAGES | sort -u | grep -v '^$' | grep -v '^glibc$' | tr '\n' ' ' | sed 's/ *$//')
           REQUIRES="glibc${EXTRA:+ $EXTRA}"
-          echo "Härledd Requires-rad: $REQUIRES"
           echo "requires=$REQUIRES" >> "$GITHUB_OUTPUT"
 
       - name: Bygg .rpm-paket
@@ -110,7 +100,6 @@ jobs:
           mkdir -p "$TOPDIR"/SPECS "$TOPDIR"/SOURCES "$TOPDIR"/BUILD "$TOPDIR"/BUILDROOT "$TOPDIR"/RPMS "$TOPDIR"/SRPMS
           cat > "$TOPDIR/SPECS/bastion-cli.spec" <<EOF
           %global debug_package %{nil}
-
           Name: bastion-cli
           Version: $VERSION
           Release: 1%{?dist}
@@ -118,18 +107,12 @@ jobs:
           License: MIT
           URL: https://github.com/blixten85/bastion
           Requires: $REQUIRES
-
           %description
-          bastion-cli bevisar SSHCore-kärnan mot en riktig server — exec,
-          interaktiv shell, portvidarebefordran (-L/-R/-D), ProxyJump.
-          Statiskt länkad mot Swift-runtimen, inga körtidsberoenden utöver
-          de i Requires.
-
+          bastion-cli bevisar SSHCore-kärnan mot en riktig server.
           %install
           mkdir -p %{buildroot}/usr/bin
           cp $GITHUB_WORKSPACE/.build/release/bastion-cli %{buildroot}/usr/bin/bastion-cli
           chmod 755 %{buildroot}/usr/bin/bastion-cli
-
           %files
           /usr/bin/bastion-cli
           EOF
@@ -146,14 +129,8 @@ jobs:
           STATUS=$?
           set -e
           echo "$OUTPUT"
-          if [ "$STATUS" -ne 2 ]; then
-            echo "::error::väntade exitkod 2 (användningsfel utan argument), fick $STATUS"
-            exit 1
-          fi
-          if ! echo "$OUTPUT" | grep -q "Användning:"; then
-            echo "::error::väntade ett användningsmeddelande, fick: $OUTPUT"
-            exit 1
-          fi
+          [ "$STATUS" -eq 2 ] || { echo "::error::väntade exitkod 2, fick $STATUS"; exit 1; }
+          echo "$OUTPUT" | grep -q "Användning:" || { echo "::error::väntade användningsmeddelande"; exit 1; }
 
       - name: Ladda upp .rpm-artefakt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
