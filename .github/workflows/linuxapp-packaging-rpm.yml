@@ -4,12 +4,12 @@ name: LinuxApp-paketering (.rpm)
 # filtreras på berörda filer utan att lämna en merge-blockerande Pending-check.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - 'LinuxApp/**'
       - '.github/workflows/linuxapp-packaging-rpm.yml'
   pull_request:
-    branches: [main, dev]
+    branches: [main]
     paths:
       - 'LinuxApp/**'
       - '.github/workflows/linuxapp-packaging-rpm.yml'
