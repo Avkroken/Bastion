@@ -132,12 +132,13 @@ remote: - Cannot create ref due to creations being restricted.
 ```
 
 Ingen kan skapa en gren — varken repoägaren eller Dependabot. Befintliga
-grenar går att uppdatera, men en raderad gren går inte att återskapa, och
-`Automatically delete head branches` raderar dem efter varje merge. Fixen är
-den texten redan föreskriver för "Dev": repo-admin (`RepositoryRole` 5) och
-Dependabot (`Integration` 29110) som `bypass_actors` med `bypass_mode:
-always`. Rulesetet heter numera `Block other branches`, inte `Dev`, och
-undantar main och dev i stället för att täcka `~ALL` rakt av.
+grenar går att uppdatera, men en raderad gren går inte att återskapa. Inställningen
+`Automatically delete head branches` är avstängd i alla sju repon (bekräftat av
+repoägaren 2026-08-20), så en merge från `dev` raderar inte grenen automatiskt.
+Fixen för nya arbetsgrenar är den texten redan föreskriver för "Dev": repo-admin
+(`RepositoryRole` 5) och Dependabot (`Integration` 29110) som `bypass_actors`
+med `bypass_mode: always`. Rulesetet heter numera `Block other branches`, inte
+`Dev`, och undantar main och dev i stället för att täcka `~ALL` rakt av.
 
 **2. `allowed_merge_methods` är `["merge", "squash", "rebase"]` i alla sju.**
 Texten säger bara `merge`, "gäller alla repon", ändrat 2026-08-17. Antingen
@@ -324,9 +325,25 @@ här raden som ska omprövas först.
 | Require contributors to sign off on web-based commits | **på** | alla repon (bastion saknade detta, fixat 2026-07-04) |
 | Always suggest updating pull request branches | **på** | alla repon (bastion saknade detta, fixat 2026-07-04) |
 | Allow auto-merge | på | alla repon |
-| Automatically delete head branches | på | alla repon |
+| Automatically delete head branches | **av** | alla repon (bekräftat av repoägaren 2026-08-20) |
 | Allow merge commits | på | alla repon |
 | Allow squash merging / Allow rebase merging | **av** | alla repon (ändrat 2026-08-17). Repo-nivån speglar rulesetet: det som är påslaget här är exakt `allowed_merge_methods` i `Protect main`. |
+
+## Synkning mellan `main` och `dev`
+
+Efter varje mergad PR från `dev` till `main` ligger `dev` en merge-commit efter
+`main`. Innan nästa ändring måste `dev` därför fast-forwardas till nya `main`.
+
+Obligatoriskt flöde:
+
+1. Merga `dev → main` med merge commit.
+2. Fast-forwarda `dev` till nya `main`.
+3. Verifiera `behind_by: 0` innan nästa commit skapas på `dev`.
+4. Avbryt och rapportera om fast-forward inte är möjlig — force push är förbjuden.
+
+En ruleset kan kräva att en PR är uppdaterad före merge, men den synkar inte
+`dev` efteråt. Den synkningen ska göras av en separat workflow; tills den finns
+måste steget utföras manuellt.
 
 ## Security & analysis
 
