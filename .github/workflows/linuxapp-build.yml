@@ -1,15 +1,14 @@
 name: LinuxApp-bygge (Rust/GTK4)
 
 # Bygger+testar den native Rust/GTK4/libadwaita-klienten i LinuxApp/.
-# `linuxapp-build` är required på main, därför får WORKFLOWET inte filtreras
-# bort med `paths:`. I stället körs ett billigt impact-jobb varje gång och de
-# dyra jobben skippar med `if:` när LinuxApp inte påverkas. GitHub rapporterar
-# ett villkorligt skippat jobb som success, så required-checken kan bli klar.
+# `linuxapp-build` är required på main, därför får workflowet inte filtreras
+# bort med `paths:`. PR-CI körs mot main; separat push-CI på dev skulle annars
+# dubblera samma commit. Ett billigt impact-jobb avgör om de dyra jobben behövs.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
-    branches: [main, dev]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
