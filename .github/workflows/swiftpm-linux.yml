@@ -8,11 +8,10 @@ name: SwiftPM-Linux-bygge
 # LinuxApp/ till en dev-snapshot-toolchain (se linux-gui.yml) — en vanlig
 # stabil release räcker för rot-paketet.
 #
-# `apt install swiftlang` (som README påstod fungerar) finns INTE på en
-# vanlig ubuntu-latest-runner ("swift" i Ubuntus repon är OpenStack Swift,
-# ett helt orelaterat paket) — upptäckt genom att faktiskt köra jobbet, inte
-# gissat. Officiella `swift`-Docker-avbildningen används i stället, samma
-# distro (`noble` = Ubuntu 24.04) som runnern annars kör på.
+# Workflowet triggas alltid för PR/push, men det dyra bygget körs bara när
+# den versionsstyrda impact-detektorn visar att root-SwiftPM påverkas. Det
+# undviker GitHubs fälla där workflow-level `paths:` kan lämna en required
+# check permanent Pending.
 on:
   push:
     branches: [main, dev]
@@ -28,7 +27,25 @@ permissions:
   contents: read
 
 jobs:
+  impact:
+    runs-on: ubuntu-latest
+    outputs:
+      swift_core: ${{ steps.impact.outputs.swift_core }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bestäm CI-påverkan
+        id: impact
+        env:
+          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: bash .github/scripts/ci-impact.sh
+
   swiftpm-linux:
+    needs: impact
+    if: ${{ needs.impact.outputs.swift_core == 'true' }}
     runs-on: ubuntu-latest
     container: swift:6.1-noble
     timeout-minutes: 20
@@ -42,9 +59,7 @@ jobs:
 
       # ArchiveOperationsTests kör riktiga tar/zip/unzip-underprocesser (se
       # ROADMAP.md "Zip/Tar") — swift:6.1-noble-avbildningen har tar men
-      # inte zip/unzip förinstallerat (minimal image). Utan detta misslyckas
-      # testerna med "remoteExit(status: 127)" (command not found) — upptäckt
-      # genom att faktiskt köra jobbet första gången, inte gissat.
+      # inte zip/unzip förinstallerat (minimal image).
       - name: Installera zip/unzip (för ArchiveOperationsTests)
         run: |
           apt-get update -qq
