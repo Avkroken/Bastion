@@ -1,24 +1,14 @@
 name: Linux-paketering (.deb)
 
-# Paketerar bastion-cli som .deb. Workflowet är inte required och körs bara
-# när root-SwiftPM/CLI eller workflowet självt ändras.
+# `build-deb` är ett required checknamn i rulesetet. Workflowet måste därför
+# alltid starta på PR, även när CLI-paketeringen inte påverkas. Ett billigt
+# impact-jobb avgör om den tunga paketeringen behövs; `build-deb` är en stabil
+# aggregator som alltid rapporterar resultat.
 on:
   push:
     branches: [main]
-    paths:
-      - 'Sources/SSHCore/**'
-      - 'Sources/bastion-cli/**'
-      - 'Package.swift'
-      - 'Package.resolved'
-      - '.github/workflows/linux-packaging.yml'
   pull_request:
     branches: [main]
-    paths:
-      - 'Sources/SSHCore/**'
-      - 'Sources/bastion-cli/**'
-      - 'Package.swift'
-      - 'Package.resolved'
-      - '.github/workflows/linux-packaging.yml'
   workflow_dispatch:
 
 concurrency:
@@ -29,7 +19,26 @@ permissions:
   contents: read
 
 jobs:
-  build-deb:
+  impact:
+    runs-on: ubuntu-latest
+    outputs:
+      cli_package: ${{ steps.impact.outputs.cli_package }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bestäm CI-påverkan
+        id: impact
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: bash .github/scripts/ci-impact.sh
+
+  package-deb:
+    needs: impact
+    if: ${{ needs.impact.outputs.cli_package == 'true' }}
     runs-on: ubuntu-latest
     container: swift:6.1-noble
     timeout-minutes: 20
@@ -37,7 +46,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -149,8 +158,20 @@ jobs:
           fi
 
       - name: Ladda upp .deb-artefakt
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bastion-cli-deb
           path: dist-out/*.deb
           if-no-files-found: error
+
+  build-deb:
+    if: always()
+    needs: [impact, package-deb]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sammanfatta .deb-verifieringen
+        run: |
+          echo "impact: ${{ needs.impact.result }}"
+          echo "package-deb: ${{ needs.package-deb.result }}"
+          case "${{ needs.impact.result }}" in failure|cancelled) exit 1;; esac
+          case "${{ needs.package-deb.result }}" in failure|cancelled) exit 1;; esac
