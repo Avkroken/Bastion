@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   build-rpm:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     container: swift:6.1-rhel-ubi9
     timeout-minutes: 20
     defaults:

@@ -30,6 +30,8 @@ permissions:
 
 jobs:
   build-deb-linuxapp:
+    # Paketet stöds och rökprovas mot Ubuntu 24.04. Nyare byggvärd kan länka
+    # mot glibc/GTK-symboler som saknas på målversionen.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
