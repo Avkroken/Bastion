@@ -8,13 +8,10 @@ permissions:
 
 jobs:
   auto-merge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
-      # Villkoret sitter på steget och inte på jobbet. Ett överhoppat jobb
-      # rapporterar en grå check på varje PR som inte är Dependabots; så här
-      # blir den grön och gör ingenting.
-      - if: github.actor == 'dependabot[bot]'
-        run: gh pr merge --auto --merge "$PR_URL"
+      - run: gh pr merge --auto --merge "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
