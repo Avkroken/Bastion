@@ -36,7 +36,7 @@ jobs:
           oidc=$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=politiker-security-alerts" | jq -r .value)
           jq -n --slurpfile alerts code-scanning-alerts.json '{alerts: $alerts[0]}' \
-          | curl --fail-with-body -fsS \
+          | curl --fail-with-body -sS \
               -H "X-GitHub-OIDC: $oidc" \
               -H 'Content-Type: application/json' \
               --data-binary @- \
