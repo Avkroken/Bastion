@@ -1,4 +1,4 @@
-name: Sync Code Scanning alerts to D1
+name: Uppdatera publik Code Scanning-alertlogg
 
 on:
   schedule:
@@ -6,9 +6,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   security-events: read
-  id-token: write
 
 concurrency:
   group: security-alert-snapshot
@@ -18,26 +17,36 @@ jobs:
   snapshot:
     runs-on: ubuntu-latest
     steps:
+      - name: Checka ut dev
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: dev
+          fetch-depth: 0
+
       - name: Hämta öppna Code Scanning-alerts
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          mkdir -p security
           gh api --paginate --slurp \
             -H 'Accept: application/vnd.github+json' \
             -H 'X-GitHub-Api-Version: 2022-11-28' \
             "/repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&per_page=100" \
-          | jq 'add | map({number, tool: .tool.name, rule_id: .rule.id, rule_name: .rule.name, severity: (.rule.security_severity_level // .rule.severity), created_at, updated_at, url: .html_url, ref: .most_recent_instance.ref, category: .most_recent_instance.category, file: .most_recent_instance.location.path, start_line: .most_recent_instance.location.start_line, end_line: .most_recent_instance.location.end_line})' > code-scanning-alerts.json
-          echo "Öppna alerts: $(jq 'length' code-scanning-alerts.json)" >> "$GITHUB_STEP_SUMMARY"
+          | jq 'add | map({number, tool: .tool.name, rule_id: .rule.id, rule_name: .rule.name, severity: (.rule.security_severity_level // .rule.severity), created_at, updated_at, url: .html_url, ref: .most_recent_instance.ref, category: .most_recent_instance.category, file: .most_recent_instance.location.path, start_line: .most_recent_instance.location.start_line, end_line: .most_recent_instance.location.end_line}) | sort_by(.tool, .number)' \
+          > security/code-scanning-alerts.log
+          echo "Öppna alerts: $(jq 'length' security/code-scanning-alerts.log)" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Spara snapshot privat i D1
+      - name: Committa endast vid ändring
         run: |
           set -euo pipefail
-          oidc=$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=politiker-security-alerts" | jq -r .value)
-          jq -n --slurpfile alerts code-scanning-alerts.json '{alerts: $alerts[0]}' \
-          | curl --fail-with-body -sS \
-              -H "X-GitHub-OIDC: $oidc" \
-              -H 'Content-Type: application/json' \
-              --data-binary @- \
-              https://security-alerts.denied.se/v1/code-scanning
+          if [[ -z "$(git status --porcelain -- security/code-scanning-alerts.log)" ]]; then
+            echo "Alertloggen är oförändrad." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add security/code-scanning-alerts.log
+          git commit -m "Uppdatera Code Scanning-alertlogg"
+          git pull --rebase origin dev
+          git push origin HEAD:dev
