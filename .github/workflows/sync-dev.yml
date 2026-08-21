@@ -1,4 +1,4 @@
-name: Sync dev with main
+name: Sync main → dev
 
 on:
   push:

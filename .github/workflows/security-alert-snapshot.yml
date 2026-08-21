@@ -1,4 +1,4 @@
-name: Security alert snapshot
+name: Sync Code Scanning alerts to D1
 
 on:
   schedule:
