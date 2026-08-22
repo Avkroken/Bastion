@@ -1,6 +1,11 @@
 name: Dependabot auto-merge
 
-on: pull_request
+on:
+  workflow_run:
+    workflows: ["Xcode-bygge (iOS + macOS + tvOS)"]
+    types: [completed]
+    branches:
+      - "dependabot/**"
 
 permissions:
   contents: write
@@ -8,10 +13,14 @@ permissions:
 
 jobs:
   auto-merge:
-    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.actor.login == 'dependabot[bot]' &&
+      github.event.workflow_run.pull_requests[0].number != null
     runs-on: ubuntu-latest
     steps:
-      - run: gh pr merge --auto --merge "$PR_URL"
+      - name: Aktivera auto-merge för Dependabot-PR
         env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge --repo "$GITHUB_REPOSITORY" --auto --merge "$PR_NUMBER"
