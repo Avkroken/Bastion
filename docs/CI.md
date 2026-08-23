@@ -2,36 +2,21 @@
 
 ## Branchmodell
 
-Repositoryt använder endast `dev` och `main`.
+`main` är den enda långlivade arbetsgrenen. Varje ändring görs på en kortlivad branch och går via PR till `main`. Auto-merge används inte och merge-metoden är squash.
 
-1. Arbete görs på `dev`.
-2. PR öppnas från `dev` till `main`.
-3. PR-CI verifierar ändringen.
-4. Auto-merge får merga när required checks är gröna.
-5. Efter uppdatering av `main` fast-forwardar `.github/workflows/sync-dev.yml` automatiskt `dev` till `main`.
-6. Synken force-pushar aldrig och avbryter om `dev` har omergade commits.
-
-Vanlig CI ska inte köras både som `push` till `dev` och som `pull_request` för samma commit. Plattform-CI körs därför på PR mot `main` och på push till `main`.
+CI körs på PR mot `main` och, där efter-merge-verifiering eller publicering behövs, på push till `main`. Kortlivade arbetsbrancher behöver ingen separat push-CI när samma commit redan verifieras av PR-eventet.
 
 ## Impact-routing
 
-`.github/scripts/ci-impact.sh` klassificerar den faktiska diffen till Apple, root-Swift/SSHCore, Android, Windows, LinuxApp och CLI-paketering.
-
-Principer:
+`.github/scripts/ci-impact.sh` klassificerar diffen till Apple, root-Swift/SSHCore, Android, Windows, LinuxApp och CLI-paketering.
 
 - Apple UI/projekt => Apple-jobb.
 - `Sources/SSHCore/**` => Apple + root-Swift + CLI-paketering.
-- `Sources/bastion-cli/**` => root-Swift + CLI-paketering, inte Apple UI.
+- `Sources/bastion-cli/**` => root-Swift + CLI-paketering.
 - `Tests/SSHCoreTests/**` => root-Swift.
 - `Android/**`, `WindowsApp/**`, `LinuxApp/**` => respektive plattform.
-- Gemensam protokollspec => alla berörda plattformar.
-- Dokumentation/processmetadata => inga plattformsbyggen.
-- Okänd kod/config eller ändring i själva impact-motorn => full matris (fail-open).
+- Okänd kod/config eller ändring i impact-motorn => full matris.
 
-Required checks får inte filtreras bort på workflow-nivå med `paths:` eftersom GitHub då kan lämna dem permanent `Expected/Pending`. Required workflows startar därför ett billigt impact-jobb och använder job-level `if:` för att hoppa över irrelevant dyrt arbete. Icke-required workflows kan använda `paths:` direkt.
+Required checks får inte filtreras bort på workflow-nivå med `paths:` om det kan lämna dem i `Expected/Pending`. Required workflows använder därför billiga impact-jobb och job-level `if:` för dyrt arbete. Routingtabellen testas av `.github/scripts/test-ci-impact.sh` och `.github/workflows/ci-impact-test.yml`.
 
-Routingtabellen testas av `.github/scripts/test-ci-impact.sh` och `.github/workflows/ci-impact-test.yml`.
-
-## Mål
-
-CI ska verifiera den kod som faktiskt kan påverkas, inte skjuta hela plattformsmatrisen på varje ändring. Vid osäkerhet prioriteras säkerhet framför besparing: kör mer CI i stället för att riskera en falsk negativ impact-bedömning.
+Målet är att verifiera relevant kod utan att köra hela plattformsmatrisen i onödan. Vid osäkerhet körs mer CI, inte mindre.
