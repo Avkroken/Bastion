@@ -63,6 +63,7 @@ jobs:
           docker run --rm \
             -v "$PWD:/work" \
             -e VERSION="$VERSION" \
+            -e REPOSITORY_URL="https://github.com/${GITHUB_REPOSITORY}" \
             fedora:40 bash /work/LinuxApp/packaging/build-rpm.sh
           ls -la dist-out/
 
