@@ -7,6 +7,8 @@
 # biblioteksfamilj), och bygger .rpm-paketet.
 set -euo pipefail
 
+REPOSITORY_URL="${REPOSITORY_URL:-https://github.com/avkroken/bastion}"
+
 dnf install -y -q gtk4-devel libadwaita-devel vte291-gtk4-devel gtksourceview5-devel \
   pkgconf-pkg-config rpm-build binutils gcc curl
 
@@ -62,7 +64,7 @@ Version: ${VERSION}
 Release: 1%{?dist}
 Summary: Fri, öppen, fristående SSH-klient (GTK4-skrivbordsklient)
 License: MIT
-URL: https://github.com/blixten85/bastion
+URL: ${REPOSITORY_URL}
 Requires: ${REQUIRES}
 
 %description
