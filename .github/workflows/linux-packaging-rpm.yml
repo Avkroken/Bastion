@@ -113,7 +113,7 @@ jobs:
           Release: 1%{?dist}
           Summary: Fri, öppen, fristående SSH-klient (kommandorad)
           License: MIT
-          URL: https://github.com/blixten85/bastion
+          URL: https://github.com/${GITHUB_REPOSITORY}
           Requires: $REQUIRES
           %description
           bastion-cli bevisar SSHCore-kärnan mot en riktig server.
