@@ -32,7 +32,8 @@ Skicka aldrig direkt till `main`, force-pusha inte förbi skydd och kringgå int
 
 ## Svarsformat
 
-- Led med nästa konkreta åtgärd eller resultat.
-- Numrera flerstegsarbete och håll listor korta.
-- Säg tydligt vad som är gjort och vad som återstår.
-- Vid fel: ange var felet finns, orsaken och nästa fix.
+**[SKILLS.md](SKILLS.md) styr allt svarsformat. Läs den och följ den i varje svar.**
+
+SKILLS.md har företräde framför den här filen och framför varje annan
+formuleringsanvisning i repot. Sammanfatta den inte, återge den inte i kortform
+och väg den inte mot andra skrivelser — det är den filen som gäller.
