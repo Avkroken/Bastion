@@ -20,21 +20,21 @@ Fri, öppen SSH-klient med native implementation per plattform. Plattformarna de
 
 ## GitHub-arbetsflöde
 
-`dev` är den enda skrivbara grenen. `main` tar bara emot squash-mergade PR:er
-som passerat gröna checkar.
+Arbete sker i en **sluten pool av tre grenar**: `dev/1`, `dev/2`, `dev/3`.
+`main` tar bara emot squash-mergade PR:er som passerat gröna checkar.
 
-**Skapa aldrig egna grenar.** Allt arbete sker på `dev`. Det är en hård regel, inte
-en rekommendation: grenar som skapas per uppgift blir liggande halvfärdiga, och det
-är hela anledningen till att modellen ser ut så här.
+**Skapa aldrig egna grenar.** Rulesetet blockerar det — en push som försöker
+skapa något utanför poolen avvisas. Poolen finns för att grenar som skapas per
+uppgift blir liggande halvfärdiga.
 
-1. Utgå från aktuell `dev`. Ligger det osynkat arbete där, bygg vidare på det i
-   stället för att börja om någon annanstans.
+1. Välj en ledig slot. Ligger det omergat arbete i en slot, **slutför det först**
+   i stället för att börja något nytt i en annan.
 2. Implementera och kör relevanta lokala tester innan push. Håll varje PR till en sammanhängande uppgift.
-3. Pusha till `dev` och öppna PR från `dev` till `main` som klar för granskning.
+3. Pusha till sloten och öppna PR från den till `main` som klar för granskning.
    Aktivera auto-merge — merge-kön tar PR:n så snart required checks är gröna.
-4. Lös CI- och reviewproblem på `dev`; PR:n uppdateras automatiskt av varje push.
-5. **Squash merge är den enda tillåtna merge-metoden.** Efter merge återställs `dev` till
-   `main` automatiskt av `.github/workflows/sync-dev.yml`.
+4. Lös CI- och reviewproblem i samma slot; PR:n uppdateras av varje push.
+5. **Squash merge är den enda tillåtna merge-metoden.** Efter merge rebasar
+   `.github/workflows/sync-pool.yml` varje slot på `main`.
 
 Skicka aldrig direkt till `main`, kringgå inte branch protection/rulesets och ändra
 inte hemligheter eller organisationsinställningar utan uttrycklig instruktion.

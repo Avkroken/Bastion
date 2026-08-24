@@ -1,0 +1,89 @@
+name: Synka arbetsslots med main
+
+# Arbete sker i en sluten pool av grenar: dev/1, dev/2, dev/3. Rulesetet
+# blockerar skapande av allt annat, så poolen kan inte växa.
+#
+# main tar bara emot squash-mergade PR:er, vilket ger main en enda ny commit
+# medan sloten behåller sina ursprungliga. Utan den här workflowen divergerar
+# de för varje merge och nästa PR fylls av konflikter.
+#
+# Rebase, inte reset: arbete kan fortsätta i en slot medan dess PR är öppen.
+# --empty=drop tar bort de commits vars innehåll redan finns i main, alltså
+# precis de som squash-mergades, och replayar resten. Osynkat arbete överlever.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: sync-pool
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  SLOTS: "dev/1 dev/2 dev/3"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Rebasa varje slot på main
+        run: |
+          set -uo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+
+          MISSLYCKADES=""
+          for SLOT in $SLOTS; do
+            echo "::group::$SLOT"
+
+            if ! git fetch origin "$SLOT" 2>/dev/null; then
+              echo "$SLOT finns inte — skapar den från main."
+              git push origin "origin/main:refs/heads/$SLOT"
+              echo "::endgroup::"
+              continue
+            fi
+
+            FÖRE=$(git rev-parse FETCH_HEAD)
+            if [ "$FÖRE" = "$(git rev-parse origin/main)" ]; then
+              echo "$SLOT är redan i nivå med main."
+              echo "::endgroup::"
+              continue
+            fi
+
+            git checkout -B "sync-$SLOT" "$FÖRE" >/dev/null 2>&1
+            if ! git rebase --empty=drop origin/main; then
+              git rebase --abort || true
+              echo "::warning::$SLOT gav konflikt vid rebase och lämnas orörd."
+              MISSLYCKADES="$MISSLYCKADES $SLOT"
+              echo "::endgroup::"
+              continue
+            fi
+
+            if [ "$(git rev-parse HEAD)" = "$FÖRE" ]; then
+              echo "$SLOT: inget att göra."
+              echo "::endgroup::"
+              continue
+            fi
+
+            KVAR=$(git rev-list --count origin/main..HEAD)
+            echo "$SLOT rebasad. $KVAR omergad commit(s) kvar."
+            git push --force-with-lease="refs/heads/$SLOT:$FÖRE" \
+              origin "HEAD:refs/heads/$SLOT"
+            echo "::endgroup::"
+          done
+
+          # En slot med konflikt är inget haveri — övriga ska ändå synkas.
+          # Jobbet failar så att det syns, efter att alla har försökts.
+          if [ -n "$MISSLYCKADES" ]; then
+            echo "::error::Konflikt vid rebase:$MISSLYCKADES. Löses för hand."
+            exit 1
+          fi
