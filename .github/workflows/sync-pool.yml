@@ -1,6 +1,10 @@
 name: Synka arbetsslots med main
 
-# Arbete sker i en sluten pool av grenar: dev/1, dev/2, dev/3. Rulesetet
+# Arbete sker i en sluten pool av grenar, en per arbetstyp:
+#   work/feature  ny funktionalitet
+#   work/fix      buggfixar och CI-problem
+#   work/chore    dokumentation, städning, konfiguration
+# Rulesetet
 # blockerar skapande av allt annat, så poolen kan inte växa.
 #
 # main tar bara emot squash-mergade PR:er, vilket ger main en enda ny commit
@@ -24,7 +28,7 @@ permissions:
   contents: write
 
 env:
-  SLOTS: "dev/1 dev/2 dev/3"
+  SLOTS: "work/feature work/fix work/chore"
 
 jobs:
   sync:
