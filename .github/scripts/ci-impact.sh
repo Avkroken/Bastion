@@ -34,6 +34,26 @@ base="${CI_BASE_SHA:-}"
 head="${CI_HEAD_SHA:-${GITHUB_SHA:-HEAD}}"
 changed="${CI_CHANGED_FILES:-}"
 
+# Merge queue validates a synthesized merge-group commit. Use the stable
+# base/head pair from the merge_group payload so impact routing classifies the
+# cumulative queue diff rather than falling back to a full CI matrix.
+if [[ "${GITHUB_EVENT_NAME:-}" == "merge_group" ]]; then
+  if [[ -r "${GITHUB_EVENT_PATH:-}" ]] && command -v jq >/dev/null 2>&1; then
+    merge_base="$(jq -r '.merge_group.base_sha // empty' "$GITHUB_EVENT_PATH")"
+    merge_head="$(jq -r '.merge_group.head_sha // empty' "$GITHUB_EVENT_PATH")"
+    if [[ -n "$merge_base" && -n "$merge_head" ]]; then
+      base="$merge_base"
+      head="$merge_head"
+    else
+      echo "::warning::merge_group saknar base_sha/head_sha — kör full CI-matris" >&2
+      all=true
+    fi
+  else
+    echo "::warning::kan inte läsa merge_group-payload — kör full CI-matris" >&2
+    all=true
+  fi
+fi
+
 # CI_CHANGED_FILES is a test/local override. In real CI the detector derives
 # the list from the exact base/head SHAs below.
 if [[ -z "${CI_CHANGED_FILES+x}" ]]; then
