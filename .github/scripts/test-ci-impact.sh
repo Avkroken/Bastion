@@ -62,4 +62,26 @@ check_case unknown 'some-new-build-system.conf' \
 check_case mixed $'AGENTS.md\nWindowsApp/MainWindow.xaml' \
   all=false apple_app=false swift_core=false android=false windows=true linuxapp=false cli_package=false
 
+# merge_group ska läsa base_sha/head_sha ur event-payloaden utan att tvinga
+# full matris när payloaden är komplett. CI_CHANGED_FILES håller testet
+# deterministiskt och isolerar just event-routinglogiken.
+merge_event="$(mktemp)"
+merge_output="$(mktemp)"
+cat > "$merge_event" <<'JSON'
+{"merge_group":{"base_sha":"1111111111111111111111111111111111111111","head_sha":"2222222222222222222222222222222222222222"}}
+JSON
+CI_CHANGED_FILES='LinuxApp/src/main.rs' \
+GITHUB_EVENT_NAME=merge_group \
+GITHUB_EVENT_PATH="$merge_event" \
+GITHUB_OUTPUT="$merge_output" \
+bash "$script" >/dev/null
+if ! grep -qx 'all=false' "$merge_output" || ! grep -qx 'linuxapp=true' "$merge_output"; then
+  echo 'FAIL merge_group: expected targeted LinuxApp routing' >&2
+  cat "$merge_output" >&2
+  rm -f "$merge_event" "$merge_output"
+  exit 1
+fi
+rm -f "$merge_event" "$merge_output"
+echo 'PASS merge_group'
+
 echo 'All CI impact tests passed.'
