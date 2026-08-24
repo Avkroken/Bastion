@@ -127,7 +127,7 @@ jobs:
           Priority: optional
           Architecture: amd64
           Maintainer: blixten85 <noreply@github.com>
-          Homepage: https://github.com/blixten85/bastion
+          Homepage: https://github.com/${GITHUB_REPOSITORY}
           Depends: $DEPENDS
           Description: Fri, öppen, fristående SSH-klient (kommandorad)
            bastion-cli bevisar SSHCore-kärnan mot en riktig server — exec,
