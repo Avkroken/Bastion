@@ -2,7 +2,7 @@
 
 ## Branchmodell
 
-`main` är den enda långlivade arbetsgrenen. Varje ändring görs på en kortlivad branch och går via PR till `main`. Auto-merge används inte och merge-metoden är squash.
+`main` är den enda långlivade arbetsgrenen. Varje ändring görs på en kortlivad branch och går via PR till `main`. Auto-merge får aktiveras på PR:er; när alla required checks och eventuella reviewkrav är uppfyllda mergar GitHub automatiskt. **Squash merge är den enda tillåtna merge-metoden.** Head-branchen raderas automatiskt efter merge.
 
 CI körs på PR mot `main` och, där efter-merge-verifiering eller publicering behövs, på push till `main`. Kortlivade arbetsbrancher behöver ingen separat push-CI när samma commit redan verifieras av PR-eventet.
 
