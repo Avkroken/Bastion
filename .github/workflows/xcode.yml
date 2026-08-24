@@ -1,9 +1,8 @@
 name: Xcode-bygge (iOS + macOS + tvOS)
 
-# Apple-CI är dyrast i repot. PR-CI körs mot main; separat push-CI på dev
-# skulle annars dubblera samma commit när dev har en öppen PR. Workflowet
-# triggas alltid för PR mot main så required checks kan rapporteras, men ett
-# billigt impact-jobb avgör vilka macOS-jobb som verkligen behöver köras.
+# Apple-CI är dyrast i repot. Workflowet triggas alltid för PR mot main så
+# required checks kan rapporteras, men ett billigt impact-jobb avgör vilka
+# macOS-jobb som faktiskt behöver köras.
 on:
   push:
     branches: [main]
@@ -159,24 +158,6 @@ jobs:
           fi
           echo "udid=$udid" >> "$GITHUB_OUTPUT"
           xcrun simctl list devices | grep -F "$udid"
-
-      - name: Ladda ner tvOS-simulatorplattform
-        run: |
-          if xcrun simctl list runtimes available 2>/dev/null | grep -q "tvOS"; then
-            echo "tvOS-runtime redan tillgänglig, hoppar över nedladdning."
-            exit 0
-          fi
-          for attempt in 1 2 3; do
-            if xcodebuild -downloadPlatform tvOS; then
-              exit 0
-            fi
-            if [ "$attempt" -lt 3 ]; then
-              echo "Försök $attempt misslyckades, väntar innan omförsök..."
-              sleep 15
-            fi
-          done
-          echo "Alla nedladdningsförsök misslyckades." >&2
-          exit 1
 
       - name: Bygg iOS för simulatorn
         env:
