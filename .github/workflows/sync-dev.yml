@@ -1,0 +1,61 @@
+name: Synka dev med main
+
+# dev är den enda skrivbara grenen. main tar bara emot squash-mergade PR:er,
+# vilket ger main en enda ny commit medan dev behåller sina ursprungliga.
+# Grenarna divergerar då för varje merge och nästa PR blir full av konflikter.
+#
+# Den här workflowen återställer dev till main efter varje merge, så dev är
+# ett rullande arbetsfönster i stället för en gren som glider isär. Utan den
+# krävs ett manuellt kommando efter varje merge — det är hela skälet till
+# att filen finns.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: sync-dev
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Återställ dev till main
+        run: |
+          set -euo pipefail
+          git fetch origin main dev 2>/dev/null || git fetch origin main
+
+          if ! git rev-parse -q --verify refs/remotes/origin/dev >/dev/null; then
+            echo "dev finns inte — skapar den från main."
+            git push origin "origin/main:refs/heads/dev"
+            exit 0
+          fi
+
+          # Osynkat arbete på dev får inte kastas. Efter en squash-merge är
+          # dev:s commits redan innehållsmässigt i main, men en commit som
+          # tillkommit efter att PR:en stängdes är det inte.
+          EFTER=$(git rev-list --count origin/main..origin/dev)
+          if [ "$EFTER" -gt 0 ]; then
+            echo "::warning::dev har $EFTER commit(s) som inte finns i main. Återställer INTE."
+            git log origin/main..origin/dev --format='%h %s' | head -20
+            echo "Öppna en PR från dev till main för dem, eller återställ manuellt."
+            exit 0
+          fi
+
+          if [ "$(git rev-parse origin/dev)" = "$(git rev-parse origin/main)" ]; then
+            echo "dev är redan i nivå med main."
+            exit 0
+          fi
+
+          echo "Återställer dev till main."
+          git push --force-with-lease="refs/heads/dev:$(git rev-parse origin/dev)" \
+            origin "origin/main:refs/heads/dev"

@@ -5,6 +5,9 @@ name: SwiftPM-Linux-bygge
 # får både push- och pull_request-körningar när dev har en öppen PR.
 # Det dyra bygget körs bara när impact-detektorn visar att root-SwiftPM påverkas.
 on:
+  # Merge-kön skickar merge_group.checks_requested. Utan den här
+  # triggern svarar inget jobb och kön fastnar tills timeout.
+  merge_group:
   push:
     branches: [main]
   pull_request:

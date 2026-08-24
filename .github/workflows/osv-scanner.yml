@@ -5,6 +5,9 @@ name: OSV-Scanner
 # som code scanning-alerts i Security-fliken, samma flöde som CodeQL:s.
 
 on:
+  # Merge-kön skickar merge_group.checks_requested. Utan den här
+  # triggern svarar inget jobb och kön fastnar tills timeout.
+  merge_group:
   pull_request:
     branches:
       - main

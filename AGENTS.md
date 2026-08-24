@@ -20,15 +20,24 @@ Fri, öppen SSH-klient med native implementation per plattform. Plattformarna de
 
 ## GitHub-arbetsflöde
 
-`main` är den enda långlivade arbetsgrenen. `dev` används inte.
+`dev` är den enda skrivbara grenen. `main` tar bara emot squash-mergade PR:er
+som passerat gröna checkar.
 
-1. Börja varje uppgift från aktuell `main` på en ny kortlivad branch, till exempel `fix/...`, `feat/...` eller `chore/...`.
-2. Implementera och kör relevanta lokala tester innan push. Håll branchen och PR:n till en sammanhängande uppgift.
-3. Öppna PR från arbetsbranchen till `main` som klar för granskning. Aktivera inte auto-merge.
-4. Lös CI- och reviewproblem på samma arbetsbranch. Alla required checks och review-trådar ska vara klara innan merge.
-5. Merge sker med **squash merge**. Använd inte merge commits eller rebase merge. Den kortlivade head-branchen får raderas efter merge.
+**Skapa aldrig egna grenar.** Allt arbete sker på `dev`. Det är en hård regel, inte
+en rekommendation: grenar som skapas per uppgift blir liggande halvfärdiga, och det
+är hela anledningen till att modellen ser ut så här.
 
-Skicka aldrig direkt till `main`, force-pusha inte förbi skydd och kringgå inte branch protection/rulesets. Ändra inte hemligheter eller organisationsinställningar utan uttrycklig instruktion.
+1. Utgå från aktuell `dev`. Ligger det osynkat arbete där, bygg vidare på det i
+   stället för att börja om någon annanstans.
+2. Implementera och kör relevanta lokala tester innan push. Håll varje PR till en sammanhängande uppgift.
+3. Pusha till `dev` och öppna PR från `dev` till `main` som klar för granskning.
+   Aktivera auto-merge — merge-kön tar PR:n så snart required checks är gröna.
+4. Lös CI- och reviewproblem på `dev`; PR:n uppdateras automatiskt av varje push.
+5. **Squash merge är den enda tillåtna merge-metoden.** Efter merge återställs `dev` till
+   `main` automatiskt av `.github/workflows/sync-dev.yml`.
+
+Skicka aldrig direkt till `main`, kringgå inte branch protection/rulesets och ändra
+inte hemligheter eller organisationsinställningar utan uttrycklig instruktion.
 
 ## Svarsformat
 
