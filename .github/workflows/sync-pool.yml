@@ -56,14 +56,16 @@ jobs:
               continue
             fi
 
-            FÖRE=$(git rev-parse FETCH_HEAD)
-            if [ "$FÖRE" = "$(git rev-parse origin/main)" ]; then
+            # PREV, inte FÖRE: bash tillåter bara ASCII i variabelnamn,
+            # och ett Ö gör raden till ett kommandoanrop i stället.
+            PREV=$(git rev-parse FETCH_HEAD)
+            if [ "$PREV" = "$(git rev-parse origin/main)" ]; then
               echo "$SLOT är redan i nivå med main."
               echo "::endgroup::"
               continue
             fi
 
-            git checkout -B "sync-$SLOT" "$FÖRE" >/dev/null 2>&1
+            git checkout -B "sync-$SLOT" "$PREV" >/dev/null 2>&1
             if ! git rebase --empty=drop origin/main; then
               git rebase --abort || true
               echo "::warning::$SLOT gav konflikt vid rebase och lämnas orörd."
@@ -72,7 +74,7 @@ jobs:
               continue
             fi
 
-            if [ "$(git rev-parse HEAD)" = "$FÖRE" ]; then
+            if [ "$(git rev-parse HEAD)" = "$PREV" ]; then
               echo "$SLOT: inget att göra."
               echo "::endgroup::"
               continue
@@ -80,7 +82,7 @@ jobs:
 
             KVAR=$(git rev-list --count origin/main..HEAD)
             echo "$SLOT rebasad. $KVAR omergad commit(s) kvar."
-            git push --force-with-lease="refs/heads/$SLOT:$FÖRE" \
+            git push --force-with-lease="refs/heads/$SLOT:$PREV" \
               origin "HEAD:refs/heads/$SLOT"
             echo "::endgroup::"
           done
