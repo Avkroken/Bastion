@@ -24,9 +24,9 @@ Fri, öppen SSH-klient med native implementation per plattform. Plattformarna de
 
 1. Börja varje uppgift från aktuell `main` på en ny kortlivad branch, till exempel `fix/...`, `feat/...` eller `chore/...`.
 2. Implementera och kör relevanta lokala tester innan push. Håll branchen och PR:n till en sammanhängande uppgift.
-3. Öppna PR från arbetsbranchen till `main` som klar för granskning. Aktivera inte auto-merge.
+3. Öppna PR från arbetsbranchen till `main` som klar för granskning. Auto-merge är tillåtet och får aktiveras när PR:n är redo; GitHub mergar först när alla ruleset-krav är uppfyllda.
 4. Lös CI- och reviewproblem på samma arbetsbranch. Alla required checks och review-trådar ska vara klara innan merge.
-5. Merge sker med **squash merge**. Använd inte merge commits eller rebase merge. Den kortlivade head-branchen får raderas efter merge.
+5. **Squash merge är den enda tillåtna merge-metoden.** Använd inte merge commits eller rebase merge. Repot är konfigurerat att automatiskt radera den kortlivade head-branchen efter merge.
 
 Skicka aldrig direkt till `main`, force-pusha inte förbi skydd och kringgå inte branch protection/rulesets. Ändra inte hemligheter eller organisationsinställningar utan uttrycklig instruktion.
 
