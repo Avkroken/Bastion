@@ -1,0 +1,25 @@
+name: Auto-fix trusted review feedback
+on:
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+concurrency:
+  group: auto-fix-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  request-fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Be Codex åtgärda betrodd review-feedback
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        env:
+          EXTRA_TRUSTED_BOTS: ${{ vars.AUTO_FIX_REVIEW_BOTS }}
+        with:
+          script: |
+            const owner=context.repo.owner,repo=context.repo.repo,pr=context.payload.pull_request;if(!pr||pr.head.repo?.full_name!==`${owner}/${repo}`)return;const trusted=new Set(['chatgpt-codex-connector[bot]']);for(const x of(process.env.EXTRA_TRUSTED_BOTS||'').split(',').map(s=>s.trim()).filter(Boolean))trusted.add(x);if(!trusted.has(context.payload.sender?.login||''))return;let sourceId,sourceUrl,summary;if(context.eventName==='pull_request_review_comment'){const c=context.payload.comment;sourceId=`comment-${c.id}`;sourceUrl=c.html_url;summary='inline review-kommentaren';}else{const r=context.payload.review;if(!(r.body||'').trim()&&(r.state||'').toLowerCase()!=='changes_requested')return;sourceId=`review-${r.id}`;sourceUrl=r.html_url;summary='kodreviewn';}const marker=`<!-- auto-fix-review:${sourceId} -->`;const comments=await github.paginate(github.rest.issues.listComments,{owner,repo,issue_number:pr.number,per_page:100});if(comments.some(c=>(c.body||'').includes(marker)))return;await github.rest.issues.createComment({owner,repo,issue_number:pr.number,body:[marker,`@codex address that feedback from ${summary}: ${sourceUrl}`,'','Ändra endast PR-grenen. Lös inte review-tråden förrän feedbacken faktiskt är åtgärdad och pushad. Ordinarie required checks och merge queue avgör om ändringen får mergas.'].join('\n')});
