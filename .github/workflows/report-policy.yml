@@ -1,0 +1,26 @@
+name: Report policy
+on:
+  pull_request: {branches: [main]}
+  merge_group: {types: [checks_requested]}
+permissions: {contents: read}
+jobs:
+  report-policy:
+    name: report-policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: {fetch-depth: 0}
+      - name: Validera rapport-PR
+        env:
+          EVENT_NAME: '${{ github.event_name }}'
+          PR_TITLE: '${{ github.event.pull_request.title }}'
+          BASE_SHA: '${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}'
+          HEAD_SHA: '${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}'
+        run: |
+          set -euo pipefail
+          [[ "$EVENT_NAME" == merge_group ]] && exit 0
+          [[ "$PR_TITLE" != 'Uppdatera Code Scanning-alertlogg' ]] && exit 0
+          mapfile -t f < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          [[ ${#f[@]} -eq 1 && "${f[0]}" == security/code-scanning-alerts.log && ! -L security/code-scanning-alerts.log ]]
+          jq -e 'type=="array" and all(.[]; type=="object" and ((keys|sort)==(["category","created_at","end_line","file","number","ref","rule_id","rule_name","severity","start_line","tool","updated_at","url"]|sort)))' security/code-scanning-alerts.log >/dev/null
