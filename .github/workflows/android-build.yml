@@ -1,46 +1,62 @@
 name: Android-bygge
 
-# Bygger Android/ (Kotlin/Gradle, Apache MINA SSHD). Workflowet är inte
-# required och körs bara när Android-koden eller workflowet självt ändras.
-# PR-CI körs mot main; separat push-CI på dev skulle dubblera samma commit.
+# Jobbnamnet `android-build` är required status check på huvudgrenen.
+# När impact-routingen säger att Android inte berörs hoppas jobbet över, och
+# GitHub räknar ett överhoppat jobb som godkänt. Det är avsikten — men det
+# innebär att .github/scripts/ci-impact.sh är den enda faktiska spärren.
+# Skriptet är därför medvetet fail-open mot bredare CI.
+
 on:
   push:
     branches: [main]
-    paths:
-      - 'Android/**'
-      - '.github/workflows/android-build.yml'
   pull_request:
     branches: [main]
-    paths:
-      - 'Android/**'
-      - '.github/workflows/android-build.yml'
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 
 concurrency:
   group: android-build-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
+  impact:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      android: ${{ steps.impact.outputs.android }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bestäm CI-påverkan
+        id: impact
+        env:
+          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
+          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
+        run: bash .github/scripts/ci-impact.sh
+
   android-build:
+    needs: impact
+    if: ${{ needs.impact.outputs.android == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - name: Sätt upp JDK 17
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961  # v5.7.0
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
           java-version: "17"
           cache: gradle
-
-      - name: Bygg + testa (gradlew build kör redan test via check-tasken)
+      - name: Bygg + testa
         run: |
+          set -euo pipefail
           cd Android
           chmod +x gradlew
           ./gradlew build --stacktrace

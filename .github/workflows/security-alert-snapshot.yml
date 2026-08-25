@@ -6,9 +6,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   security-events: read
-  pull-requests: write
 
 concurrency:
   group: security-alert-snapshot
@@ -17,12 +16,23 @@ concurrency:
 jobs:
   snapshot:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Hämta automation App-token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          ref: main
+          client-id: ${{ vars.AUTOMATION_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: automation/security-reports
           fetch-depth: 0
-      - name: Hämta öppna Code Scanning-alerts
+          persist-credentials: true
+          token: ${{ steps.app-token.outputs.token }}
+      - name: Fetch and store open Code Scanning alerts
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -31,23 +41,9 @@ jobs:
           gh api --paginate --slurp "/repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&per_page=100" \
             | jq 'add | map({number, tool: .tool.name, rule_id: .rule.id, rule_name: .rule.name, severity: (.rule.security_severity_level // .rule.severity), created_at, updated_at, url: .html_url, ref: .most_recent_instance.ref, category: .most_recent_instance.category, file: .most_recent_instance.location.path, start_line: .most_recent_instance.location.start_line, end_line: .most_recent_instance.location.end_line}) | sort_by(.tool,.number)' \
             > security/code-scanning-alerts.log
-      - name: Skapa eller uppdatera rapport-PR
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPORT_BRANCH: automation/security-reports
-        run: |
-          set -euo pipefail
           git add -f security/code-scanning-alerts.log
           git diff --cached --quiet && exit 0
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git checkout -B "$REPORT_BRANCH" origin/main
-          git add -f security/code-scanning-alerts.log
           git commit -m 'Uppdatera Code Scanning-alertlogg'
-          git push --force origin "HEAD:$REPORT_BRANCH"
-          pr="$(gh pr list --head "$REPORT_BRANCH" --base main --state open --json number --jq '.[0].number // empty')"
-          if [[ -z "$pr" ]]; then
-            gh pr create --base main --head "$REPORT_BRANCH" --title 'Uppdatera Code Scanning-alertlogg' --body 'Automatisk snapshot av öppna Code Scanning-alerts.'
-            pr="$(gh pr list --head "$REPORT_BRANCH" --base main --state open --json number --jq '.[0].number')"
-          fi
-          gh pr merge "$pr" --auto --squash || true
+          git push origin HEAD:automation/security-reports

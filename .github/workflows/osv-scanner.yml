@@ -15,12 +15,14 @@ on:
     branches:
       - main
   schedule:
-    # Måndag 06:40 CEST. Nya advisories kan dyka upp mot oförändrade beroenden.
+    # Måndag, tid anges i UTC (GitHub cron använder UTC). Nya advisories kan dyka upp mot oförändrade beroenden.
     - cron: '40 4 * * 1'
 
 permissions: {}
 
 jobs:
+  # PR: differentiell skanning. Bara sårbarheter som PR:n introducerar ska
+  # blockera PR-gaten.
   scan-pr:
     if: github.event_name == 'pull_request'
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
@@ -29,6 +31,9 @@ jobs:
       contents: read
       security-events: write
 
+  # Merge queue: skanna exakt merge-group-SHA:n för rapportering och verifiering.
+  # Själva blockerande kontrollen sker differentiellt i PR-jobbet; befintliga
+  # sårbarheter på huvudgrenen får inte låsa orelaterade PR:er i kön.
   scan-merge:
     if: github.event_name == 'merge_group'
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
@@ -39,6 +44,8 @@ jobs:
     with:
       fail-on-vuln: false
 
+  # Huvudgren + schema: full skanning för Security-fliken. Ett nytt advisory på
+  # redan mergad kod ska rapporteras, inte retroaktivt göra huvudgrenen "röd".
   scan-main:
     if: github.event_name == 'push' || github.event_name == 'schedule'
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
@@ -49,6 +56,7 @@ jobs:
     with:
       fail-on-vuln: false
 
+  # EN stabil required check för både PR och merge queue.
   osv:
     name: osv
     if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
@@ -60,10 +68,14 @@ jobs:
     steps:
       - name: Verify OSV gate
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_RESULT: ${{ needs.scan-pr.result }}
+          MERGE_RESULT: ${{ needs.scan-merge.result }}
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            [[ "${{ needs.scan-pr.result }}" == "success" ]]
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            [[ "$PR_RESULT" == "success" ]] || { echo "::error::OSV PR-skanning: $PR_RESULT"; exit 1; }
           else
-            [[ "${{ needs.scan-merge.result }}" == "success" ]]
+            [[ "$MERGE_RESULT" == "success" ]] || { echo "::error::OSV merge-skanning: $MERGE_RESULT"; exit 1; }
           fi

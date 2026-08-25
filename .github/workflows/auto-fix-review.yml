@@ -1,25 +1,127 @@
 name: Auto-fix trusted review feedback
+
+# Reagerar bara på kodreviews från uttryckligen betrodda botkonton.
+# Den här workflowen skriver inte kod själv. Den ber Codex åtgärda den
+# specifika reviewn/kommentaren; Codex-pushen måste sedan klara ordinarie
+# PR-checkar, review-thread-resolution och merge queue.
+#
+# Valfritt: sätt repository variable AUTO_FIX_REVIEW_BOTS till en
+# kommaseparerad lista med ytterligare betrodda bot-login.
+#
+# Identitet: en kommentar skriven av github-actions[bot] via GITHUB_TOKEN
+# plockas inte alltid upp av andra botar (mentions från GITHUB_TOKEN triggar
+# inte nedströms automation). Konfigurera därför samma App-identitet som
+# security-alert-snapshot använder:
+#   repository variable AUTOMATION_CLIENT_ID
+#   repository secret   AUTOMATION_APP_PRIVATE_KEY
+# App-identiteten är obligatorisk; utan den ska jobbet faila tydligt i stället
+# för att posta en mention som riskerar att dö tyst.
+
 on:
   pull_request_review_comment:
     types: [created]
   pull_request_review:
     types: [submitted]
-permissions:
-  contents: read
-  issues: write
-  pull-requests: read
+
+permissions: {}
+
 concurrency:
   group: auto-fix-review-${{ github.event.pull_request.number }}
   cancel-in-progress: false
+
 jobs:
   request-fix:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Hämta App-token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.AUTOMATION_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          permission-issues: write
+
       - name: Be Codex åtgärda betrodd review-feedback
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           EXTRA_TRUSTED_BOTS: ${{ vars.AUTO_FIX_REVIEW_BOTS }}
         with:
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
-            const owner=context.repo.owner,repo=context.repo.repo,pr=context.payload.pull_request;if(!pr||pr.head.repo?.full_name!==`${owner}/${repo}`)return;const trusted=new Set(['chatgpt-codex-connector[bot]']);for(const x of(process.env.EXTRA_TRUSTED_BOTS||'').split(',').map(s=>s.trim()).filter(Boolean))trusted.add(x);if(!trusted.has(context.payload.sender?.login||''))return;let sourceId,sourceUrl,summary;if(context.eventName==='pull_request_review_comment'){const c=context.payload.comment;sourceId=`comment-${c.id}`;sourceUrl=c.html_url;summary='inline review-kommentaren';}else{const r=context.payload.review;if(!(r.body||'').trim()&&(r.state||'').toLowerCase()!=='changes_requested')return;sourceId=`review-${r.id}`;sourceUrl=r.html_url;summary='kodreviewn';}const marker=`<!-- auto-fix-review:${sourceId} -->`;const comments=await github.paginate(github.rest.issues.listComments,{owner,repo,issue_number:pr.number,per_page:100});if(comments.some(c=>(c.body||'').includes(marker)))return;await github.rest.issues.createComment({owner,repo,issue_number:pr.number,body:[marker,`@codex address that feedback from ${summary}: ${sourceUrl}`,'','Ändra endast PR-grenen. Lös inte review-tråden förrän feedbacken faktiskt är åtgärdad och pushad. Ordinarie required checks och merge queue avgör om ändringen får mergas.'].join('\n')});
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pr = context.payload.pull_request;
+            if (!pr) {
+              core.info('Ingen pull request i eventet; hoppar över.');
+              return;
+            }
+
+            // Kör inte skrivande automation mot fork-PR:er.
+            if (pr.head.repo?.full_name !== `${owner}/${repo}`) {
+              core.info(`Fork-PR (${pr.head.repo?.full_name}); hoppar över.`);
+              return;
+            }
+
+            const defaults = new Set(['chatgpt-codex-connector[bot]']);
+            const extra = (process.env.EXTRA_TRUSTED_BOTS || '')
+              .split(',')
+              .map(s => s.trim())
+              .filter(Boolean);
+            for (const login of extra) defaults.add(login);
+
+            const sender = context.payload.sender?.login || '';
+            if (!defaults.has(sender)) {
+              core.info(`Review från icke-betrodd aktör ${sender}; ingen auto-fix.`);
+              return;
+            }
+
+            let sourceId;
+            let sourceUrl;
+            let summary;
+
+            if (context.eventName === 'pull_request_review_comment') {
+              const comment = context.payload.comment;
+              sourceId = `comment-${comment.id}`;
+              sourceUrl = comment.html_url;
+              summary = 'inline review-kommentaren';
+            } else {
+              const review = context.payload.review;
+              // Approval utan feedback ska inte skapa arbete.
+              const body = (review.body || '').trim();
+              const state = (review.state || '').toLowerCase();
+              if (!body && state !== 'changes_requested') {
+                core.info(`Review state=${state} utan feedback; hoppar över.`);
+                return;
+              }
+              sourceId = `review-${review.id}`;
+              sourceUrl = review.html_url;
+              summary = 'kodreviewn';
+            }
+
+            const marker = `<!-- auto-fix-review:${sourceId} -->`;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: pr.number,
+              per_page: 100,
+            });
+            if (comments.some(c => (c.body || '').includes(marker))) {
+              core.info(`Auto-fix är redan begärd för ${sourceId}.`);
+              return;
+            }
+
+            const body = [
+              marker,
+              `@codex address that feedback from ${summary}: ${sourceUrl}`,
+              '',
+              'Ändra endast PR-grenen. Lös inte review-tråden förrän ändringen är pushad och relevant feedback faktiskt är åtgärdad. Ordinarie required checks och merge queue avgör om ändringen får mergas.'
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: pr.number,
+              body,
+            });
+            core.info(`Begärde Codex-fix för ${sourceId}.`);

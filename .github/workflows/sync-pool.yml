@@ -1,23 +1,37 @@
-name: Synka arbetsslots med main
+name: Synka grenpoolen med huvudgrenen
 
-# Arbete sker i en sluten pool av grenar, en per arbetstyp:
+# Arbete sker i en sluten pool av grenar:
 #   work/feature  ny funktionalitet
 #   work/fix      buggfixar och CI-problem
-#   work/chore    dokumentation, städning, konfiguration
-# Rulesetet
-# blockerar skapande av allt annat, så poolen kan inte växa.
+#   work/chore    städning, konfiguration
+#   docs/content  dokumentation och textinnehåll
+#   platform/*   plattformsspecifika permanenta arbetsgrenar
+#   core/swift   delad Swift/core-slot
+# Rulesetet `lock` blockerar skapande av allt annat. Poolens grenar är
+# undantagna med exakta refnamn, så poolen kan inte växa men den här
+# workflowen kan återskapa en slot som råkat försvinna.
 #
-# main tar bara emot squash-mergade PR:er, vilket ger main en enda ny commit
-# medan sloten behåller sina ursprungliga. Utan den här workflowen divergerar
-# de för varje merge och nästa PR fylls av konflikter.
+# Huvudgrenen tar bara emot squash-mergade PR:er, vilket ger den en enda ny
+# commit medan sloten behåller sina ursprungliga. Det gäller även Bastions
+# permanenta platform/core-slots. Utan den här workflowen divergerar de för
+# varje merge och nästa PR fylls av konflikter.
+#
+# En dedikerad GitHub App-token används för pushar. GITHUB_TOKEN-pushar
+# startar normalt inte nya workflow-runs, vilket annars kan lämna required
+# checks väntande efter att en öppen PR-head har rebasats.
 #
 # Rebase, inte reset: arbete kan fortsätta i en slot medan dess PR är öppen.
-# --empty=drop tar bort de commits vars innehåll redan finns i main, alltså
-# precis de som squash-mergades, och replayar resten. Osynkat arbete överlever.
+# --empty=drop tar bort de commits vars innehåll redan finns i huvudgrenen,
+# alltså precis de som squash-mergades, och replayar resten. Osynkat arbete
+# överlever.
+#
+# Huvudgrenen läses ur github.event.repository.default_branch i stället för att
+# hårdkodas; default branch hämtas från repository-metadata.
+# framtida namnbyte kräver ingen ändring av den här filen.
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   workflow_dispatch:
 
 concurrency:
@@ -25,51 +39,80 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 env:
-  SLOTS: "work/feature work/fix work/chore"
+  SLOTS: "work/feature work/fix work/chore docs/content platform/windows platform/android platform/linux platform/apple platform/cli core/swift"
 
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Hämta automation App-token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.AUTOMATION_CLIENT_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: true
+          token: ${{ steps.app-token.outputs.token }}
 
-      - name: Rebasa varje slot på main
+      - name: Rebasa varje slot på huvudgrenen
+        env:
+          BASE: ${{ github.event.repository.default_branch }}
         run: |
           set -uo pipefail
+
+          # Endast ASCII i variabelnamn. bash tillåter inte å/ä/ö där: raden
+          # blir ett kommandoanrop och efterföljande expansion trasig.
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git fetch origin main
 
-          MISSLYCKADES=""
+          if ! git fetch origin "$BASE"; then
+            echo "::error::Kunde inte hämta huvudgrenen $BASE."
+            exit 1
+          fi
+          BASE_SHA=$(git rev-parse FETCH_HEAD)
+
+          FAILED=""
           for SLOT in $SLOTS; do
             echo "::group::$SLOT"
 
-            if ! git fetch origin "$SLOT" 2>/dev/null; then
-              echo "$SLOT finns inte — skapar den från main."
-              git push origin "origin/main:refs/heads/$SLOT"
+            if ! git ls-remote --exit-code --heads origin "$SLOT" >/dev/null 2>&1; then
+              echo "$SLOT finns inte — skapar den från $BASE."
+              if ! git push origin "$BASE_SHA:refs/heads/$SLOT"; then
+                echo "::warning::Kunde inte skapa $SLOT."
+                FAILED="$FAILED $SLOT"
+              fi
               echo "::endgroup::"
               continue
             fi
 
-            # PREV, inte FÖRE: bash tillåter bara ASCII i variabelnamn,
-            # och ett Ö gör raden till ett kommandoanrop i stället.
+            if ! git fetch origin "$SLOT"; then
+              echo "::warning::Kunde inte hämta $SLOT."
+              FAILED="$FAILED $SLOT"
+              echo "::endgroup::"
+              continue
+            fi
             PREV=$(git rev-parse FETCH_HEAD)
-            if [ "$PREV" = "$(git rev-parse origin/main)" ]; then
-              echo "$SLOT är redan i nivå med main."
+
+            if [ "$PREV" = "$BASE_SHA" ]; then
+              echo "$SLOT är redan i nivå med $BASE."
               echo "::endgroup::"
               continue
             fi
 
             git checkout -B "sync-$SLOT" "$PREV" >/dev/null 2>&1
-            if ! git rebase --empty=drop origin/main; then
+            if ! git rebase --empty=drop "$BASE_SHA"; then
               git rebase --abort || true
               echo "::warning::$SLOT gav konflikt vid rebase och lämnas orörd."
-              MISSLYCKADES="$MISSLYCKADES $SLOT"
+              FAILED="$FAILED $SLOT"
               echo "::endgroup::"
               continue
             fi
@@ -80,16 +123,19 @@ jobs:
               continue
             fi
 
-            KVAR=$(git rev-list --count origin/main..HEAD)
-            echo "$SLOT rebasad. $KVAR omergad commit(s) kvar."
-            git push --force-with-lease="refs/heads/$SLOT:$PREV" \
-              origin "HEAD:refs/heads/$SLOT"
+            LEFT=$(git rev-list --count "$BASE_SHA..HEAD")
+            echo "$SLOT rebasad. $LEFT omergad commit(s) kvar."
+            if ! git push --force-with-lease="refs/heads/$SLOT:$PREV" \
+                 origin "HEAD:refs/heads/$SLOT"; then
+              echo "::warning::Kunde inte pusha $SLOT (grenen kan ha ändrats under körningen)."
+              FAILED="$FAILED $SLOT"
+            fi
             echo "::endgroup::"
           done
 
           # En slot med konflikt är inget haveri — övriga ska ändå synkas.
           # Jobbet failar så att det syns, efter att alla har försökts.
-          if [ -n "$MISSLYCKADES" ]; then
-            echo "::error::Konflikt vid rebase:$MISSLYCKADES. Löses för hand."
+          if [ -n "$FAILED" ]; then
+            echo "::error::Slots som inte kunde synkas:$FAILED. Löses för hand."
             exit 1
           fi
