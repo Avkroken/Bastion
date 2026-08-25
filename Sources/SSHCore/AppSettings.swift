@@ -1,5 +1,6 @@
 import Foundation
 
+// Beteendeneutral källkodsändring för att säkerställa att PR-baserad CodeQL analyserar Swift-konfigurationen.
 /// Vilka valfria funktionsknappar den här klienten visar, för ALLA värdar
 /// (Docker, Snippets, Kommandobibliotek, Filer, Tunnlar, SSH-
 /// nyckeldistribution) — klientbred inställning, inte per värd. Alla
