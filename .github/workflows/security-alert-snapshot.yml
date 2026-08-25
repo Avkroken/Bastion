@@ -1,0 +1,74 @@
+name: Uppdatera Code Scanning-alertlogg
+
+on:
+  schedule:
+    - cron: '37 */2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  security-events: read
+  pull-requests: write
+
+concurrency:
+  group: security-alert-snapshot
+  cancel-in-progress: true
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checka ut main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Hämta öppna Code Scanning-alerts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p security
+          gh api --paginate --slurp \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "/repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&per_page=100" \
+          | jq 'add | map({number, tool: .tool.name, rule_id: .rule.id, rule_name: .rule.name, severity: (.rule.security_severity_level // .rule.severity), created_at, updated_at, url: .html_url, ref: .most_recent_instance.ref, category: .most_recent_instance.category, file: .most_recent_instance.location.path, start_line: .most_recent_instance.location.start_line, end_line: .most_recent_instance.location.end_line}) | sort_by(.tool, .number)' \
+          > security/code-scanning-alerts.log
+          echo "Öppna alerts: $(jq 'length' security/code-scanning-alerts.log)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Skapa eller uppdatera rapport-PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPORT_BRANCH: work/chore
+        run: |
+          set -euo pipefail
+          git add -f security/code-scanning-alerts.log
+          if git diff --cached --quiet; then
+            echo "Alertloggen är oförändrad." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          existing="$(gh pr list --head "$REPORT_BRANCH" --base main --state open --json number,title --jq '.[0] | @base64' || true)"
+          if [[ -n "$existing" ]]; then
+            title="$(printf '%s' "$existing" | base64 -d | jq -r '.title')"
+            if [[ "$title" != "Uppdatera Code Scanning-alertlogg" ]]; then
+              echo "Branch $REPORT_BRANCH används av en annan öppen PR." >&2
+              exit 1
+            fi
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$REPORT_BRANCH"
+          git add -f security/code-scanning-alerts.log
+          git commit -m "Uppdatera Code Scanning-alertlogg"
+          git push --force origin "HEAD:$REPORT_BRANCH"
+
+          pr="$(gh pr list --head "$REPORT_BRANCH" --base main --state open --json number --jq '.[0].number // empty')"
+          if [[ -z "$pr" ]]; then
+            gh pr create --base main --head "$REPORT_BRANCH" --title "Uppdatera Code Scanning-alertlogg" --body "Automatisk snapshot av öppna Code Scanning-alerts."
+            pr="$(gh pr list --head "$REPORT_BRANCH" --base main --state open --json number --jq '.[0].number')"
+          fi
+          gh pr merge "$pr" --auto --squash || true
