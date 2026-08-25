@@ -45,21 +45,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-
       - name: Välj Xcode 26.4.1
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
           xcode-version: "26.4.1"
-
       - name: Visa Xcode-version
         run: xcodebuild -version
-
       - name: Installera XcodeGen
         run: brew install xcodegen
-
       - name: Generera Xcode-projekt
         run: cd App && xcodegen generate
-
       - name: Ladda ner tvOS-simulatorplattform
         run: |
           if xcrun simctl list runtimes available 2>/dev/null | grep -q "tvOS"; then
@@ -67,43 +62,16 @@ jobs:
             exit 0
           fi
           for attempt in 1 2 3; do
-            if xcodebuild -downloadPlatform tvOS; then
-              exit 0
-            fi
-            if [ "$attempt" -lt 3 ]; then
-              echo "Försök $attempt misslyckades, väntar innan omförsök..."
-              sleep 15
-            fi
+            if xcodebuild -downloadPlatform tvOS; then exit 0; fi
+            if [ "$attempt" -lt 3 ]; then sleep 15; fi
           done
-          echo "Alla nedladdningsförsök misslyckades." >&2
           exit 1
-
       - name: Bygg iOS (simulator, osignerat)
-        run: |
-          xcodebuild build \
-            -skipPackagePluginValidation \
-            -project App/Bastion.xcodeproj \
-            -scheme Bastion \
-            -destination 'generic/platform=iOS Simulator' \
-            CODE_SIGNING_ALLOWED=NO
-
+        run: xcodebuild build -skipPackagePluginValidation -project App/Bastion.xcodeproj -scheme Bastion -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
       - name: Bygg macOS (osignerat)
-        run: |
-          xcodebuild build \
-            -skipPackagePluginValidation \
-            -project App/Bastion.xcodeproj \
-            -scheme Bastion-macOS \
-            -destination 'platform=macOS' \
-            CODE_SIGNING_ALLOWED=NO
-
+        run: xcodebuild build -skipPackagePluginValidation -project App/Bastion.xcodeproj -scheme Bastion-macOS -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
       - name: Bygg tvOS (simulator, osignerat)
-        run: |
-          xcodebuild build \
-            -skipPackagePluginValidation \
-            -project App/Bastion.xcodeproj \
-            -scheme Bastion-tvOS \
-            -destination 'generic/platform=tvOS Simulator' \
-            CODE_SIGNING_ALLOWED=NO
+        run: xcodebuild build -skipPackagePluginValidation -project App/Bastion.xcodeproj -scheme Bastion-tvOS -destination 'generic/platform=tvOS Simulator' CODE_SIGNING_ALLOWED=NO
 
   swiftpm-macos:
     needs: impact
@@ -130,64 +98,38 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-
       - name: Välj Xcode 26.4.1
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
           xcode-version: "26.4.1"
-
       - name: Installera XcodeGen
         run: brew install xcodegen
-
       - name: Generera Xcode-projekt
         run: cd App && xcodegen generate
-
       - name: Välj simulator
         id: sim
         run: |
           set -euo pipefail
-          udid=$(xcrun simctl list devices available -j | jq -r '
-            [ .devices
-              | to_entries[]
-              | select(.key | test("iOS"))
-              | .value[]
-              | select(.isAvailable and (.name | test("iPhone")))
-            ] | .[0].udid // empty')
-          if [ -z "$udid" ]; then
-            echo "Hittade ingen tillgänglig iPhone-simulator. Tillgängligt:" >&2
-            xcrun simctl list devices available >&2
-            exit 1
-          fi
+          udid=$(xcrun simctl list devices available -j | jq -r '[.devices|to_entries[]|select(.key|test("iOS"))|.value[]|select(.isAvailable and (.name|test("iPhone")))]|.[0].udid // empty')
+          [ -n "$udid" ] || { xcrun simctl list devices available >&2; exit 1; }
           echo "udid=$udid" >> "$GITHUB_OUTPUT"
-          xcrun simctl list devices | grep -F "$udid"
-
       - name: Bygg iOS för simulatorn
         env:
           SIM_UDID: ${{ steps.sim.outputs.udid }}
-        run: |
-          set -euo pipefail
-          xcodebuild build \
-            -skipPackagePluginValidation \
-            -project App/Bastion.xcodeproj \
-            -scheme Bastion \
-            -destination "id=$SIM_UDID" \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO
-
+        run: xcodebuild build -skipPackagePluginValidation -project App/Bastion.xcodeproj -scheme Bastion -destination "id=$SIM_UDID" -derivedDataPath build CODE_SIGNING_ALLOWED=NO
       - name: Starta appen i simulatorn
+        timeout-minutes: 4
         env:
           SIM_UDID: ${{ steps.sim.outputs.udid }}
         run: |
           set -euo pipefail
           app=$(find build/Build/Products -maxdepth 2 -name "Bastion.app" -type d | head -1)
-          [ -n "$app" ] || { echo "hittade ingen Bastion.app under build/" >&2; exit 1; }
-          echo "installerar $app"
+          [ -n "$app" ] || exit 1
           xcrun simctl boot "$SIM_UDID" || true
           xcrun simctl bootstatus "$SIM_UDID" -b
           xcrun simctl install "$SIM_UDID" "$app"
           xcrun simctl launch "$SIM_UDID" se.denied.bastion
           sleep 8
-
       - name: Ta skärmbilder (ljust + mörkt)
         if: ${{ always() && steps.sim.outcome == 'success' }}
         env:
@@ -200,8 +142,6 @@ jobs:
             sleep 3
             xcrun simctl io "$SIM_UDID" screenshot "screenshots/start-$mode.png"
           done
-          ls -la screenshots
-
       - name: Ladda upp skärmbilder
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
