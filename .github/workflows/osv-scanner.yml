@@ -1,30 +1,18 @@
 name: OSV-Scanner
 
-# Sårbarhetsskanning av beroenden mot OSV-databasen. Kompletterar CodeQL:
-# CodeQL läser vår egen kod, osv-scanner läser beroendeträdet. Fynden landar
-# som code scanning-alerts i Security-fliken, samma flöde som CodeQL:s.
-
 on:
-  # Merge-kön skickar merge_group.checks_requested. Utan den här
-  # triggern svarar inget jobb och kön fastnar tills timeout.
   merge_group:
+    types: [checks_requested]
   pull_request:
-    branches:
-      - main
+    branches: [main]
   push:
-    branches:
-      - main
+    branches: [main]
   schedule:
-    # Måndag 06:40 CEST. Nya advisories dyker upp mot oförändrade
-    # beroenden, så en schemalagd körning behövs — push och PR räcker inte.
-    # Tiderna är spridda mellan repona för att inte köa upp alla samtidigt.
     - cron: '40 4 * * 1'
 
 permissions: {}
 
 jobs:
-  # På PR: differentiell skanning som bara rapporterar sårbarheter PR:en
-  # faktiskt inför. Kvarvarande fynd i main gör alltså inte varje PR röd.
   scan-pr:
     if: github.event_name == 'pull_request'
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
@@ -33,10 +21,18 @@ jobs:
       contents: read
       security-events: write
 
-  # På main och enligt schema: hela beroendeträdet. fail-on-vuln är av —
-  # ett fynd ska synas som alert i Security-fliken, inte färga main röd.
-  scan:
-    if: github.event_name != 'pull_request'
+  scan-merge:
+    if: github.event_name == 'merge_group'
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    with:
+      fail-on-vuln: true
+
+  scan-main:
+    if: github.event_name == 'push' || github.event_name == 'schedule'
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
     permissions:
       actions: read
@@ -44,3 +40,22 @@ jobs:
       security-events: write
     with:
       fail-on-vuln: false
+
+  osv:
+    name: osv
+    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
+    needs: [scan-pr, scan-merge]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    steps:
+      - name: Verify OSV gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            [[ "${{ needs.scan-pr.result }}" == "success" ]]
+          else
+            [[ "${{ needs.scan-merge.result }}" == "success" ]]
+          fi
