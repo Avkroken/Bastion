@@ -1,0 +1,27 @@
+name: Uppdatera Code Scanning-alertlogg
+on:
+  schedule: [{cron: '37 */2 * * *'}]
+  workflow_dispatch:
+permissions: {contents: write, security-events: read, pull-requests: write}
+concurrency: {group: security-alert-snapshot, cancel-in-progress: true}
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: {ref: main, fetch-depth: 0}
+      - name: Hämta alerts
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail; mkdir -p security
+          gh api --paginate --slurp "/repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=open&per_page=100" | jq 'add | map({number, tool: .tool.name, rule_id: .rule.id, rule_name: .rule.name, severity: (.rule.security_severity_level // .rule.severity), created_at, updated_at, url: .html_url, ref: .most_recent_instance.ref, category: .most_recent_instance.category, file: .most_recent_instance.location.path, start_line: .most_recent_instance.location.start_line, end_line: .most_recent_instance.location.end_line}) | sort_by(.tool,.number)' > security/code-scanning-alerts.log
+      - name: Skapa rapport-PR
+        env: {GH_TOKEN: '${{ github.token }}'}
+        run: |
+          set -euo pipefail; git add -f security/code-scanning-alerts.log; git diff --cached --quiet && exit 0
+          b=''; for c in work/chore work/fix work/feature; do [[ -z "$(gh pr list --head "$c" --base main --state open --json number --jq '.[0].number // empty')" ]] && b="$c" && break; done
+          [[ -n "$b" ]] || { echo 'Ingen ledig work/*-gren' >&2; exit 1; }
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B "$b" origin/main; git add -f security/code-scanning-alerts.log; git commit -m 'Uppdatera Code Scanning-alertlogg'; git push --force origin "HEAD:$b"
+          gh pr create --base main --head "$b" --title 'Uppdatera Code Scanning-alertlogg' --body 'Automatisk snapshot. Endast security/code-scanning-alerts.log får ändras.'
+          p="$(gh pr list --head "$b" --base main --state open --json number --jq '.[0].number')"; gh pr merge "$p" --auto --squash || true
