@@ -1,73 +1,196 @@
 #!/usr/bin/env bash
-# .github/scripts/ci-impact.sh
-#
-# Avgör vilka plattformsjobb som behöver köras för en given diff och skriver
-# flaggorna till $GITHUB_OUTPUT.
-#
-# Anropas med CI_BASE_SHA och CI_HEAD_SHA satta av workflowen.
-#
-# Utdata (alla 'true'/'false'):
-#   apple  android  windows  linux  cli  swift
-#
-# Principen är fail-open mot bredare CI: känner skriptet inte igen en sökväg
-# antas den vara delad och allt körs. Endast rena dokumentationsändringar
-# räknas som utan påverkan. Ett skript som gissar fel åt andra hållet släpper
-# igenom otestad kod.
-
 set -euo pipefail
 
-: "${CI_BASE_SHA:?CI_BASE_SHA saknas}"
-: "${CI_HEAD_SHA:?CI_HEAD_SHA saknas}"
-OUT="${GITHUB_OUTPUT:-/dev/stdout}"
+# Bastion CI impact detector.
+#
+# Goal: route expensive platform CI from the actual diff instead of running
+# every platform for every change. The detector is deliberately conservative:
+# anything it cannot classify safely expands to all build targets.
+#
+# Outputs are written to $GITHUB_OUTPUT when available, otherwise stdout.
+# Expected outputs:
+#   apple_app, swift_core, android, windows, linuxapp, cli_package, all
 
-apple=false; android=false; windows=false; linux=false; cli=false; swift=false
+out_file="${GITHUB_OUTPUT:-/dev/stdout}"
 
 emit() {
-  {
-    echo "apple=$apple"
-    echo "android=$android"
-    echo "windows=$windows"
-    echo "linux=$linux"
-    echo "cli=$cli"
-    echo "swift=$swift"
-  } >> "$OUT"
+  printf '%s=%s\n' "$1" "$2" >> "$out_file"
 }
 
-all_true() { apple=true; android=true; windows=true; linux=true; cli=true; swift=true; }
+all=false
+apple_app=false
+swift_core=false
+android=false
+windows=false
+linuxapp=false
+cli_package=false
 
-# Okänd bas (t.ex. första push till en ny gren) -> kör allt.
-if [[ -z "$CI_BASE_SHA" || "$CI_BASE_SHA" =~ ^0+$ ]] \
-   || ! git cat-file -e "${CI_BASE_SHA}^{commit}" 2>/dev/null; then
-  echo "Okänd bas-SHA; kör alla plattformsjobb." >&2
-  all_true; emit; exit 0
+# Manual runs are verification runs: never silently skip anything.
+if [[ "${GITHUB_EVENT_NAME:-}" == "workflow_dispatch" ]]; then
+  all=true
 fi
 
-changed="$(git diff --name-only --diff-filter=ACMRDTUXB "$CI_BASE_SHA" "$CI_HEAD_SHA")"
-if [[ -z "$changed" ]]; then
-  echo "Tom diff; inga plattformsjobb." >&2
-  emit; exit 0
+base="${CI_BASE_SHA:-}"
+head="${CI_HEAD_SHA:-${GITHUB_SHA:-HEAD}}"
+changed="${CI_CHANGED_FILES:-}"
+
+# Merge queue validates a synthesized merge-group commit. Use the stable
+# base/head pair from the merge_group payload so impact routing classifies the
+# cumulative queue diff rather than falling back to a full CI matrix.
+if [[ "${GITHUB_EVENT_NAME:-}" == "merge_group" ]]; then
+  if [[ -r "${GITHUB_EVENT_PATH:-}" ]] && command -v jq >/dev/null 2>&1; then
+    merge_base="$(jq -r '.merge_group.base_sha // empty' "$GITHUB_EVENT_PATH")"
+    merge_head="$(jq -r '.merge_group.head_sha // empty' "$GITHUB_EVENT_PATH")"
+    if [[ -n "$merge_base" && -n "$merge_head" ]]; then
+      base="$merge_base"
+      head="$merge_head"
+    else
+      echo "::warning::merge_group saknar base_sha/head_sha — kör full CI-matris" >&2
+      all=true
+    fi
+  else
+    echo "::warning::kan inte läsa merge_group-payload — kör full CI-matris" >&2
+    all=true
+  fi
 fi
 
-while IFS= read -r f; do
-  [[ -n "$f" ]] || continue
-  case "$f" in
-    App/*)                      apple=true ;;
-    Android/*)                  android=true ;;
-    WindowsApp/*)               windows=true ;;
-    LinuxApp/*)                 linux=true ;;
-    Sources/bastion-cli/*)      cli=true ;;
-    # Swift-kärnan är delad av Apple-, CLI- och Linux-byggena.
-    Sources/SSHCore/*|Tests/SSHCoreTests/*|Package.swift|Package.resolved)
-                                swift=true; apple=true; cli=true; linux=true ;;
-    # Ren dokumentation påverkar inga byggen.
-    docs/*|*.md|*.txt|LICENSE|LICENSE.*) ;;
-    # Allt annat (CI, verktyg, rotkonfiguration, okända sökvägar) är delat.
+# CI_CHANGED_FILES is a test/local override. In real CI the detector derives
+# the list from the exact base/head SHAs below.
+if [[ -z "${CI_CHANGED_FILES+x}" ]]; then
+  # A zero SHA is used for the first push to a new ref. There is no safe diff
+  # base in that case, so fail open and run everything.
+  if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
+    all=true
+  fi
+
+  if [[ "$all" != true ]]; then
+    if ! git cat-file -e "${base}^{commit}" 2>/dev/null || ! git cat-file -e "${head}^{commit}" 2>/dev/null; then
+      all=true
+    else
+      changed="$(git diff --name-only --diff-filter=ACMRDTUXB "$base" "$head")"
+    fi
+  fi
+fi
+
+if [[ "$all" != true && -z "$changed" ]]; then
+  # Empty/unknown diff should never be interpreted as permission to skip CI.
+  all=true
+fi
+
+while IFS= read -r file; do
+  [[ -n "$file" ]] || continue
+
+  case "$file" in
+    App/*)
+      apple_app=true
+      ;;
+
+    Sources/SSHCore/*)
+      apple_app=true
+      swift_core=true
+      cli_package=true
+      ;;
+
+    Sources/bastion-cli/*)
+      swift_core=true
+      cli_package=true
+      ;;
+
+    Tests/SSHCoreTests/*)
+      swift_core=true
+      ;;
+
+    Package.swift|Package.resolved)
+      apple_app=true
+      swift_core=true
+      cli_package=true
+      ;;
+
+    Android/*)
+      android=true
+      ;;
+
+    WindowsApp/*)
+      windows=true
+      ;;
+
+    LinuxApp/*)
+      linuxapp=true
+      ;;
+
+    # A protocol/spec change is intentionally cross-platform. These patterns
+    # reserve a stable place for future machine-readable protocol specs.
+    docs/protocol/*|Protocol/*|PROTOCOL.md|SYNC_PROTOCOL.md)
+      apple_app=true
+      swift_core=true
+      android=true
+      windows=true
+      linuxapp=true
+      cli_package=true
+      ;;
+
+    # Workflow-local changes run the workflow they modify.
+    .github/workflows/xcode.yml)
+      apple_app=true
+      swift_core=true
+      ;;
+    .github/workflows/swiftpm-linux.yml)
+      swift_core=true
+      ;;
+    .github/workflows/android-build.yml)
+      android=true
+      ;;
+    .github/workflows/windowsapp-build.yml)
+      windows=true
+      ;;
+    .github/workflows/linuxapp-build.yml|.github/workflows/linuxapp-packaging.yml|.github/workflows/linuxapp-packaging-rpm.yml)
+      linuxapp=true
+      ;;
+    .github/workflows/linux-packaging.yml|.github/workflows/linux-packaging-rpm.yml)
+      cli_package=true
+      ;;
+
+    # Routing logic must prove the full matrix before it is trusted.
+    .github/scripts/ci-impact.sh|.github/scripts/test-ci-impact.sh|.github/workflows/ci-impact-test.yml)
+      all=true
+      ;;
+
+    # Documentation and agent/process metadata do not affect binaries.
+    *.md|LICENSE|LICENSE.*|docs/*|.github/dependabot.yml|.github/renovate.json|renovate.json)
+      ;;
+
+    # Unknown CI/action/config changes can affect arbitrary platforms. Fail
+    # open rather than risk a false negative.
+    .github/*|scripts/*|Makefile|*.yml|*.yaml|*.json|*.toml|*.lock)
+      all=true
+      ;;
+
+    # Unknown source/config files are also conservative by default.
     *)
-      echo "Delad/okänd sökväg '$f'; kör alla plattformsjobb." >&2
-      all_true
-      break
+      all=true
       ;;
   esac
 done <<< "$changed"
 
-emit
+if [[ "$all" == true ]]; then
+  apple_app=true
+  swift_core=true
+  android=true
+  windows=true
+  linuxapp=true
+  cli_package=true
+fi
+
+emit all "$all"
+emit apple_app "$apple_app"
+emit swift_core "$swift_core"
+emit android "$android"
+emit windows "$windows"
+emit linuxapp "$linuxapp"
+emit cli_package "$cli_package"
+
+printf 'CI impact: all=%s apple_app=%s swift_core=%s android=%s windows=%s linuxapp=%s cli_package=%s\n' \
+  "$all" "$apple_app" "$swift_core" "$android" "$windows" "$linuxapp" "$cli_package"
+if [[ -n "$changed" ]]; then
+  printf 'Changed files:\n%s\n' "$changed"
+fi
