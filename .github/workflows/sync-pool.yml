@@ -11,27 +11,26 @@ name: Synka grenpoolen med huvudgrenen
 # undantagna med exakta refnamn, så poolen kan inte växa men den här
 # workflowen kan återskapa en slot som råkat försvinna.
 #
-# Huvudgrenen tar bara emot squash-mergade PR:er, vilket ger den en enda ny
-# commit medan sloten behåller sina ursprungliga. Det gäller även Bastions
-# permanenta platform/core-slots. Utan den här workflowen divergerar de för
-# varje merge och nästa PR fylls av konflikter.
+# INVARIANT:
+#   - En slot utan öppen PR ska peka exakt på aktuell huvudgren.
+#   - En slot med öppen PR får innehålla endast det aktiva PR-arbetet ovanpå
+#     aktuell huvudgren och rebasas när huvudgrenen flyttas.
 #
-# En dedikerad GitHub App-token används för pushar. GITHUB_TOKEN-pushar
-# startar normalt inte nya workflow-runs, vilket annars kan lämna required
-# checks väntande efter att en öppen PR-head har rebasats.
+# Detta är avsiktligt strikt. Squash-merge bevarar inte commit-identitet, så
+# gamla slot-commits får aldrig användas som historik efter att PR:n är klar.
+# När en PR mergas eller stängs återställs sloten därför direkt till main.
 #
-# Rebase, inte reset: arbete kan fortsätta i en slot medan dess PR är öppen.
-# --empty=drop tar bort de commits vars innehåll redan finns i huvudgrenen,
-# alltså precis de som squash-mergades, och replayar resten. Osynkat arbete
-# överlever.
-#
-# Huvudgrenen läses ur github.event.repository.default_branch i stället för att
-# hårdkodas; default branch hämtas från repository-metadata.
-# framtida namnbyte kräver ingen ändring av den här filen.
+# En dedikerad GitHub App-token används för pushar. Appen måste kunna bypassa
+# non_fast_forward för poolgrenarna eftersom lediga slots återställs med en
+# force-with-lease till exakt huvudgrens-SHA. Lease-villkoret förhindrar att
+# parallella ändringar skrivs över.
 
 on:
   push:
     branches: [main, master]
+  pull_request:
+    branches: [main, master]
+    types: [closed]
   workflow_dispatch:
 
 concurrency:
@@ -53,9 +52,10 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          client-id: ${{ vars.AUTOMATION_CLIENT_ID }}
-          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          client-id: ${{ vars.GAMNACKEN_ID }}
+          private-key: ${{ secrets.GAMNACKEN_PEMKEY }}
           permission-contents: write
+          permission-pull-requests: read
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -63,14 +63,13 @@ jobs:
           persist-credentials: true
           token: ${{ steps.app-token.outputs.token }}
 
-      - name: Rebasa varje slot på huvudgrenen
+      - name: Synka varje slot med huvudgrenen
         env:
           BASE: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -uo pipefail
 
-          # Endast ASCII i variabelnamn. bash tillåter inte å/ä/ö där: raden
-          # blir ett kommandoanrop och efterföljande expansion trasig.
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -79,8 +78,9 @@ jobs:
             exit 1
           fi
           BASE_SHA=$(git rev-parse FETCH_HEAD)
-
+          OWNER="${GITHUB_REPOSITORY%%/*}"
           FAILED=""
+
           for SLOT in $SLOTS; do
             echo "::group::$SLOT"
 
@@ -102,8 +102,55 @@ jobs:
             fi
             PREV=$(git rev-parse FETCH_HEAD)
 
+            # Läs PR-läget INNAN vi bestämmer om sloten ska rebasas eller resetas.
+            # Om API:t inte kan läsas gör vi ingen destruktiv ändring.
+            OPEN_PRS=""
+            if OPEN_PRS_RAW="$(gh api -H 'Accept: application/vnd.github+json' \
+                 "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=${OWNER}:${SLOT}&per_page=100" \
+                 --jq 'length' 2>/dev/null)"; then
+              case "$OPEN_PRS_RAW" in
+                ''|*[!0-9]*) OPEN_PRS="" ;;
+                *)           OPEN_PRS="$OPEN_PRS_RAW" ;;
+              esac
+            fi
+
+            if [ -z "$OPEN_PRS" ]; then
+              echo "::warning::Kunde inte läsa öppna PR:er för $SLOT — lämnas orörd."
+              FAILED="$FAILED $SLOT"
+              echo "::endgroup::"
+              continue
+            fi
+
+            if [ "$OPEN_PRS" -eq 0 ]; then
+              # Hård invariant för ledig slot: exakt samma commit som main.
+              if [ "$PREV" != "$BASE_SHA" ]; then
+                echo "$SLOT är ledig. Återställer exakt till $BASE. Forkastad spets: $PREV"
+                if ! git push --force-with-lease="refs/heads/$SLOT:$PREV" \
+                     origin "$BASE_SHA:refs/heads/$SLOT"; then
+                  echo "::warning::Kunde inte återställa ledig slot $SLOT."
+                  FAILED="$FAILED $SLOT"
+                  echo "::endgroup::"
+                  continue
+                fi
+              else
+                echo "$SLOT är ledig och redan exakt i nivå med $BASE."
+              fi
+
+              REMOTE_SHA=$(git ls-remote --heads origin "$SLOT" | awk '{print $1}')
+              if [ "$REMOTE_SHA" != "$BASE_SHA" ]; then
+                echo "::warning::Invariant bruten efter reset: $SLOT=$REMOTE_SHA, $BASE=$BASE_SHA."
+                FAILED="$FAILED $SLOT"
+              else
+                echo "$SLOT verifierad: exakt $BASE_SHA."
+              fi
+              echo "::endgroup::"
+              continue
+            fi
+
+            # Aktiv PR: bevara endast aktuellt PR-arbete genom att rebasa sloten
+            # på huvudgrenen. Vid konflikt kastas inget automatiskt.
             if [ "$PREV" = "$BASE_SHA" ]; then
-              echo "$SLOT är redan i nivå med $BASE."
+              echo "$SLOT har $OPEN_PRS öppen PR men inga commits ovanpå $BASE ännu."
               echo "::endgroup::"
               continue
             fi
@@ -111,20 +158,20 @@ jobs:
             git checkout -B "sync-$SLOT" "$PREV" >/dev/null 2>&1
             if ! git rebase --empty=drop "$BASE_SHA"; then
               git rebase --abort || true
-              echo "::warning::$SLOT gav konflikt vid rebase och lämnas orörd."
+              echo "::warning::$SLOT har $OPEN_PRS öppen PR och gav konflikt vid rebase — lämnas orörd."
               FAILED="$FAILED $SLOT"
               echo "::endgroup::"
               continue
             fi
 
             if [ "$(git rev-parse HEAD)" = "$PREV" ]; then
-              echo "$SLOT: inget att göra."
+              echo "$SLOT: aktiv PR, inget att göra."
               echo "::endgroup::"
               continue
             fi
 
             LEFT=$(git rev-list --count "$BASE_SHA..HEAD")
-            echo "$SLOT rebasad. $LEFT omergad commit(s) kvar."
+            echo "$SLOT rebasad ovanpå $BASE. $LEFT aktiv(a) commit(s) kvar."
             if ! git push --force-with-lease="refs/heads/$SLOT:$PREV" \
                  origin "HEAD:refs/heads/$SLOT"; then
               echo "::warning::Kunde inte pusha $SLOT (grenen kan ha ändrats under körningen)."
@@ -133,8 +180,6 @@ jobs:
             echo "::endgroup::"
           done
 
-          # En slot med konflikt är inget haveri — övriga ska ändå synkas.
-          # Jobbet failar så att det syns, efter att alla har försökts.
           if [ -n "$FAILED" ]; then
             echo "::error::Slots som inte kunde synkas:$FAILED. Löses för hand."
             exit 1
