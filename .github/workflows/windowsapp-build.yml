@@ -1,19 +1,20 @@
 name: WindowsApp-bygge (WinUI 3/.NET)
 
-# Bygger den native WinUI 3-klienten i WindowsApp/ och kör kärnans tester.
-# PR-CI körs mot main; separat push-CI på dev skulle annars dubblera samma
-# commit när dev har en öppen PR. Det dyra Windows-jobbet körs bara när
-# impact-detektorn visar faktisk Windows-påverkan.
+# Jobbnamnen `windowsapp-core-tests` och `windowsapp-build` är required status
+# checks på huvudgrenen. Se kommentaren i android-build.yml om impact-routing.
+
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
 
 concurrency:
   group: windowsapp-build-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -21,18 +22,19 @@ permissions:
 jobs:
   impact:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       windows: ${{ steps.impact.outputs.windows }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
       - name: Bestäm CI-påverkan
         id: impact
         env:
-          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
+          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
         run: bash .github/scripts/ci-impact.sh
 
   windowsapp-core-tests:
@@ -41,21 +43,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - name: Installera OpenSSH (testerna kör mot en riktig sshd)
+      - name: Installera OpenSSH
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq openssh-server openssh-client
-
-      - uses: actions/setup-dotnet@v6
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: |
             8.0.x
             10.0.x
-
       - name: dotnet test (Bastion.Core)
         run: dotnet test WindowsApp/Bastion.Core.Tests/Bastion.Core.Tests.csproj -c Release --verbosity normal
 
@@ -65,15 +64,13 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      - uses: actions/setup-dotnet@v6
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: |
             8.0.x
             10.0.x
-
       - name: dotnet build (WinUI 3, x64)
         run: dotnet build WindowsApp/WindowsApp.csproj -c Release -p:Platform=x64
