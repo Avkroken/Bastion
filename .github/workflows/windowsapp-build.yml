@@ -1,15 +1,10 @@
 name: WindowsApp-bygge (WinUI 3/.NET)
 
-# Jobbnamnen `windowsapp-core-tests` och `windowsapp-build` är required status
-# checks på huvudgrenen. Se kommentaren i android-build.yml om impact-routing.
-
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-  merge_group:
-    types: [checks_requested]
   workflow_dispatch:
 
 concurrency:
@@ -33,8 +28,8 @@ jobs:
       - name: Bestäm CI-påverkan
         id: impact
         env:
-          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
-          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
+          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: bash .github/scripts/ci-impact.sh
 
   windowsapp-core-tests:
@@ -74,3 +69,24 @@ jobs:
             10.0.x
       - name: dotnet build (WinUI 3, x64)
         run: dotnet build WindowsApp/WindowsApp.csproj -c Release -p:Platform=x64
+
+  required:
+    name: CI / windows
+    if: ${{ always() }}
+    needs: [impact, windowsapp-core-tests, windowsapp-build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Kontrollera Windows-CI
+        env:
+          IMPACT_RESULT: ${{ needs.impact.result }}
+          WINDOWS_IMPACT: ${{ needs.impact.outputs.windows }}
+          TEST_RESULT: ${{ needs.windowsapp-core-tests.result }}
+          BUILD_RESULT: ${{ needs.windowsapp-build.result }}
+        run: |
+          test "$IMPACT_RESULT" = "success"
+          if [ "$WINDOWS_IMPACT" != "true" ]; then
+            echo "Windows är inte påverkad."
+            exit 0
+          fi
+          test "$TEST_RESULT" = "success"
+          test "$BUILD_RESULT" = "success"
