@@ -1,0 +1,65 @@
+name: PR watchdog
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+concurrency:
+  group: pr-watchdog
+  cancel-in-progress: false
+
+env:
+  SLOTS: "work/feature work/fix work/chore"
+  MAX_UNPR_MINUTES: "60"
+
+jobs:
+  open-missing-prs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Hämta automation App-token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.GAMNACKEN_ID }}
+          private-key: ${{ secrets.GAMNACKEN_PEMKEY }}
+          permission-contents: read
+          permission-pull-requests: write
+      - name: Öppna saknade PR:er och aktivera auto-merge
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const owner=context.repo.owner, repo=context.repo.repo;
+            const base=context.payload.repository?.default_branch||'main';
+            const slots=process.env.SLOTS.split(/\s+/).filter(Boolean);
+            const maxAgeMs=Number(process.env.MAX_UNPR_MINUTES)*60000, now=Date.now();
+            for(const slot of slots){
+              core.startGroup(slot);
+              try{
+                let branch;
+                try{branch=await github.rest.repos.getBranch({owner,repo,branch:slot});}
+                catch(error){if(error.status===404){core.warning(`${slot} saknas; fortsätter.`);continue;}throw error;}
+                const headSha=branch.data.commit.sha;
+                const comparison=await github.rest.repos.compareCommitsWithBasehead({owner,repo,basehead:`${base}...${slot}`});
+                if(comparison.data.ahead_by===0)continue;
+                const pulls=await github.paginate(github.rest.pulls.list,{owner,repo,state:'open',head:`${owner}:${slot}`,base,per_page:100});
+                let pr=pulls[0];
+                if(pr){if(!(pr.body||'').includes('Den här PR:n öppnades automatiskt av `PR watchdog`.'))continue;}
+                else{
+                  const tip=await github.rest.repos.getCommit({owner,repo,ref:headSha});
+                  const committedAt=tip.data.commit.committer?.date||tip.data.commit.author?.date;
+                  if(!committedAt||now-Date.parse(committedAt)<=maxAgeMs)continue;
+                  const ageMinutes=Math.floor((now-Date.parse(committedAt))/60000);
+                  const title=(tip.data.commit.message||'').split('\n')[0].trim()||`auto: öppna PR för ${slot}`;
+                  const body=['Den här PR:n öppnades automatiskt av `PR watchdog`.','',`Branch \`${slot}\` hade commits ovanpå \`${base}\` utan öppen PR i ${ageMinutes} minuter.`,`Watchdog-tip: \`${headSha.slice(0,7)}\`.`, '', 'Auto-merge armeras direkt. Required checks, relevanta review-trådar och merge queue måste fortfarande passera före squash merge.'].join('\n');
+                  try{pr=(await github.rest.pulls.create({owner,repo,head:slot,base,title,body,draft:false,maintainer_can_modify:true})).data;}
+                  catch(error){if(error.status!==422)throw error;const existing=await github.rest.pulls.list({owner,repo,state:'open',head:`${owner}:${slot}`,base,per_page:1});if(!existing.data.length)throw error;pr=existing.data[0];}
+                }
+                const node=await github.graphql(`query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){id autoMergeRequest{enabledAt}}}}`,{owner,repo,number:pr.number});
+                if(node.repository.pullRequest.autoMergeRequest)continue;
+                await github.graphql(`mutation($id:ID!){enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:SQUASH}){pullRequest{number}}}`,{id:node.repository.pullRequest.id});
+              }finally{core.endGroup();}
+            }
