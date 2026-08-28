@@ -44,7 +44,7 @@ jobs:
                 catch(error){if(error.status===404){core.warning(`${slot} saknas; fortsätter.`);continue;}throw error;}
                 const headSha=branch.data.commit.sha;
                 const comparison=await github.rest.repos.compareCommitsWithBasehead({owner,repo,basehead:`${base}...${slot}`});
-                if(comparison.data.ahead_by===0)continue;
+                if(comparison.data.ahead_by===0 || comparison.data.behind_by>0)continue;
                 const pulls=await github.paginate(github.rest.pulls.list,{owner,repo,state:'open',head:`${owner}:${slot}`,base,per_page:100});
                 let pr=pulls[0];
                 if(pr){if(!(pr.body||'').includes('Den här PR:n öppnades automatiskt av `PR watchdog`.'))continue;}
@@ -52,15 +52,8 @@ jobs:
                   const tip=await github.rest.repos.getCommit({owner,repo,ref:headSha});
                   const committedAt=tip.data.commit.committer?.date||tip.data.commit.author?.date;
                   if(!committedAt||now-Date.parse(committedAt)<=maxAgeMs)continue;
-
-                  // Verifiera tippen omedelbart före PR-skapande. En ny commit betyder
-                  // att sloten är aktiv igen och ska få en ny full watchdog-period.
                   const currentBranch=await github.rest.repos.getBranch({owner,repo,branch:slot});
-                  if(currentBranch.data.commit.sha!==headSha){
-                    core.info(`${slot} ändrades under watchdog-körningen; väntar till nästa kontroll.`);
-                    continue;
-                  }
-
+                  if(currentBranch.data.commit.sha!==headSha){core.info(`${slot} ändrades under watchdog-körningen; väntar till nästa kontroll.`);continue;}
                   const ageMinutes=Math.floor((now-Date.parse(committedAt))/60000);
                   const title=(tip.data.commit.message||'').split('\n')[0].trim()||`auto: öppna PR för ${slot}`;
                   const body=['Den här PR:n öppnades automatiskt av `PR watchdog`.','',`Branch \`${slot}\` hade commits ovanpå \`${base}\` utan öppen PR i ${ageMinutes} minuter.`,`Watchdog-tip: \`${headSha.slice(0,7)}\`.`, '', 'Auto-merge armeras direkt. Required checks, relevanta review-trådar och merge queue måste fortfarande passera före squash merge.'].join('\n');
