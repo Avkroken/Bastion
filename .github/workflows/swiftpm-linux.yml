@@ -1,13 +1,6 @@
 name: SwiftPM-Linux-bygge
 
-# Kärnan (SSHCore + bastion-cli, rot-paketet) verifieras på Linux. PR-CI körs
-# mot main; separat push-CI på dev behövs inte eftersom samma commit annars
-# får både push- och pull_request-körningar när dev har en öppen PR.
-# Det dyra bygget körs bara när impact-detektorn visar att root-SwiftPM påverkas.
 on:
-  # Merge-kön skickar merge_group.checks_requested. Utan den här
-  # triggern svarar inget jobb och kön fastnar tills timeout.
-  merge_group:
   push:
     branches: [main]
   pull_request:
@@ -45,20 +38,35 @@ jobs:
     container: swift:6.1-noble
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-
       - name: Visa Swift-version
         run: swift --version
-
       - name: Installera zip/unzip (för ArchiveOperationsTests)
         run: |
           apt-get update -qq
           apt-get install -y -qq zip unzip
-
       - name: swift build (SSHCore + bastion-cli)
         run: swift build
-
       - name: swift test (SSHCore)
         run: swift test
+
+  required:
+    name: CI / swift-linux
+    if: ${{ always() }}
+    needs: [impact, swiftpm-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Kontrollera Swift/Linux-CI
+        env:
+          IMPACT_RESULT: ${{ needs.impact.result }}
+          SWIFT_IMPACT: ${{ needs.impact.outputs.swift_core }}
+          BUILD_RESULT: ${{ needs.swiftpm-linux.result }}
+        run: |
+          test "$IMPACT_RESULT" = "success"
+          if [ "$SWIFT_IMPACT" != "true" ]; then
+            echo "Swift-kärnan är inte påverkad."
+            exit 0
+          fi
+          test "$BUILD_RESULT" = "success"
