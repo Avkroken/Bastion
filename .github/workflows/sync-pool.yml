@@ -1,17 +1,17 @@
 name: Synka grenpoolen med huvudgrenen
 
-# Arbete sker i en sluten pool av grenar:
+# Återanvändbara slots:
 #   work/feature  ny funktionalitet
 #   work/fix      buggfixar och CI-problem
 #   work/chore    städning, konfiguration
 #   docs/content  dokumentation och textinnehåll
+# Permanenta grenar:
 #   platform/*   plattformsspecifika permanenta arbetsgrenar
 #   core/swift   delad Swift/core-slot
 #
-# Endast work/* får watchdog-grace. Övriga permanenta slots behåller den
-# befintliga strikta synkningen mot main när de saknar öppen PR.
-# Oskyddat work/*-arbete får aldrig raderas bara för att watchdog-tiden gått ut:
-# efter grace-perioden bevaras det tills en PR faktiskt har skyddat arbetet.
+# Tillfälliga/återanvändbara slots som watchdoggen bevakar får grace och
+# bevaras tills en PR faktiskt skyddar arbetet. Permanenta grenar behåller
+# Bastions repo-specifika synkmodell och är undantagna från watchdoggen.
 
 on:
   push:
@@ -86,7 +86,7 @@ jobs:
                 AHEAD=$(git rev-list --count "$BASE_SHA..$PREV" 2>/dev/null || echo 0)
                 BEHIND=$(git rev-list --count "$PREV..$BASE_SHA" 2>/dev/null || echo 0)
                 case "$SLOT" in
-                  work/*)
+                  work/*|docs/content)
                     if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && \
                        [ "${CLOSED_HEAD:-}" = "$SLOT" ] && \
                        [ "${CLOSED_HEAD_SHA:-}" = "$PREV" ]; then
