@@ -20,28 +20,21 @@ Fri, öppen SSH-klient med native implementation per plattform. Plattformarna de
 
 ## GitHub-arbetsflöde
 
-Arbete sker i en **sluten pool av tre grenar**, en per arbetstyp:
+Arbete sker via tillfälliga arbetsgrenar och pull requests till `main`. Arbetsgrenar får använda repo- eller agentvalda namn som `claude/*`, `codex/*`, `feature/*`, `fix/*` eller motsvarande. De återanvändbara `work/feature`, `work/fix`, `work/chore` och `docs/content` får fortfarande användas men är inte obligatoriska.
 
-| Slot | För |
-| --- | --- |
-| `work/feature` | ny funktionalitet |
-| `work/fix` | buggfixar och CI-problem |
-| `work/chore` | dokumentation, städning, konfiguration |
+Bastions permanenta utvecklingsgrenar `platform/*` och `core/swift` är uttryckligen undantagna från watchdoggen och ska bevaras som långlivade grenar. Den interna `automation/pr-watchdog-state` är också permanent undantagen och används endast för watchdog-state.
 
-`main` tar bara emot squash-mergade PR:er som passerat alla merge-gates.
-
-**Skapa aldrig egna grenar.** Rulesetet blockerar det — en push som försöker skapa något utanför poolen avvisas. Poolen finns för att grenar som skapas per uppgift blir liggande halvfärdiga.
-
-1. Välj sloten som matchar arbetet. Är den upptagen duger vilken ledig som helst — namnen är vägledning, inte en spärr. Ligger det omergat arbete i en slot, **slutför det först** i stället för att börja något nytt i en annan.
-2. Implementera och kör relevanta lokala tester innan push. Håll varje PR till en sammanhängande uppgift.
-3. Pusha till sloten och öppna PR från den till `main` som klar för granskning. **Aktivera auto-merge omedelbart efter att PR:n skapats**, även medan CI eller review fortfarande pågår.
+1. Implementera och kör relevanta lokala tester innan push. Håll varje PR till en sammanhängande uppgift.
+2. Pusha arbetsgrenen och öppna en ready PR till `main`.
+3. **Aktivera auto-merge omedelbart efter att PR:n skapats**, även medan CI eller review fortfarande pågår.
 4. Required CI-checkar och olösta review-trådar är merge-blockerare. Läs och utvärdera alltid alla review-kommentarer; relevanta fynd ska åtgärdas i samma PR innan tråden markeras resolved.
-5. Efter varje ny commit ska både CI och review-status kontrolleras igen. En review-tråd får markeras resolved först när kommentaren har utvärderats och eventuell nödvändig fix är genomförd.
-6. När required CI är grönt och alla review-trådar är resolved ska den redan armerade auto-merge-funktionen/merge-kön föra PR:n till `main`.
-7. Om auto-merge inte sker trots gröna checkar och lösta review-trådar, identifiera exakt vilken repository-regel eller blockerare som återstår.
-8. **Squash merge är den enda tillåtna merge-metoden.** Efter merge rebasar `.github/workflows/sync-pool.yml` varje slot på `main`.
+5. Efter varje ny commit ska både CI och review-status kontrolleras igen. När required CI är grönt och alla review-trådar är resolved ska den redan armerade auto-merge-funktionen/merge-kön föra PR:n till `main`. Om det inte sker, identifiera exakt kvarvarande blockerare. **Squash merge är den enda tillåtna merge-metoden.**
 
-Skicka aldrig direkt till `main`, kringgå inte branch protection/rulesets och ändra inte hemligheter eller organisationsinställningar utan uttrycklig instruktion.
+`.github/workflows/pr-watchdog.yml` bevakar alla lokala branches utom `main`, merge-köns `gh-readonly-queue/*`, `automation/pr-watchdog-state` och de permanenta Bastion-undantagen ovan. När en branch med unika commits först observeras utan öppen PR sparas `firstSeen` beständigt på state-branchen. Perioden fortsätter även om HEAD ändras och nollställs först när en öppen PR finns eller branchen inte längre har unika commits mot `main`. Efter mer än 60 minuter skapas en ready PR till `main` och squash auto-merge armeras. Exakt samma HEAD öppnas inte på nytt om den redan har behandlats i en stängd PR. Watchdoggen avgör inte om arbetet är önskvärt eller mergebart; CI, review och merge-gates gör det.
+
+`.github/workflows/sync-pool.yml` får fortsatt synka Bastions uttryckliga återanvändbara slots och permanenta branchmodell. Watchdog-bevakade slots som `work/*` och `docs/content` får inte resetta oskyddat unikt arbete innan watchdoggen hunnit göra det synligt som PR. Godtyckliga agentgrenar utanför den explicita sync-poolen får aldrig resettas av sync-pool.
+
+Skicka aldrig direkt till `main`, kringgå inte branch protection/rulesets, required checks, review resolution eller merge queue och ändra inte hemligheter eller organisationsinställningar utan uttrycklig instruktion.
 
 ## Svarsformat
 
