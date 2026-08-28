@@ -10,6 +10,8 @@ name: Synka grenpoolen med huvudgrenen
 #
 # Endast work/* får watchdog-grace. Övriga permanenta slots behåller den
 # befintliga strikta synkningen mot main när de saknar öppen PR.
+# Oskyddat work/*-arbete får aldrig raderas bara för att watchdog-tiden gått ut:
+# efter grace-perioden bevaras det tills en PR faktiskt har skyddat arbetet.
 
 on:
   push:
@@ -54,6 +56,7 @@ jobs:
         env:
           BASE: ${{ github.event.repository.default_branch }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          CLOSED_HEAD: ${{ github.event.pull_request.head.ref || '' }}
         run: |
           set -uo pipefail
           git config user.name "github-actions[bot]"
@@ -62,43 +65,97 @@ jobs:
           BASE_SHA=$(git rev-parse FETCH_HEAD)
           OWNER="${GITHUB_REPOSITORY%%/*}"
           FAILED=""
+
           for SLOT in $SLOTS; do
             echo "::group::$SLOT"
+
             if ! git ls-remote --exit-code --heads origin "$SLOT" >/dev/null 2>&1; then
               if ! git push origin "$BASE_SHA:refs/heads/$SLOT"; then FAILED="$FAILED $SLOT"; fi
-              echo "::endgroup::"; continue
+              echo "::endgroup::"
+              continue
             fi
-            if ! git fetch origin "$SLOT"; then FAILED="$FAILED $SLOT"; echo "::endgroup::"; continue; fi
+
+            if ! git fetch origin "$SLOT"; then
+              FAILED="$FAILED $SLOT"
+              echo "::endgroup::"
+              continue
+            fi
             PREV=$(git rev-parse FETCH_HEAD)
+
             OPEN_PRS=""
-            if OPEN_PRS_RAW="$(gh api -H 'Accept: application/vnd.github+json' "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=${OWNER}:${SLOT}&per_page=100" --jq 'length' 2>/dev/null)"; then
-              case "$OPEN_PRS_RAW" in ''|*[!0-9]*) OPEN_PRS="" ;; *) OPEN_PRS="$OPEN_PRS_RAW" ;; esac
+            if OPEN_PRS_RAW="$(gh api -H 'Accept: application/vnd.github+json' \
+                 "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=${OWNER}:${SLOT}&base=${BASE}&per_page=100" \
+                 --jq 'length' 2>/dev/null)"; then
+              case "$OPEN_PRS_RAW" in
+                ''|*[!0-9]*) OPEN_PRS="" ;;
+                *) OPEN_PRS="$OPEN_PRS_RAW" ;;
+              esac
             fi
-            if [ -z "$OPEN_PRS" ]; then FAILED="$FAILED $SLOT"; echo "::endgroup::"; continue; fi
+            if [ -z "$OPEN_PRS" ]; then
+              FAILED="$FAILED $SLOT"
+              echo "::warning::Kunde inte läsa PR-status för $SLOT; lämnas orörd."
+              echo "::endgroup::"
+              continue
+            fi
+
             if [ "$OPEN_PRS" -eq 0 ]; then
               if [ "$PREV" != "$BASE_SHA" ]; then
+                AHEAD=$(git rev-list --count "$BASE_SHA..$PREV" 2>/dev/null || echo 0)
+
                 case "$SLOT" in
                   work/*)
-                    COMMITTED_AT=$(git show -s --format=%ct "$PREV" 2>/dev/null || echo 0)
-                    NOW=$(date +%s)
-                    AGE_MINUTES=$(( (NOW - COMMITTED_AT) / 60 ))
-                    if [ "$COMMITTED_AT" -gt 0 ] && [ "$AGE_MINUTES" -lt "$WATCHDOG_GRACE_MINUTES" ]; then
-                      echo "$SLOT har oskyddat arbete (${AGE_MINUTES} min); lämnas orörd för PR-watchdog."
-                      echo "::endgroup::"; continue
-                    fi ;;
+                    # En stängd PR är ett durabelt bevis på att arbetet varit skyddat.
+                    # Reset sker direkt för just den sloten, även om tippen är ung.
+                    if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && [ "${CLOSED_HEAD:-}" = "$SLOT" ]; then
+                      echo "$SLOT hör till den stängda PR:n; återställer direkt till $BASE."
+                    elif [ "$AHEAD" -gt 0 ]; then
+                      COMMITTED_AT=$(git show -s --format=%ct "$PREV" 2>/dev/null || echo 0)
+                      NOW=$(date +%s)
+                      AGE_MINUTES=$(( (NOW - COMMITTED_AT) / 60 ))
+                      if [ "$COMMITTED_AT" -gt 0 ] && [ "$AGE_MINUTES" -lt "$WATCHDOG_GRACE_MINUTES" ]; then
+                        echo "$SLOT har oskyddat arbete (${AGE_MINUTES} min); lämnas orörd för PR-watchdog."
+                      else
+                        echo "$SLOT har oskyddat arbete äldre än grace-perioden men saknar durabelt PR-skydd; lämnas orörd tills watchdog öppnat PR."
+                      fi
+                      echo "::endgroup::"
+                      continue
+                    else
+                      echo "$SLOT är inte före $BASE; synkar stale/behind slot utan watchdog-grace."
+                    fi
+                    ;;
                 esac
-                if ! git push --force-with-lease="refs/heads/$SLOT:$PREV" origin "$BASE_SHA:refs/heads/$SLOT"; then FAILED="$FAILED $SLOT"; echo "::endgroup::"; continue; fi
+
+                if ! git push --force-with-lease="refs/heads/$SLOT:$PREV" \
+                     origin "$BASE_SHA:refs/heads/$SLOT"; then
+                  FAILED="$FAILED $SLOT"
+                  echo "::endgroup::"
+                  continue
+                fi
               fi
+
               REMOTE_SHA=$(git ls-remote --heads origin "$SLOT" | awk '{print $1}')
               if [ "$REMOTE_SHA" != "$BASE_SHA" ]; then FAILED="$FAILED $SLOT"; fi
-              echo "::endgroup::"; continue
+              echo "::endgroup::"
+              continue
             fi
-            if [ "$PREV" = "$BASE_SHA" ]; then echo "::endgroup::"; continue; fi
+
+            if [ "$PREV" = "$BASE_SHA" ]; then
+              echo "::endgroup::"
+              continue
+            fi
+
             git checkout -B "sync-$SLOT" "$PREV" >/dev/null 2>&1
-            if ! git rebase --empty=drop "$BASE_SHA"; then git rebase --abort || true; FAILED="$FAILED $SLOT"; echo "::endgroup::"; continue; fi
+            if ! git rebase --empty=drop "$BASE_SHA"; then
+              git rebase --abort || true
+              FAILED="$FAILED $SLOT"
+              echo "::endgroup::"
+              continue
+            fi
             if [ "$(git rev-parse HEAD)" != "$PREV" ]; then
-              if ! git push --force-with-lease="refs/heads/$SLOT:$PREV" origin "HEAD:refs/heads/$SLOT"; then FAILED="$FAILED $SLOT"; fi
+              if ! git push --force-with-lease="refs/heads/$SLOT:$PREV" \
+                   origin "HEAD:refs/heads/$SLOT"; then FAILED="$FAILED $SLOT"; fi
             fi
             echo "::endgroup::"
           done
+
           if [ -n "$FAILED" ]; then echo "::error::Slots som inte kunde synkas:$FAILED"; exit 1; fi
