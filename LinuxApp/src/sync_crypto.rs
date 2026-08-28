@@ -58,13 +58,11 @@ fn random_bytes<const N: usize>() -> [u8; N] {
 }
 
 fn derive_key(passphrase: &str, salt: &[u8], iterations: u32) -> [u8; 32] {
-    // PBKDF2 skriver över hela outputbufferten innan den används. Nollorna är
-    // alltså inte en nyckel; suppressionen dokumenterar CodeQL-falskpositiven
-    // utan att göra dekryptering beroende av ny entropi.
-    // codeql[rust/hard-coded-cryptographic-value]
-    let mut key = [0u8; 32];
-    pbkdf2::pbkdf2_hmac::<Sha256>(passphrase.as_bytes(), salt, iterations, &mut key);
-    key
+    // Array-varianten initierar och fyller outputbufferten inne i
+    // kryptobiblioteket. Dekryptering behöver därför ingen färsk entropi och
+    // applikationskoden innehåller ingen nollbuffert som CodeQL kan misstolka
+    // som en hårdkodad nyckel.
+    pbkdf2::pbkdf2_hmac_array::<Sha256, 32>(passphrase.as_bytes(), salt, iterations)
 }
 
 pub fn seal(
