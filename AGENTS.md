@@ -20,7 +20,7 @@ Fri, öppen SSH-klient med native implementation per plattform. Plattformarna de
 
 ## GitHub-arbetsflöde
 
-Arbete sker via tillfälliga arbetsgrenar och pull requests till `main`. Arbetsgrenar får använda repo- eller agentvalda namn som `claude/*`, `codex/*`, `feature/*`, `fix/*` eller motsvarande. De återanvändbara `work/feature`, `work/fix` och `work/chore` får fortfarande användas men är inte obligatoriska.
+Arbete sker via tillfälliga arbetsgrenar och pull requests till `main`. Arbetsgrenar får använda repo- eller agentvalda namn som `claude/*`, `codex/*`, `feature/*`, `fix/*` eller motsvarande. De återanvändbara `work/feature`, `work/fix`, `work/chore` och `docs/content` får fortfarande användas men är inte obligatoriska.
 
 Bastions permanenta utvecklingsgrenar `platform/*` och `core/swift` är uttryckligen undantagna från watchdoggen och ska bevaras som långlivade grenar.
 
@@ -32,7 +32,7 @@ Bastions permanenta utvecklingsgrenar `platform/*` och `core/swift` är uttryckl
 
 `.github/workflows/pr-watchdog.yml` bevakar alla lokala branches utom `main`, merge-köns `gh-readonly-queue/*` och de permanenta undantagen ovan. En branch med unika commits som har saknat öppen PR i mer än 60 minuter får en ready PR till `main` och squash auto-merge armeras. Exakt samma HEAD öppnas inte på nytt om den redan har behandlats i en stängd PR. Watchdoggen avgör inte om arbetet är önskvärt eller mergebart; CI, review och merge-gates gör det.
 
-`.github/workflows/sync-pool.yml` får fortsätta synka de uttryckliga återanvändbara `work/*`-slotsen men får aldrig resetta godtyckliga agentgrenar eller bastions permanenta grenar.
+`.github/workflows/sync-pool.yml` får fortsatt synka Bastions uttryckliga återanvändbara slots och permanenta branchmodell. Watchdog-bevakade slots som `work/*` och `docs/content` får inte resetta oskyddat unikt arbete innan watchdoggen hunnit göra det synligt som PR. Godtyckliga agentgrenar utanför den explicita sync-poolen får aldrig resettas av sync-pool.
 
 Skicka aldrig direkt till `main`, kringgå inte branch protection/rulesets, required checks, review resolution eller merge queue och ändra inte hemligheter eller organisationsinställningar utan uttrycklig instruktion.
 
