@@ -1,18 +1,10 @@
 name: Android-bygge
 
-# Jobbnamnet `android-build` är required status check på huvudgrenen.
-# När impact-routingen säger att Android inte berörs hoppas jobbet över, och
-# GitHub räknar ett överhoppat jobb som godkänt. Det är avsikten — men det
-# innebär att .github/scripts/ci-impact.sh är den enda faktiska spärren.
-# Skriptet är därför medvetet fail-open mot bredare CI.
-
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-  merge_group:
-    types: [checks_requested]
   workflow_dispatch:
 
 concurrency:
@@ -36,8 +28,8 @@ jobs:
       - name: Bestäm CI-påverkan
         id: impact
         env:
-          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
-          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
+          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: bash .github/scripts/ci-impact.sh
 
   android-build:
@@ -60,3 +52,22 @@ jobs:
           cd Android
           chmod +x gradlew
           ./gradlew build --stacktrace
+
+  required:
+    name: CI / android
+    if: ${{ always() }}
+    needs: [impact, android-build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Kontrollera Android-CI
+        env:
+          IMPACT_RESULT: ${{ needs.impact.result }}
+          ANDROID_IMPACT: ${{ needs.impact.outputs.android }}
+          BUILD_RESULT: ${{ needs.android-build.result }}
+        run: |
+          test "$IMPACT_RESULT" = "success"
+          if [ "$ANDROID_IMPACT" != "true" ]; then
+            echo "Android är inte påverkad."
+            exit 0
+          fi
+          test "$BUILD_RESULT" = "success"
