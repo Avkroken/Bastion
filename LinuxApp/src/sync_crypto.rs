@@ -58,6 +58,10 @@ fn random_bytes<const N: usize>() -> [u8; N] {
 }
 
 fn derive_key(passphrase: &str, salt: &[u8], iterations: u32) -> [u8; 32] {
+    // PBKDF2 skriver över hela outputbufferten innan den används. Nollorna är
+    // alltså inte en nyckel; suppressionen dokumenterar CodeQL-falskpositiven
+    // utan att göra dekryptering beroende av ny entropi.
+    // codeql[rust/hard-coded-cryptographic-value]
     let mut key = [0u8; 32];
     pbkdf2::pbkdf2_hmac::<Sha256>(passphrase.as_bytes(), salt, iterations, &mut key);
     key
@@ -212,6 +216,28 @@ mod tests {
         assert_eq!(opened.hosts[0].alias, "test");
     }
 
+    /// Salt och nonce ska skapas på nytt för varje kuvert. Samma tillstånd
+    /// och lösenfras får därför aldrig återanvända de kryptografiska värdena.
+    #[test]
+    fn repeated_seals_use_fresh_salt_and_nonce() {
+        let state = SyncState::default();
+        let first = seal(&state, "samma lösenfras", 1000).unwrap();
+        let second = seal(&state, "samma lösenfras", 1000).unwrap();
+        let salt_offset = MAGIC.len() + 4;
+        let nonce_offset = salt_offset + SALT_LEN;
+
+        assert_ne!(
+            &first[salt_offset..nonce_offset],
+            &second[salt_offset..nonce_offset],
+            "varje kuvert måste ha ett nytt salt"
+        );
+        assert_ne!(
+            &first[nonce_offset..nonce_offset + NONCE_LEN],
+            &second[nonce_offset..nonce_offset + NONCE_LEN],
+            "varje kuvert måste ha en ny nonce"
+        );
+    }
+
     #[test]
     fn wrong_passphrase_fails() {
         let state = SyncState::default();
@@ -241,7 +267,7 @@ mod tests {
     #[test]
     fn bad_format_is_rejected_cleanly() {
         assert_eq!(
-            open(b"not a valid envelope", "x").unwrap_err(),
+            open(&[], "x").unwrap_err(),
             SyncCryptoError::BadFormat
         );
     }
