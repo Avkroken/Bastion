@@ -47,12 +47,12 @@ jobs:
                 const headSha=branch.commit.sha;
                 const comparison=await github.rest.repos.compareCommitsWithBasehead({owner,repo,basehead:`${base}...${name}`});
                 if(comparison.data.ahead_by===0)continue;
-                const open=await github.paginate(github.rest.pulls.list,{owner,repo,state:'open',head:`${owner}:${name}`,per_page:100});
+                const open=await github.paginate(github.rest.pulls.list,{owner,repo,state:'open',head:`${owner}:${name}`,base,per_page:100});
                 let pr=open[0];
                 if(pr){
-                  if(pr.base.ref!==base||!(pr.body||'').includes(marker))continue;
+                  if(!(pr.body||'').includes(marker))continue;
                 }else{
-                  const closed=await github.paginate(github.rest.pulls.list,{owner,repo,state:'closed',head:`${owner}:${name}`,per_page:100});
+                  const closed=await github.paginate(github.rest.pulls.list,{owner,repo,state:'closed',head:`${owner}:${name}`,base,per_page:100});
                   if(closed.some((candidate)=>candidate.head?.sha===headSha))continue;
                   const tip=await github.rest.repos.getCommit({owner,repo,ref:headSha});
                   const committedAt=tip.data.commit.committer?.date||tip.data.commit.author?.date;
@@ -66,8 +66,8 @@ jobs:
                     pr=(await github.rest.pulls.create({owner,repo,head:name,base,title,body,draft:false,maintainer_can_modify:true})).data;
                   }catch(error){
                     if(error.status!==422)throw error;
-                    const raced=await github.rest.pulls.list({owner,repo,state:'open',head:`${owner}:${name}`,per_page:100});
-                    pr=raced.data.find((candidate)=>candidate.base.ref===base);
+                    const raced=await github.rest.pulls.list({owner,repo,state:'open',head:`${owner}:${name}`,base,per_page:100});
+                    pr=raced.data[0];
                     if(!pr||!(pr.body||'').includes(marker))continue;
                   }
                 }
