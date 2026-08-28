@@ -57,6 +57,7 @@ jobs:
           BASE: ${{ github.event.repository.default_branch }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           CLOSED_HEAD: ${{ github.event.pull_request.head.ref || '' }}
+          CLOSED_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
         run: |
           set -uo pipefail
           git config user.name "github-actions[bot]"
@@ -104,10 +105,10 @@ jobs:
 
                 case "$SLOT" in
                   work/*)
-                    # En stängd PR är ett durabelt bevis på att arbetet varit skyddat.
-                    # Reset sker direkt för just den sloten, även om tippen är ung.
-                    if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && [ "${CLOSED_HEAD:-}" = "$SLOT" ]; then
-                      echo "$SLOT hör till den stängda PR:n; återställer direkt till $BASE."
+                    if [ "${GITHUB_EVENT_NAME:-}" = "pull_request" ] && \
+                       [ "${CLOSED_HEAD:-}" = "$SLOT" ] && \
+                       [ "${CLOSED_HEAD_SHA:-}" = "$PREV" ]; then
+                      echo "$SLOT hör till den stängda PR:n och tippen matchar; återställer direkt till $BASE."
                     elif [ "$AHEAD" -gt 0 ]; then
                       COMMITTED_AT=$(git show -s --format=%ct "$PREV" 2>/dev/null || echo 0)
                       NOW=$(date +%s)
