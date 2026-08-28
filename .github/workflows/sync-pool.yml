@@ -103,6 +103,11 @@ jobs:
                       if ! git push --force-with-lease="refs/heads/$SLOT:$PREV" origin "HEAD:refs/heads/$SLOT"; then FAILED="$FAILED $SLOT"; fi
                       echo "::endgroup::"; continue
                     fi ;;
+                  platform/*|core/swift)
+                    if [ "$AHEAD" -gt 0 ]; then
+                      echo "$SLOT är permanent och har unika commits; lämnas orörd."
+                      echo "::endgroup::"; continue
+                    fi ;;
                 esac
                 if ! git push --force-with-lease="refs/heads/$SLOT:$PREV" origin "$BASE_SHA:refs/heads/$SLOT"; then FAILED="$FAILED $SLOT"; echo "::endgroup::"; continue; fi
               fi
