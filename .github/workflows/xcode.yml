@@ -1,15 +1,10 @@
 name: Xcode-bygge (iOS + macOS + tvOS)
 
-# Apple-CI är dyrast i repot. Workflowet triggas alltid för PR mot main så
-# required checks kan rapporteras, men ett billigt impact-jobb avgör vilka
-# macOS-jobb som faktiskt behöver köras.
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-  merge_group:
-    types: [checks_requested]
   workflow_dispatch:
 
 concurrency:
@@ -138,7 +133,7 @@ jobs:
           set -euo pipefail
           mkdir -p screenshots
           for mode in light dark; do
-            xcrun simctl ui "$SIM_UDID" appearance "$mode" || true
+            xcrun simctl ui "$SIM_UDID" appearance "$mode"
             sleep 3
             xcrun simctl io "$SIM_UDID" screenshot "screenshots/start-$mode.png"
           done
@@ -149,3 +144,27 @@ jobs:
           name: ios-skarmbilder
           path: screenshots/
           if-no-files-found: warn
+
+  required:
+    name: CI / apple
+    if: ${{ always() }}
+    needs: [impact, xcodegen-and-build, swiftpm-macos, ios-screenshots]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Kontrollera Apple-CI
+        env:
+          IMPACT_RESULT: ${{ needs.impact.result }}
+          APP_IMPACT: ${{ needs.impact.outputs.apple_app }}
+          SWIFT_IMPACT: ${{ needs.impact.outputs.swift_core }}
+          APP_BUILD_RESULT: ${{ needs.xcodegen-and-build.result }}
+          SWIFT_RESULT: ${{ needs.swiftpm-macos.result }}
+          SCREENSHOT_RESULT: ${{ needs.ios-screenshots.result }}
+        run: |
+          test "$IMPACT_RESULT" = "success"
+          if [ "$APP_IMPACT" = "true" ]; then
+            test "$APP_BUILD_RESULT" = "success"
+            test "$SCREENSHOT_RESULT" = "success"
+          fi
+          if [ "$SWIFT_IMPACT" = "true" ]; then
+            test "$SWIFT_RESULT" = "success"
+          fi
