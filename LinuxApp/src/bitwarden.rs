@@ -161,7 +161,7 @@ mod tests {
     fn fetch_password_passes_nointeraction_flag() {
         let (script, result) = run_fixture("#!/bin/sh\necho \"$@\"\n", "my-item", None);
         let output = result.unwrap();
-        assert!(output.contains("--nointeraction"), "argv saknade --nointeraction: {output}");
+        assert!(output.contains("--nointeraction"), "argv saknade --nointeraction");
         std::fs::remove_file(script).ok();
     }
 
