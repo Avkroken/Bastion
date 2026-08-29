@@ -1,0 +1,52 @@
+name: One-shot issue 378 remediation
+
+on:
+  push:
+    branches: [fix/issue-378]
+
+permissions: {}
+
+jobs:
+  remediate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create Gamnacken App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.GAMNACKEN_ID }}
+          private-key: ${{ secrets.GAMNACKEN_PEMKEY }}
+          permission-contents: write
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+
+      - name: Apply smallest safe fix
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('LinuxApp/src/bitwarden.rs')
+          text = path.read_text()
+          old = 'assert!(output.contains("--nointeraction"), "argv saknade --nointeraction: {output}");'
+          new = 'assert!(output.contains("--nointeraction"), "argv saknade --nointeraction");'
+          if old not in text:
+              raise SystemExit('expected vulnerable assertion not found')
+          path.write_text(text.replace(old, new, 1))
+          updated = path.read_text()
+          assert ': {output}' not in updated
+          assert 'assert!(output.contains("--nointeraction"), "argv saknade --nointeraction");' in updated
+          PY
+
+      - name: Commit remediation
+        run: |
+          set -euo pipefail
+          git config user.name 'gamnacken[bot]'
+          git config user.email '316993076+gamnacken[bot]@users.noreply.github.com'
+          git add LinuxApp/src/bitwarden.rs
+          git diff --cached --check
+          git commit -m 'fix(security): avoid secret-bearing assertion output'
+          git push origin HEAD:fix/issue-378
