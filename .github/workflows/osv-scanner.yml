@@ -1,28 +1,21 @@
 name: OSV-Scanner
 
-# Sårbarhetsskanning av beroenden mot OSV-databasen.
-# En stabil wrapper-check `osv` används som required status check på både
-# pull_request och merge_group, så merge queue aldrig väntar på ett jobbnamn
-# som bara finns i ena eventtypen.
+# Differentiell skanning på PR och full rapportering på main/schema.
+# OSV är kompletterande säkerhetsverifiering och inte ett required context i
+# repositoryts nuvarande live-ruleset.
 
 on:
-  merge_group:
-    types: [checks_requested]
   pull_request:
-    branches:
-      - main
+    branches: [main]
   push:
-    branches:
-      - main
+    branches: [main]
   schedule:
-    # Måndag, tid anges i UTC (GitHub cron använder UTC). Nya advisories kan dyka upp mot oförändrade beroenden.
     - cron: '40 4 * * 1'
+  workflow_dispatch:
 
 permissions: {}
 
 jobs:
-  # PR: differentiell skanning. Bara sårbarheter som PR:n introducerar ska
-  # blockera PR-gaten.
   scan-pr:
     if: github.event_name == 'pull_request'
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
@@ -31,23 +24,8 @@ jobs:
       contents: read
       security-events: write
 
-  # Merge queue: skanna exakt merge-group-SHA:n för rapportering och verifiering.
-  # Själva blockerande kontrollen sker differentiellt i PR-jobbet; befintliga
-  # sårbarheter på huvudgrenen får inte låsa orelaterade PR:er i kön.
-  scan-merge:
-    if: github.event_name == 'merge_group'
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
-    permissions:
-      actions: read
-      contents: read
-      security-events: write
-    with:
-      fail-on-vuln: false
-
-  # Huvudgren + schema: full skanning för Security-fliken. Ett nytt advisory på
-  # redan mergad kod ska rapporteras, inte retroaktivt göra huvudgrenen "röd".
   scan-main:
-    if: github.event_name == 'push' || github.event_name == 'schedule'
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
     permissions:
       actions: read
@@ -55,27 +33,3 @@ jobs:
       security-events: write
     with:
       fail-on-vuln: false
-
-  # EN stabil required check för både PR och merge queue.
-  osv:
-    name: osv
-    if: ${{ always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
-    needs: [scan-pr, scan-merge]
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    permissions:
-      contents: read
-    steps:
-      - name: Verify OSV gate
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PR_RESULT: ${{ needs.scan-pr.result }}
-          MERGE_RESULT: ${{ needs.scan-merge.result }}
-        run: |
-          set -euo pipefail
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            [[ "$PR_RESULT" == "success" ]] || { echo "::error::OSV PR-skanning: $PR_RESULT"; exit 1; }
-          else
-            [[ "$MERGE_RESULT" == "success" ]] || { echo "::error::OSV merge-skanning: $MERGE_RESULT"; exit 1; }
-          fi

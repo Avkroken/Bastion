@@ -1,22 +1,18 @@
 name: Scope policy
 
-# En required gate för dedikerade arbetsgrenar. PR-eventet validerar head-branchens
-# scope. Merge queue kör samma kontroll på den syntetiska merge-group-committen
-# och härleder ursprunglig PR defensivt. Okänd/otydlig härledning failar stängt.
+# Validerar specialscope för repositoryts namngivna plattforms-/core-branches.
+# Vanliga kortlivade branches har inget särskilt filscope här.
 
 on:
   pull_request:
     branches: [main]
-  merge_group:
-    types: [checks_requested]
 
 permissions:
   contents: read
-  pull-requests: read
 
 concurrency:
-  group: scope-policy-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: scope-policy-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   scope-policy:
@@ -29,45 +25,15 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Härled grennamn
-        id: ref
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          EVENT_NAME: ${{ github.event_name }}
-          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          MG_HEAD_REF: ${{ github.event.merge_group.head_ref }}
-          MG_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
-        run: |
-          set -euo pipefail
-          if [[ "$EVENT_NAME" == pull_request ]]; then
-            [[ -n "$PR_HEAD_REF" ]] || { echo "::error::Tom head.ref i PR-event."; exit 1; }
-            echo "head_ref=$PR_HEAD_REF" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Dokumenterade merge-queue-refar innehåller /pr-<nummer>. Använd den
-          # vägen först, men ha commit->PR API som fallback om ref-formatet ändras.
-          PR="$(grep -oE '(^|/)pr-[0-9]+' <<< "$MG_HEAD_REF" | tail -1 | grep -oE '[0-9]+' || true)"
-          if [[ -z "$PR" && -n "$MG_HEAD_SHA" ]]; then
-            mapfile -t CANDIDATES < <(gh api               -H 'Accept: application/vnd.github+json'               "repos/${GITHUB_REPOSITORY}/commits/${MG_HEAD_SHA}/pulls?per_page=100"               --jq '.[] | select(.state=="open") | .number')
-            if [[ ${#CANDIDATES[@]} -eq 1 ]]; then
-              PR="${CANDIDATES[0]}"
-            fi
-          fi
-          [[ "$PR" =~ ^[0-9]+$ ]] || { echo "::error::Kunde inte entydigt härleda PR från merge group '$MG_HEAD_REF'."; exit 1; }
-          REF="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}" --jq '.head.ref')"
-          [[ -n "$REF" ]] || { echo "::error::Tomt head.ref för PR $PR."; exit 1; }
-          echo "head_ref=$REF" >> "$GITHUB_OUTPUT"
-
       - name: Validera specialscope
         shell: bash
         env:
-          HEAD_REF: ${{ steps.ref.outputs.head_ref }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
+          [[ -n "$HEAD_REF" ]] || { echo "::error::Tom head.ref i PR-event."; exit 1; }
           git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || { echo "::error::Ogiltig base SHA"; exit 1; }
           git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null || { echo "::error::Ogiltig head SHA"; exit 1; }
           mapfile -t files < <(git diff --name-only --diff-filter=ACMRDTUXB "$BASE_SHA" "$HEAD_SHA")
@@ -80,9 +46,13 @@ jobs:
                 docs/*|README|README.*|CONTRIBUTING|CONTRIBUTING.*|CHANGELOG|CHANGELOG.*|CHANGES|CHANGES.*|ROADMAP|ROADMAP.*|VISION|VISION.*|RESUME|RESUME.*|SKILLS|SKILLS.*|CODE_OF_CONDUCT|CODE_OF_CONDUCT.*|SUPPORT|SUPPORT.*|LICENSE|LICENSE.*|NOTICE|NOTICE.*)
                   ;;
                 AGENTS.md|CLAUDE.md|SECURITY.md|.github/*)
-                  echo "::error::Policy-/automationfil är inte tillåten på docs/content: $f" >&2; exit 1 ;;
+                  echo "::error::Policy-/automationfil är inte tillåten på docs/content: $f" >&2
+                  exit 1
+                  ;;
                 *)
-                  echo "::error::Otillåten docs-fil: $f" >&2; exit 1 ;;
+                  echo "::error::Otillåten docs-fil: $f" >&2
+                  exit 1
+                  ;;
               esac
             done
           fi
@@ -96,6 +66,7 @@ jobs:
             core/swift) allowed='^(Sources/SSHCore/|Tests/SSHCoreTests/|Package\.swift$|Package\.resolved$)' ;;
             *) allowed='' ;;
           esac
+
           if [[ -n "$allowed" ]]; then
             for f in "${files[@]}"; do
               [[ "$f" =~ $allowed ]] || { echo "::error::Otillåten fil för $HEAD_REF: $f" >&2; exit 1; }
