@@ -525,7 +525,7 @@ mod tests {
             None,
         )
         .await;
-        assert!(result.is_ok(), "deploy+verify misslyckades: {result:?}");
+        assert!(result.is_ok(), "deploy+verify misslyckades");
 
         // Bevisa att raden verkligen hamnade i authorized_keys på riktigt —
         // inte bara att verifieringsanslutningen råkade lyckas av någon
