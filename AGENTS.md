@@ -14,38 +14,44 @@ Innan implementation: läs relevant kod, tester, konfiguration och dokumentation
 
 - Pusha aldrig direkt till `main`.
 - Skapa en kortlivad arbetsgren för varje logisk ändring och öppna en ready PR mot `main` efter pre-PR-granskning.
-- **Aktivera auto-merge omedelbart när PR:n skapats**, även om CI eller review fortfarande pågår.
+- Aktivera auto-merge först när live-rulesetet faktiskt motsvarar mergekontraktet nedan. Om ruleset-migration pågår ska PR:n lämnas öppen tills den nya policyn är aktiv och verifierad.
 - Direkt merge får endast användas om repositoryägaren uttryckligen begär det.
-- Squash är den enda merge-metod som nuvarande `main`-ruleset tillåter.
-- Repositoryt har för närvarande ingen aktiv merge queue.
+- Squash är enda tillåtna merge-metod.
+- Repositoryt använder inte merge queue.
 - Kringgå aldrig branch protection, rulesets, required checks, reviews eller review-thread resolution.
 
 De befintliga `platform/*`- och `core/swift`-brancherna har specialscope i `.github/workflows/scope-policy.yml`, men de utgör inte en obligatorisk branchpool för nytt arbete. `work/*` och `docs/content` ska inte återställas eller synkas automatiskt av repositoryautomation.
 
 ## Merge-gates och review
 
+För `main` ska följande vara verifierat på senaste PR-HEAD när det nya rulesetet är aktivt:
+
+- `CI / android`
+- `CI / windows`
+- `CI / linux`
+- `CI / swift-linux`
+- `CI / apple`
+- `scope-policy`
+- `scan-pr / osv-scan`
+- native `CodeRabbit` commit-status
+- Code Scanning merge protection för CodeQL
+- lösta review-trådar
+
+De fem `CI / …`-jobben är stabila aggregate-gates. Interna plattformsjobb får vara `skipped` endast när impact-routern uttryckligen bedömer plattformen som opåverkad; aggregate-jobbet ska då verifiera detta och bli success. Om impact-jobbet eller relevant build/test misslyckas ska aggregate-gaten misslyckas.
+
+`CodeRabbit` är merge-reviewgaten: `pending` under review och `success` först när aktuell HEAD är färdiggranskad. En ny push ska starta incremental review igen. Copilot Code Review är rådgivande, ska köras om efter push, men är inte hard gate eftersom quota/tillgänglighet inte är deterministisk.
+
 Required checks och olösta review-trådar är merge-blockerare. Alla review-kommentarer ska läsas och utvärderas; relevanta findings åtgärdas i samma PR. En tråd markeras resolved först när eventuell nödvändig fix är pushad och verifierad.
 
-Efter varje ny commit eller push ska aktuell HEAD, required checks, mergeability, mergekonflikter, review-sammanfattningar och öppna/återöppnade review-trådar kontrolleras igen. När alla faktiska gates är gröna/lösta ska den redan armerade auto-merge-funktionen föra PR:n till `main`.
+Efter varje ny commit eller push ska aktuell HEAD, required checks, mergeability, mergekonflikter, review-sammanfattningar och öppna/återöppnade review-trådar kontrolleras igen.
 
-Om auto-merge inte sker trots gröna checks och lösta trådar ska exakt kvarvarande repositoryregel eller annan blockerare identifieras; forcera eller kringgå inte skydd.
+## CI-design
 
-## Faktisk CI-enforcement
+`.github/scripts/ci-impact.sh` äger selektiv routing. Required workflows använder billiga impact-jobb och job-level `if:` för dyrt arbete. Vid okänd påverkan ska mer CI köras, inte mindre.
 
-Live-rulesetet `ci` kräver för närvarande exakt följande contexts på default branch:
+Den tidigare `.github/workflows/required-ci.yml` är avsiktligt borttagen. Dess `CI / required` syntaxkontrollerade endast impact-scriptet och var inte ett verkligt aggregate-bevis för plattforms-CI.
 
-- `android-build`
-- `windowsapp-build`
-- `windowsapp-core-tests`
-- `linuxapp-build`
-- `linuxapp-msrv`
-- `swiftpm-linux`
-- `swiftpm-macos`
-- `xcodegen-and-build`
-
-Detta är en känd mismatch mot CI-designen som infördes i PR #385, där avsikten var stabila aggregat såsom `CI / android`, `CI / windows`, `CI / linux`, `CI / swift-linux`, `CI / apple` och `CI / required`. Dokumentation ensam ändrar inte enforcement. Tills live-rulesetet uppdateras ska de åtta faktiska contexts ovan behandlas som merge-gates och mismatchen rapporteras; ändra inte CI för att fejka eller försvaga checks.
-
-`.github/workflows/osv-scanner.yml`, paketerings-, release-, security- och deploy-workflows är kompletterande verifiering och är inte required contexts i nuvarande ruleset.
+`.github/workflows/osv-scanner.yml`, paketerings-, release-, security- och deploy-workflows som inte uttryckligen listas som merge-gates ovan är kompletterande verifiering. CodeQL ska säkras genom rulesetets Code Scanning merge protection, inte genom en skör lista av dynamiska analysjobb.
 
 ## Pre-PR quality gate
 
@@ -75,4 +81,4 @@ Ett lyckat API-svar, workflow-anrop eller deployment-request är inte bevis på 
 
 ## Definition of done
 
-En PR-baserad uppgift är klar först när implementationen är färdig och avgränsad, relevanta tester/checks har körts eller en konkret begränsning dokumenterats, slutdiffen självgranskats, all review-feedback utvärderats, legitima findings åtgärdats, aktuell HEAD och required CI verifierats efter senaste commit, alla relevanta review-trådar är resolved och auto-merge har mergat PR:n eller fortfarande är armerad medan en verifierad obligatorisk gate väntar.
+En PR-baserad uppgift är klar först när implementationen är färdig och avgränsad, relevanta tester/checks har körts eller en konkret begränsning dokumenterats, slutdiffen självgranskats, all review-feedback utvärderats, legitima findings åtgärdats, aktuell HEAD och required CI verifierats efter senaste commit, alla relevanta review-trådar är resolved och PR:n har mergats först efter att live-rulesetet faktiskt verkställt mergekontraktet ovan.
