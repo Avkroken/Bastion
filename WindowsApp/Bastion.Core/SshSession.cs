@@ -18,7 +18,15 @@ public sealed class SshHostKeyChangedException(string message) : Exception(messa
 
 public sealed class SshSession : IDisposable
 {
+    private static readonly TimeSpan DefaultKeepAliveInterval = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan DefaultProbeTimeout = TimeSpan.FromSeconds(10);
+
     private readonly SshClient _client;
+    private readonly object _keepAliveGate = new();
+    private CancellationTokenSource? _keepAliveCancellation;
+    private Task? _keepAliveTask;
+    private int _disposed;
+
     public ShellStream Shell { get; }
 
     private SshSession(SshClient client, ShellStream shell)
@@ -51,12 +59,137 @@ public sealed class SshSession : IDisposable
                 shell.WriteLine(host.StartupCommand);
             }
 
-            return new SshSession(client, shell);
+            var session = new SshSession(client, shell);
+            session.StartKeepAlive();
+            return session;
         }
         catch
         {
             client.Dispose();
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Startar död-detektering för den befintliga SSH-sessionen. SSH.NETs
+    /// inbyggda <c>KeepAliveInterval</c> skickar bara SSH_MSG_IGNORE och kan
+    /// därför hålla NAT/brandväggar varma men inte bevisa att motparten svarar.
+    /// Här öppnas i stället en kort exec-kanal på SAMMA SSH-transport. Ett
+    /// färdigt kommando — även med felaktig exitkod — eller ett protokollsvar
+    /// som nekar exec bevisar liv. Endast timeout/transportfel räknas som en
+    /// missad sond. Efter <paramref name="maxMissed"/> missar stängs sessionen,
+    /// vilket får <see cref="ShellStream.Closed"/> att signalera befintlig UI-kod.
+    /// </summary>
+    public void StartKeepAlive(
+        TimeSpan? interval = null,
+        TimeSpan? probeTimeout = null,
+        int maxMissed = 3)
+    {
+        var effectiveInterval = interval ?? DefaultKeepAliveInterval;
+        var effectiveTimeout = probeTimeout ?? DefaultProbeTimeout;
+        if (effectiveInterval <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(interval));
+        if (effectiveTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(probeTimeout));
+        if (maxMissed <= 0) throw new ArgumentOutOfRangeException(nameof(maxMissed));
+
+        var cancellation = new CancellationTokenSource();
+        CancellationTokenSource? previous;
+        lock (_keepAliveGate)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            previous = _keepAliveCancellation;
+            _keepAliveCancellation = cancellation;
+            _keepAliveTask = MonitorLivenessAsync(cancellation, effectiveInterval, effectiveTimeout, maxMissed);
+        }
+        previous?.Cancel();
+    }
+
+    public void StopKeepAlive()
+    {
+        CancellationTokenSource? cancellation;
+        lock (_keepAliveGate)
+        {
+            cancellation = _keepAliveCancellation;
+            _keepAliveCancellation = null;
+            _keepAliveTask = null;
+        }
+        cancellation?.Cancel();
+    }
+
+    private async Task MonitorLivenessAsync(
+        CancellationTokenSource cancellation,
+        TimeSpan interval,
+        TimeSpan probeTimeout,
+        int maxMissed)
+    {
+        var missed = 0;
+        try
+        {
+            while (!cancellation.IsCancellationRequested)
+            {
+                await Task.Delay(interval, cancellation.Token).ConfigureAwait(false);
+                if (await ProbeLivenessAsync(probeTimeout, cancellation.Token).ConfigureAwait(false))
+                {
+                    missed = 0;
+                    continue;
+                }
+
+                missed += 1;
+                if (missed < maxMissed) continue;
+
+                // En svart-hålad TCP-session kan fortfarande se "connected" ut
+                // lokalt. Stäng därför aktivt när svarsbärande sonder har uteblivit
+                // flera gånger i följd. Dispose är idempotent och Shell.Closed
+                // fortsätter vara UI:ts enda etablerade stängningssignal.
+                Dispose();
+                return;
+            }
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            // normal StopKeepAlive/Dispose
+        }
+        finally
+        {
+            lock (_keepAliveGate)
+            {
+                if (ReferenceEquals(_keepAliveCancellation, cancellation))
+                {
+                    _keepAliveCancellation = null;
+                    _keepAliveTask = null;
+                }
+            }
+            cancellation.Dispose();
+        }
+    }
+
+    private async Task<bool> ProbeLivenessAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        if (!_client.IsConnected) return false;
+
+        try
+        {
+            using var command = _client.CreateCommand("true");
+            command.CommandTimeout = timeout;
+            await command.ExecuteAsync(cancellationToken).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (SshConnectionException)
+        {
+            return false;
+        }
+        catch (SshOperationTimeoutException)
+        {
+            return false;
+        }
+        catch
+        {
+            // Ett omedelbart protokoll-/exec-avslag är också ett svar från en
+            // levande server. Räkna inte lokala policy-/kommandofel som nätverksdöd.
+            return true;
         }
     }
 
@@ -146,8 +279,25 @@ public sealed class SshSession : IDisposable
 
     public void Dispose()
     {
-        Shell.Dispose();
-        _client.Disconnect();
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+
+        StopKeepAlive();
+        try
+        {
+            Shell.Dispose();
+        }
+        catch
+        {
+            // Sessionen kan redan ha dött; städning ska vara idempotent.
+        }
+        try
+        {
+            if (_client.IsConnected) _client.Disconnect();
+        }
+        catch
+        {
+            // Samma princip: en redan bruten transport får inte stoppa Dispose.
+        }
         _client.Dispose();
     }
 }
