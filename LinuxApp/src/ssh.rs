@@ -30,8 +30,7 @@ use crate::known_hosts::{KnownHosts, Verdict};
 use russh::client::Msg;
 use russh::client::{self, Handle};
 use russh::keys::agent::client::AgentClient;
-use russh::keys::ssh_key::PublicKey;
-use russh::keys::{PrivateKeyWithHashAlg, PublicKeyBase64, load_secret_key};
+use russh::keys::{PrivateKeyWithHashAlg, PublicKeyBase64, PublicKeyOrCertificate, load_secret_key};
 use russh::{Channel, ChannelMsg};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -186,7 +185,14 @@ impl client::Handler for ClientHandler {
         Ok(())
     }
 
-    async fn check_server_key(&mut self, server_public_key: &PublicKey) -> Result<bool, Self::Error> {
+    async fn check_server_key(
+        &mut self,
+        server_public_key: &PublicKeyOrCertificate,
+    ) -> Result<bool, Self::Error> {
+        if server_public_key.certificate().is_some() {
+            return Ok(false);
+        }
+        let server_public_key = server_public_key.public_key();
         let key_string = format!(
             "{} {}",
             server_public_key.algorithm().as_str(),
