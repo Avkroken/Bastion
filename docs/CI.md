@@ -17,12 +17,12 @@ När den här ändringens ruleset är importerat får `main` endast uppdateras n
 - `CI / apple`
 - `scope-policy`
 - `scan-pr / osv-scan`
-- native commit-status `CodeRabbit`
+- CodeRabbits kanoniska review-progress för exakt aktuell HEAD
 - GitHubs Code Scanning merge protection för CodeQL
 
 De fem `CI / …`-jobben är stabila aggregate-gates. De kör alltid. Ett internt plattformsjobb får vara `skipped` när impact-routern uttryckligen bedömer plattformen som opåverkad; aggregate-jobbet blir då success. Om impact-jobbet eller en relevant build/test misslyckas måste motsvarande aggregate-gate misslyckas.
 
-`CodeRabbit` ska vara `pending` under review och `success` först när reviewn av aktuell HEAD är klar. Copilot Code Review är rådgivande och ska köras om efter push, men är inte en mergegate eftersom tillgänglighet och quota inte är deterministiska.
+CodeRabbit ska använda `review_progress: true`, `fail_commit_status: true`, incremental review efter varje push och `auto_pause_after_reviewed_commits: 0`. Merge får endast ske när CodeRabbit har avslutat review av exakt aktuell HEAD. Legacy commit-status får inte användas som mergebevis eftersom rate limiting kan rapporteras som `success`. Queued, in-progress, rate-limited, failure, saknad review eller review av en äldre HEAD blockerar. Copilot Code Review är rådgivande och ska köras om efter push, men är inte en mergegate eftersom tillgänglighet och quota inte är deterministiska.
 
 CodeQL ska inte hanteras som en vanlig statuscheck-lista. Rulesetets Code Scanning-regel ska blockera medan analys saknas/pågår och vid fynd över den valda tröskeln.
 
