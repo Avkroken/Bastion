@@ -14,7 +14,7 @@ Innan implementation: läs relevant kod, tester, konfiguration och dokumentation
 
 - Pusha aldrig direkt till `main`.
 - Skapa en kortlivad arbetsgren för varje logisk ändring och öppna en ready PR mot `main` efter pre-PR-granskning.
-- Aktivera auto-merge först när live-rulesetet faktiskt motsvarar mergekontraktet nedan. Om ruleset-migration pågår ska PR:n lämnas öppen tills den nya policyn är aktiv och verifierad.
+- Aktivera auto-merge först när live-rulesetet faktiskt motsvarar mergekontraktet nedan och den aktuella PR-HEAD:en uppfyller samtliga obligatoriska gates.
 - Direkt merge får endast användas om repositoryägaren uttryckligen begär det.
 - Squash är enda tillåtna merge-metod.
 - Repositoryt använder inte merge queue.
@@ -24,7 +24,9 @@ De befintliga `platform/*`- och `core/swift`-brancherna har specialscope i `.git
 
 ## Merge-gates och review
 
-För `main` ska följande vara verifierat på senaste PR-HEAD när det nya rulesetet är aktivt:
+Live-rulesetet `main-protection` gäller default branch och ska vara den enda aktiva repository-regeln för `main`. Det har inga bypass-aktörer, blockerar deletion och force push samt kräver PR med squash merge, 0 generella approvals, ingen last-push-approval och lösta review-trådar.
+
+Följande status checks är obligatoriska på senaste PR-HEAD:
 
 - `CI / android`
 - `CI / windows`
@@ -33,13 +35,14 @@ För `main` ska följande vara verifierat på senaste PR-HEAD när det nya rules
 - `CI / apple`
 - `scope-policy`
 - `scan-pr / osv-scan`
-- CodeRabbits kanoniska review-progress för exakt aktuell HEAD
-- Code Scanning merge protection för CodeQL
-- lösta review-trådar
+
+Required-status-policyn är strict: PR:n måste vara verifierad mot senaste `main` innan merge.
 
 De fem `CI / …`-jobben är stabila aggregate-gates. Interna plattformsjobb får vara `skipped` endast när impact-routern uttryckligen bedömer plattformen som opåverkad; aggregate-jobbet ska då verifiera detta och bli success. Om impact-jobbet eller relevant build/test misslyckas ska aggregate-gaten misslyckas.
 
-CodeRabbit är merge-reviewgaten. `.coderabbit.yaml` ska använda `review_progress: true`, `fail_commit_status: true`, incremental review på varje push och ingen automatisk paus. Legacy-läget med `review_progress: false` och `commit_status: true` får inte användas som mergebevis eftersom `success` kan publiceras när reviewn rate-limitats. Queued, in-progress, rate-limited, failure, saknad review eller review av en äldre HEAD blockerar merge. Copilot Code Review är rådgivande, ska köras om efter push, men är inte hard gate eftersom quota/tillgänglighet inte är deterministisk.
+CodeQL skyddas av rulesetets Code Scanning-regel med `errors_and_warnings` för vanliga alerts och `medium_or_higher` för security alerts. Copilot Code Review är rådgivande, har `review_on_push: true` och är inte hard gate eftersom quota/tillgänglighet inte är deterministisk.
+
+CodeRabbit är best-effort och är inte en required status check. `.coderabbit.yaml` ska använda `review_progress: true`, `fail_commit_status: true`, incremental review på varje push och ingen automatisk paus så att review-signalen förblir användbar. Saknad, väntande, rate-limitad eller otillgänglig CodeRabbit-review blockerar inte ensam merge. Faktiska CodeRabbit-findings ska däremot utvärderas, relevanta fixes göras och berörda review-trådar lösas enligt samma thread-resolution-krav som övrig review.
 
 Required checks och olösta review-trådar är merge-blockerare. Alla review-kommentarer ska läsas och utvärderas; relevanta findings åtgärdas i samma PR. En tråd markeras resolved först när eventuell nödvändig fix är pushad och verifierad.
 
@@ -51,7 +54,7 @@ Efter varje ny commit eller push ska aktuell HEAD, required checks, mergeability
 
 Den tidigare `.github/workflows/required-ci.yml` är avsiktligt borttagen. Dess `CI / required` syntaxkontrollerade endast impact-scriptet och var inte ett verkligt aggregate-bevis för plattforms-CI.
 
-`.github/workflows/osv-scanner.yml`, paketerings-, release-, security- och deploy-workflows som inte uttryckligen listas som merge-gates ovan är kompletterande verifiering. CodeQL ska säkras genom rulesetets Code Scanning merge protection, inte genom en skör lista av dynamiska analysjobb.
+Paketerings-, release-, security- och deploy-workflows som inte uttryckligen listas som merge-gates ovan är kompletterande verifiering. OSV är däremot obligatoriskt via `scan-pr / osv-scan`, och CodeQL säkras genom rulesetets Code Scanning merge protection i stället för genom en skör lista av dynamiska analysjobb.
 
 ## Pre-PR quality gate
 
