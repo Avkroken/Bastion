@@ -15,7 +15,7 @@ internal sealed class BlackholeTcpProxy : IDisposable
     private readonly int _targetPort;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly CancellationTokenSource _forwarding = new();
-    private readonly TaskCompletionSource _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource<bool> _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private TcpClient? _clientSide;
     private TcpClient? _serverSide;
     private int _disposed;
@@ -46,7 +46,7 @@ internal sealed class BlackholeTcpProxy : IDisposable
             _clientSide = await _listener.AcceptTcpClientAsync(_lifetime.Token);
             _serverSide = new TcpClient();
             await _serverSide.ConnectAsync(IPAddress.Loopback, _targetPort, _lifetime.Token);
-            _ready.TrySetResult();
+            _ready.TrySetResult(true);
 
             await Task.WhenAll(
                 ForwardAsync(_clientSide.GetStream(), _serverSide.GetStream(), _forwarding.Token),
