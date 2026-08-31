@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+# Behåll organisationens CodeRabbit-inställningar men gör merge-signalen explicit
+# och fail-closed för detta repository.
+inheritance: true
+
+reviews:
+  commit_status: true
+  fail_commit_status: true
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
