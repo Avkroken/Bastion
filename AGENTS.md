@@ -33,13 +33,13 @@ För `main` ska följande vara verifierat på senaste PR-HEAD när det nya rules
 - `CI / apple`
 - `scope-policy`
 - `scan-pr / osv-scan`
-- native `CodeRabbit` commit-status
+- CodeRabbits kanoniska review-progress för exakt aktuell HEAD
 - Code Scanning merge protection för CodeQL
 - lösta review-trådar
 
 De fem `CI / …`-jobben är stabila aggregate-gates. Interna plattformsjobb får vara `skipped` endast när impact-routern uttryckligen bedömer plattformen som opåverkad; aggregate-jobbet ska då verifiera detta och bli success. Om impact-jobbet eller relevant build/test misslyckas ska aggregate-gaten misslyckas.
 
-`CodeRabbit` är merge-reviewgaten: `pending` under review och `success` först när aktuell HEAD är färdiggranskad. En ny push ska starta incremental review igen. Copilot Code Review är rådgivande, ska köras om efter push, men är inte hard gate eftersom quota/tillgänglighet inte är deterministisk.
+CodeRabbit är merge-reviewgaten. `.coderabbit.yaml` ska använda `review_progress: true`, `fail_commit_status: true`, incremental review på varje push och ingen automatisk paus. Legacy-läget med `review_progress: false` och `commit_status: true` får inte användas som mergebevis eftersom `success` kan publiceras när reviewn rate-limitats. Queued, in-progress, rate-limited, failure, saknad review eller review av en äldre HEAD blockerar merge. Copilot Code Review är rådgivande, ska köras om efter push, men är inte hard gate eftersom quota/tillgänglighet inte är deterministisk.
 
 Required checks och olösta review-trådar är merge-blockerare. Alla review-kommentarer ska läsas och utvärderas; relevanta findings åtgärdas i samma PR. En tråd markeras resolved först när eventuell nödvändig fix är pushad och verifierad.
 
