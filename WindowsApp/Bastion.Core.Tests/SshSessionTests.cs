@@ -180,4 +180,34 @@ public class SshSessionStandaloneTests
         var output = SshSession.RunCommand(host, null, knownHosts, "echo bastion-run-command-ok");
         Assert.Equal("bastion-run-command-ok", output.Trim());
     }
+
+    [Fact]
+    public void KeepAliveDetectsASilentBlackholedConnection()
+    {
+        using var sshd = TestSshd.Start();
+        if (sshd is null) return;
+        using var proxy = BlackholeTcpProxy.Start(sshd.Port);
+
+        var host = BuildHost(sshd);
+        host.Port = proxy.Port;
+        var knownHosts = new KnownHosts(null);
+        using var session = SshSession.Connect(host, null, knownHosts);
+        using var closed = new ManualResetEventSlim(false);
+        session.Shell.Closed += (_, _) => closed.Set();
+
+        // Först flera lyckade sonder mot en levande server: ingen falsk positiv.
+        session.StartKeepAlive(
+            interval: TimeSpan.FromMilliseconds(50),
+            probeTimeout: TimeSpan.FromMilliseconds(500),
+            maxMissed: 2);
+        Thread.Sleep(250);
+        Assert.False(closed.IsSet, "en levande SSH-session markerades felaktigt som död");
+
+        // Sluta vidarebefordra trafik men håll TCP-socketarna öppna. Det här
+        // är exakt fallet där IsConnected/SSH_MSG_IGNORE inte räcker.
+        proxy.Blackhole();
+        Assert.True(
+            closed.Wait(TimeSpan.FromSeconds(5)),
+            "sessionen stängdes inte när två svarsbärande sonder timeoutade över en svart-hålad TCP-anslutning");
+    }
 }
