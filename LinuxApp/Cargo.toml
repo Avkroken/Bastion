@@ -33,7 +33,7 @@ adw = { version = "0.9", package = "libadwaita", features = ["v1_5"] }
 # beroendeträdet helt. `flate2` och `aws-lc-rs` är de övriga två
 # default-featuresen och måste därför återaktiveras uttryckligen.
 # Slå på `rsa` igen när advisoryn har en fix — se docs/RSA-INAKTIVERAT.md.
-russh = { version = "0.62", default-features = false, features = ["flate2", "aws-lc-rs"] }
+russh = { version = "0.63", default-features = false, features = ["flate2", "aws-lc-rs"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
