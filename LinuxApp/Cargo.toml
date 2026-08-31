@@ -55,7 +55,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # utan C-beroenden, och `flate2` fanns redan i trädet via reqwest.
 tar = "0.4"
 flate2 = "1"
-quick-xml = "0.41"
+quick-xml = "0.42"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 libc = "0.2"
 # Syntax highlighting i SFTP-editorn. Inga versionsfeatures (`v5_10`,

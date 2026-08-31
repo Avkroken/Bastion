@@ -511,7 +511,7 @@ fn ref_text(e: &quick_xml::events::BytesRef) -> String {
     if let Ok(Some(c)) = e.resolve_char_ref() {
         return c.to_string();
     }
-    match e.decode().unwrap_or_default().as_ref() {
+    match &**e {
         "amp" => "&",
         "lt" => "<",
         "gt" => ">",
@@ -537,7 +537,7 @@ pub fn parse_buckets(data: &[u8]) -> Vec<S3Bucket> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                current_tag = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+                current_tag = e.local_name().into_inner().to_owned();
                 if current_tag == "Bucket" {
                     in_bucket = true;
                     name = None;
@@ -545,7 +545,7 @@ pub fn parse_buckets(data: &[u8]) -> Vec<S3Bucket> {
                 }
             }
             Ok(Event::Text(e)) if in_bucket => {
-                let text = e.xml10_content().map(|s| s.into_owned()).unwrap_or_default();
+                let text = e.xml10_content().into_owned();
                 match current_tag.as_str() {
                     "Name" => name = Some(name.unwrap_or_default() + &text),
                     "CreationDate" => date = Some(date.unwrap_or_default() + &text),
@@ -562,7 +562,7 @@ pub fn parse_buckets(data: &[u8]) -> Vec<S3Bucket> {
             }
             Ok(Event::End(e)) => {
                 current_tag.clear();
-                if e.local_name().as_ref() == b"Bucket" {
+                if e.local_name().into_inner() == "Bucket" {
                     if let Some(n) = name.take() {
                         buckets.push(S3Bucket {
                             name: n.trim().to_string(),
@@ -596,7 +596,7 @@ pub fn parse_objects(data: &[u8]) -> Vec<S3Object> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                current_tag = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+                current_tag = e.local_name().into_inner().to_owned();
                 if current_tag == "Contents" {
                     in_contents = true;
                     key = None;
@@ -605,7 +605,7 @@ pub fn parse_objects(data: &[u8]) -> Vec<S3Object> {
                 }
             }
             Ok(Event::Text(e)) if in_contents => {
-                let text = e.xml10_content().map(|s| s.into_owned()).unwrap_or_default();
+                let text = e.xml10_content().into_owned();
                 match current_tag.as_str() {
                     "Key" => key = Some(key.unwrap_or_default() + &text),
                     "Size" => size = Some(size.unwrap_or_default() + &text),
@@ -624,7 +624,7 @@ pub fn parse_objects(data: &[u8]) -> Vec<S3Object> {
             }
             Ok(Event::End(e)) => {
                 current_tag.clear();
-                if e.local_name().as_ref() == b"Contents" {
+                if e.local_name().into_inner() == "Contents" {
                     if let Some(k) = key.take() {
                         objects.push(S3Object {
                             key: k.trim().to_string(),
@@ -659,10 +659,10 @@ pub fn parse_error(data: &[u8]) -> (String, String) {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                current_tag = String::from_utf8_lossy(e.local_name().as_ref()).into_owned();
+                current_tag = e.local_name().into_inner().to_owned();
             }
             Ok(Event::Text(e)) => {
-                let text = e.xml10_content().map(|s| s.into_owned()).unwrap_or_default();
+                let text = e.xml10_content().into_owned();
                 match current_tag.as_str() {
                     "Code" => code.push_str(&text),
                     "Message" => message.push_str(&text),
