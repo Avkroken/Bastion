@@ -2,13 +2,15 @@
 
 ## Branchmodell
 
-`main` är den enda långlivade arbetsgrenen. Varje ändring görs på en kortlivad branch och går via PR till `main`. Auto-merge får aktiveras först när det aktiva rulesetet motsvarar mergekontraktet nedan. **Squash merge är den enda tillåtna merge-metoden.** Head-branchen raderas automatiskt efter merge.
+`main` är den enda långlivade arbetsgrenen. Varje ändring görs på en kortlivad branch och går via PR till `main`. Auto-merge får aktiveras först när det aktiva rulesetet motsvarar mergekontraktet nedan och aktuell PR-HEAD uppfyller samtliga obligatoriska gates. **Squash merge är den enda tillåtna merge-metoden.** Head-branchen raderas automatiskt efter merge.
 
 CI körs på PR mot `main` och, där efter-merge-verifiering eller publicering behövs, på push till `main`. Kortlivade arbetsbrancher behöver ingen separat push-CI när samma commit redan verifieras av PR-eventet.
 
 ## Mergekontrakt
 
-När den här ändringens ruleset är importerat får `main` endast uppdateras när senaste PR-HEAD har verifierats av:
+Det aktiva repository-rulesetet `main-protection` gäller default branch. Det har inga bypass-aktörer, blockerar deletion och force push samt kräver PR med squash merge, 0 generella approvals, ingen last-push-approval och lösta review-trådar.
+
+Följande status checks är obligatoriska på senaste PR-HEAD:
 
 - `CI / android`
 - `CI / windows`
@@ -17,14 +19,16 @@ När den här ändringens ruleset är importerat får `main` endast uppdateras n
 - `CI / apple`
 - `scope-policy`
 - `scan-pr / osv-scan`
-- CodeRabbits kanoniska review-progress för exakt aktuell HEAD
-- GitHubs Code Scanning merge protection för CodeQL
+
+Required-status-policyn är strict, vilket innebär att PR:n måste vara verifierad mot senaste `main` innan merge.
 
 De fem `CI / …`-jobben är stabila aggregate-gates. De kör alltid. Ett internt plattformsjobb får vara `skipped` när impact-routern uttryckligen bedömer plattformen som opåverkad; aggregate-jobbet blir då success. Om impact-jobbet eller en relevant build/test misslyckas måste motsvarande aggregate-gate misslyckas.
 
-CodeRabbit ska använda `review_progress: true`, `fail_commit_status: true`, incremental review efter varje push och `auto_pause_after_reviewed_commits: 0`. Merge får endast ske när CodeRabbit har avslutat review av exakt aktuell HEAD. Legacy commit-status får inte användas som mergebevis eftersom rate limiting kan rapporteras som `success`. Queued, in-progress, rate-limited, failure, saknad review eller review av en äldre HEAD blockerar. Copilot Code Review är rådgivande och ska köras om efter push, men är inte en mergegate eftersom tillgänglighet och quota inte är deterministiska.
+CodeQL hanteras av rulesetets Code Scanning merge protection, inte som en vanlig required status check. Tröskeln är `errors_and_warnings` för vanliga alerts och `medium_or_higher` för security alerts.
 
-CodeQL ska inte hanteras som en vanlig statuscheck-lista. Rulesetets Code Scanning-regel ska blockera medan analys saknas/pågår och vid fynd över den valda tröskeln.
+Copilot Code Review är rådgivande, har `review_on_push: true` och är inte en mergegate eftersom tillgänglighet och quota inte är deterministiska.
+
+CodeRabbit är best-effort och är inte en required status check. Konfigurationen använder `review_progress: true`, `fail_commit_status: true`, incremental review efter varje push och `auto_pause_after_reviewed_commits: 0`. Saknad, väntande, rate-limitad eller otillgänglig CodeRabbit-review blockerar inte ensam merge. Faktiska findings ska däremot utvärderas och relevanta review-trådar måste lösas innan merge.
 
 ## Impact-routing
 
