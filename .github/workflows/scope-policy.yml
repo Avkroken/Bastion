@@ -9,7 +9,9 @@ permissions:
 
 jobs:
   scope-policy:
+    name: scope-policy
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -31,6 +33,15 @@ jobs:
             core/swift) allowed='^(Sources/SSHCore/|Tests/SSHCoreTests/|Package\.swift$|Package\.resolved$)' ;;
             *) exit 0 ;;
           esac
+
+          [[ -n "$BASE_SHA" && -n "$HEAD_SHA" ]] || { echo "::error::Missing PR commit SHA."; exit 1; }
+          git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || { echo "::error::Invalid base SHA."; exit 1; }
+          git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null || { echo "::error::Invalid head SHA."; exit 1; }
+
+          changed="$RUNNER_TEMP/scope-changed-files.txt"
+          git diff --no-renames --name-only --diff-filter=ACMRDTUXB "$BASE_SHA" "$HEAD_SHA" > "$changed"
+          [[ -s "$changed" ]] || { echo "::error::Empty scoped PR diff."; exit 1; }
+
           while IFS= read -r file; do
             [[ "$file" =~ $allowed ]] || { echo "::error::$file is outside $HEAD_REF scope"; exit 1; }
-          done < <(git diff --no-renames --name-only "$BASE_SHA" "$HEAD_SHA")
+          done < "$changed"
