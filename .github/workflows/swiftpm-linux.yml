@@ -1,72 +1,26 @@
-name: SwiftPM-Linux-bygge
+name: Swift Linux
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
   workflow_dispatch:
-
-concurrency:
-  group: swiftpm-linux-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  impact:
-    runs-on: ubuntu-latest
-    outputs:
-      swift_core: ${{ steps.impact.outputs.swift_core }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Bestäm CI-påverkan
-        id: impact
-        env:
-          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-        run: bash .github/scripts/ci-impact.sh
-
-  swiftpm-linux:
-    needs: impact
-    if: ${{ needs.impact.outputs.swift_core == 'true' }}
+  swift-linux:
+    name: CI / swift-linux
     runs-on: ubuntu-latest
     container: swift:6.1-noble
-    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Visa Swift-version
-        run: swift --version
-      - name: Installera zip/unzip (för ArchiveOperationsTests)
-        run: |
+      - run: |
           apt-get update -qq
           apt-get install -y -qq zip unzip
-      - name: swift build (SSHCore + bastion-cli)
-        run: swift build
-      - name: swift test (SSHCore)
-        run: swift test
-
-  required:
-    name: CI / swift-linux
-    if: ${{ always() }}
-    needs: [impact, swiftpm-linux]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Kontrollera Swift/Linux-CI
-        env:
-          IMPACT_RESULT: ${{ needs.impact.result }}
-          SWIFT_IMPACT: ${{ needs.impact.outputs.swift_core }}
-          BUILD_RESULT: ${{ needs.swiftpm-linux.result }}
-        run: |
-          test "$IMPACT_RESULT" = "success"
-          if [ "$SWIFT_IMPACT" != "true" ]; then
-            echo "Swift-kärnan är inte påverkad."
-            exit 0
-          fi
-          test "$BUILD_RESULT" = "success"
+          swift build
+          swift test
