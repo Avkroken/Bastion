@@ -1,3 +1,4 @@
+using System.Net.Sockets;
 using Renci.SshNet;
 using Renci.SshNet.Common;
 
@@ -21,10 +22,15 @@ public sealed class SshSession : IDisposable
     private static readonly TimeSpan DefaultKeepAliveInterval = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan DefaultProbeTimeout = TimeSpan.FromSeconds(10);
 
+    private sealed class KeepAliveMonitor
+    {
+        public CancellationTokenSource Cancellation { get; } = new();
+    }
+
     private readonly SshClient _client;
     private readonly object _keepAliveGate = new();
-    private CancellationTokenSource? _keepAliveCancellation;
-    private Task? _keepAliveTask;
+    private readonly object _probeGate = new();
+    private KeepAliveMonitor? _keepAliveMonitor;
     private int _disposed;
 
     public ShellStream Shell { get; }
@@ -74,9 +80,9 @@ public sealed class SshSession : IDisposable
     /// Startar död-detektering för den befintliga SSH-sessionen. SSH.NETs
     /// inbyggda <c>KeepAliveInterval</c> skickar bara SSH_MSG_IGNORE och kan
     /// därför hålla NAT/brandväggar varma men inte bevisa att motparten svarar.
-    /// Här öppnas i stället en kort exec-kanal på SAMMA SSH-transport. Ett
-    /// färdigt kommando — även med felaktig exitkod — eller ett protokollsvar
-    /// som nekar exec bevisar liv. Endast timeout/transportfel räknas som en
+    /// Sonden använder i stället SSH.NETs kanal-request
+    /// <c>keepalive@openssh.com</c>, som kräver success/failure-svar men inte
+    /// startar något fjärrkommando. Endast timeout/transportfel räknas som en
     /// missad sond. Efter <paramref name="maxMissed"/> missar stängs sessionen,
     /// vilket får <see cref="ShellStream.Closed"/> att signalera befintlig UI-kod.
     /// </summary>
@@ -91,43 +97,57 @@ public sealed class SshSession : IDisposable
         if (effectiveTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(probeTimeout));
         if (maxMissed <= 0) throw new ArgumentOutOfRangeException(nameof(maxMissed));
 
-        var cancellation = new CancellationTokenSource();
-        CancellationTokenSource? previous;
+        // Validera SSH.NET-kontraktet synkront. En framtida biblioteksversion
+        // som flyttar den interna kanalmetoden ska ge ett tydligt fel här, inte
+        // en bakgrundstask som tyst slutar bevaka sessionen.
+        SshNetChannelLivenessProbe.ValidateContract();
+
+        var monitor = new KeepAliveMonitor();
+        KeepAliveMonitor? previous;
         lock (_keepAliveGate)
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-            previous = _keepAliveCancellation;
-            _keepAliveCancellation = cancellation;
-            _keepAliveTask = MonitorLivenessAsync(cancellation, effectiveInterval, effectiveTimeout, maxMissed);
+            previous = _keepAliveMonitor;
+            _keepAliveMonitor = monitor;
+            _ = MonitorLivenessAsync(monitor, effectiveInterval, effectiveTimeout, maxMissed);
         }
-        previous?.Cancel();
+        previous?.Cancellation.Cancel();
     }
 
     public void StopKeepAlive()
     {
-        CancellationTokenSource? cancellation;
+        KeepAliveMonitor? monitor;
         lock (_keepAliveGate)
         {
-            cancellation = _keepAliveCancellation;
-            _keepAliveCancellation = null;
-            _keepAliveTask = null;
+            monitor = _keepAliveMonitor;
+            _keepAliveMonitor = null;
         }
-        cancellation?.Cancel();
+        monitor?.Cancellation.Cancel();
     }
 
     private async Task MonitorLivenessAsync(
-        CancellationTokenSource cancellation,
+        KeepAliveMonitor monitor,
         TimeSpan interval,
         TimeSpan probeTimeout,
         int maxMissed)
     {
+        var cancellation = monitor.Cancellation;
         var missed = 0;
         try
         {
             while (!cancellation.IsCancellationRequested)
             {
                 await Task.Delay(interval, cancellation.Token).ConfigureAwait(false);
-                if (await ProbeLivenessAsync(probeTimeout, cancellation.Token).ConfigureAwait(false))
+
+                bool alive;
+                lock (_probeGate)
+                {
+                    if (cancellation.IsCancellationRequested) return;
+                    alive = ProbeLiveness(probeTimeout);
+                }
+                if (cancellation.IsCancellationRequested) return;
+
+                if (alive)
                 {
                     missed = 0;
                     continue;
@@ -136,10 +156,18 @@ public sealed class SshSession : IDisposable
                 missed += 1;
                 if (missed < maxMissed) continue;
 
-                // En svart-hålad TCP-session kan fortfarande se "connected" ut
-                // lokalt. Stäng därför aktivt när svarsbärande sonder har uteblivit
-                // flera gånger i följd. Dispose är idempotent och Shell.Closed
-                // fortsätter vara UI:ts enda etablerade stängningssignal.
+                // Claim ownership under samma lås som Stop/Start använder.
+                // Om keepalive hann stoppas eller ersättas får en gammal monitor
+                // aldrig stänga den nuvarande sessionen efteråt.
+                lock (_keepAliveGate)
+                {
+                    if (!ReferenceEquals(_keepAliveMonitor, monitor) || cancellation.IsCancellationRequested)
+                    {
+                        return;
+                    }
+                    _keepAliveMonitor = null;
+                }
+
                 Dispose();
                 return;
             }
@@ -152,30 +180,36 @@ public sealed class SshSession : IDisposable
         {
             lock (_keepAliveGate)
             {
-                if (ReferenceEquals(_keepAliveCancellation, cancellation))
+                if (ReferenceEquals(_keepAliveMonitor, monitor))
                 {
-                    _keepAliveCancellation = null;
-                    _keepAliveTask = null;
+                    _keepAliveMonitor = null;
                 }
             }
             cancellation.Dispose();
         }
     }
 
-    private async Task<bool> ProbeLivenessAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    private bool ProbeLiveness(TimeSpan timeout)
     {
-        if (!_client.IsConnected) return false;
-
         try
         {
-            using var command = _client.CreateCommand("true");
-            command.CommandTimeout = timeout;
-            await command.ExecuteAsync(cancellationToken).ConfigureAwait(false);
-            return true;
+            if (!_client.IsConnected) return false;
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (ObjectDisposedException)
         {
-            throw;
+            return false;
+        }
+
+        var connectionInfo = _client.ConnectionInfo;
+        var previousTimeout = connectionInfo.Timeout;
+        try
+        {
+            // ChannelSession.WaitOnHandle använder ConnectionInfo.Timeout.
+            // WindowsApp använder denna SshClient endast för den interaktiva
+            // shell-kanalen; engångskommandon/SFTP har egna klienter.
+            connectionInfo.Timeout = timeout;
+            SshNetChannelLivenessProbe.SendAndWaitForReply(Shell);
+            return true; // success ELLER failure är ett svar och bevisar liv.
         }
         catch (SshConnectionException)
         {
@@ -185,11 +219,17 @@ public sealed class SshSession : IDisposable
         {
             return false;
         }
-        catch
+        catch (SocketException)
         {
-            // Ett omedelbart protokoll-/exec-avslag är också ett svar från en
-            // levande server. Räkna inte lokala policy-/kommandofel som nätverksdöd.
-            return true;
+            return false;
+        }
+        catch (ObjectDisposedException)
+        {
+            return false;
+        }
+        finally
+        {
+            connectionInfo.Timeout = previousTimeout;
         }
     }
 
@@ -286,17 +326,34 @@ public sealed class SshSession : IDisposable
         {
             Shell.Dispose();
         }
-        catch
+        catch (ObjectDisposedException)
         {
-            // Sessionen kan redan ha dött; städning ska vara idempotent.
+            // Sessionen kan redan ha städats via fjärrstängning.
         }
+        catch (SshConnectionException)
+        {
+            // En död transport får inte stoppa lokal städning.
+        }
+        catch (SocketException)
+        {
+            // Samma transportfall på socketnivå.
+        }
+
         try
         {
             if (_client.IsConnected) _client.Disconnect();
         }
-        catch
+        catch (ObjectDisposedException)
         {
-            // Samma princip: en redan bruten transport får inte stoppa Dispose.
+            // Redan städad av en parallell fjärrstängning.
+        }
+        catch (SshConnectionException)
+        {
+            // Transporten är redan bruten; Dispose nedan släpper resurserna.
+        }
+        catch (SocketException)
+        {
+            // Transporten är redan bruten på socketnivå.
         }
         _client.Dispose();
     }
