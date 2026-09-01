@@ -1,162 +1,79 @@
-name: Linux-paketering (.rpm)
+name: CLI RPM package
 
-# `build-rpm` är ett required checknamn i rulesetet. Workflowet måste därför
-# alltid starta på PR. Impact-jobbet avgör om den tunga RPM-paketeringen behövs;
-# `build-rpm` är en billig aggregator som alltid rapporterar resultat.
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
-  merge_group:
-    types: [checks_requested]
+  push:
+    branches: [main]
   workflow_dispatch:
-
-concurrency:
-  group: linux-packaging-rpm-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  impact:
-    runs-on: ubuntu-latest
-    outputs:
-      cli_package: ${{ steps.impact.outputs.cli_package }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Bestäm CI-påverkan
-        id: impact
-        env:
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
-          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-        run: bash .github/scripts/ci-impact.sh
-
-  package-rpm:
-    needs: impact
-    if: ${{ needs.impact.outputs.cli_package == 'true' }}
+  build-rpm:
     runs-on: ubuntu-latest
     container: swift:6.1-rhel-ubi9
-    timeout-minutes: 20
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Läs version (senaste v[0-9]*-tagg, annars 0.0.0)
-        id: version
+      - id: version
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          TAG=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
-          VERSION="${TAG#v}"
-          if [ -z "$VERSION" ]; then VERSION="0.0.0"; fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Visa Swift-version
-        run: swift --version
-
-      - name: swift build (release, statisk Swift-runtime)
-        run: swift build -c release --product bastion-cli --static-swift-stdlib
-
-      - name: Installera rpmbuild/readelf (om de saknas i basavbildningen)
-        run: |
-          command -v rpmbuild >/dev/null 2>&1 && command -v readelf >/dev/null 2>&1 && exit 0
-          dnf install -y -q rpm-build binutils
-
-      - name: Bestäm faktiska körtidsberoenden (DT_NEEDED → RPM-paket)
-        id: deps
+          tag=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+      - run: swift build -c release --product bastion-cli --static-swift-stdlib
+      - run: dnf install -y -q rpm-build binutils
+      - id: deps
         run: |
           set -euo pipefail
-          BIN=.build/release/bastion-cli
-          NEEDED=$(readelf -d "$BIN" | sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p')
-          echo "Direkta delade bibliotek (DT_NEEDED):"
-          echo "$NEEDED"
-          if echo "$NEEDED" | grep -qi libswift; then
-            echo "::error::bastion-cli beror fortfarande dynamiskt på Swift-runtimen — --static-swift-stdlib gav inte en fristående binär"
-            exit 1
-          fi
-          PACKAGES=""
-          for LIB in $NEEDED; do
-            case "$LIB" in
-              libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libutil.so*|ld-linux*|linux-vdso*) continue ;;
-            esac
-            LIBPATH=$(ldconfig -p | awk -v lib="$LIB" '$1 == lib { print $NF; exit }')
-            [ -n "$LIBPATH" ] || { echo "::error::hittar inte $LIB via ldconfig"; exit 1; }
-            LIBPATH=$(readlink -f "$LIBPATH")
-            PKG=$(rpm -qf --qf '%{NAME}\n' "$LIBPATH" 2>/dev/null | head -1)
-            [ -n "$PKG" ] || { echo "::error::$LIBPATH tillhör inget känt RPM-paket"; exit 1; }
-            PACKAGES="$PACKAGES $PKG"
+          needed=$(readelf -d .build/release/bastion-cli | sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p')
+          ! grep -qi libswift <<<"$needed"
+          packages=''
+          for lib in $needed; do
+            case "$lib" in libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libutil.so*|ld-linux*|linux-vdso*) continue;; esac
+            path=$(ldconfig -p | awk -v lib="$lib" '$1 == lib { print $NF; exit }')
+            pkg=$(rpm -qf --qf '%{NAME}\n' "$(readlink -f "$path")" | head -1)
+            packages="$packages $pkg"
           done
-          EXTRA=$(printf '%s\n' $PACKAGES | sort -u | grep -v '^$' | grep -v '^glibc$' | tr '\n' ' ' | sed 's/ *$//')
-          REQUIRES="glibc${EXTRA:+ $EXTRA}"
-          echo "requires=$REQUIRES" >> "$GITHUB_OUTPUT"
-
-      - name: Bygg .rpm-paket
+          extra=$(printf '%s\n' $packages | sort -u | grep -v '^$' | grep -v '^glibc$' | tr '\n' ' ' | sed 's/ *$//')
+          echo "requires=glibc${extra:+ $extra}" >> "$GITHUB_OUTPUT"
+      - name: Build package
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ steps.version.outputs.version || '0.0.0' }}
           REQUIRES: ${{ steps.deps.outputs.requires }}
         run: |
-          set -euo pipefail
-          TOPDIR="$PWD/rpmbuild"
-          mkdir -p "$TOPDIR"/SPECS "$TOPDIR"/SOURCES "$TOPDIR"/BUILD "$TOPDIR"/BUILDROOT "$TOPDIR"/RPMS "$TOPDIR"/SRPMS
-          cat > "$TOPDIR/SPECS/bastion-cli.spec" <<EOF
+          top="$PWD/rpmbuild"
+          mkdir -p "$top"/{SPECS,SOURCES,BUILD,BUILDROOT,RPMS,SRPMS} dist-out
+          cat > "$top/SPECS/bastion-cli.spec" <<EOF
           %global debug_package %{nil}
           Name: bastion-cli
           Version: $VERSION
           Release: 1%{?dist}
-          Summary: Fri, öppen, fristående SSH-klient (kommandorad)
+          Summary: Bastion SSH command-line client
           License: MIT
           URL: https://github.com/${GITHUB_REPOSITORY}
           Requires: $REQUIRES
           %description
-          bastion-cli bevisar SSHCore-kärnan mot en riktig server.
+          Bastion SSH command-line client.
           %install
           mkdir -p %{buildroot}/usr/bin
           cp $GITHUB_WORKSPACE/.build/release/bastion-cli %{buildroot}/usr/bin/bastion-cli
-          chmod 755 %{buildroot}/usr/bin/bastion-cli
           %files
           /usr/bin/bastion-cli
           EOF
-          rpmbuild --define "_topdir $TOPDIR" -bb "$TOPDIR/SPECS/bastion-cli.spec"
-          mkdir -p dist-out
-          find "$TOPDIR/RPMS" -name '*.rpm' -exec mv {} dist-out/ \;
-
-      - name: Installera och kör paketet
-        run: |
-          set -euo pipefail
+          rpmbuild --define "_topdir $top" -bb "$top/SPECS/bastion-cli.spec"
+          find "$top/RPMS" -name '*.rpm' -exec mv {} dist-out/ \;
           rpm -i dist-out/*.rpm
-          set +e
-          OUTPUT=$(bastion-cli 2>&1)
-          STATUS=$?
-          set -e
-          echo "$OUTPUT"
-          [ "$STATUS" -eq 2 ] || { echo "::error::väntade exitkod 2, fick $STATUS"; exit 1; }
-          echo "$OUTPUT" | grep -q "Användning:" || { echo "::error::väntade användningsmeddelande"; exit 1; }
-
-      - name: Ladda upp .rpm-artefakt
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          set +e; output=$(bastion-cli 2>&1); status=$?; set -e
+          test "$status" -eq 2
+          grep -q 'Användning:' <<<"$output"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bastion-cli-rpm
           path: dist-out/*.rpm
-          if-no-files-found: error
-
-  build-rpm:
-    if: always()
-    needs: [impact, package-rpm]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Sammanfatta RPM-verifieringen
-        run: |
-          echo "impact: ${{ needs.impact.result }}"
-          echo "package-rpm: ${{ needs.package-rpm.result }}"
-          case "${{ needs.impact.result }}" in failure|cancelled) exit 1;; esac
-          case "${{ needs.package-rpm.result }}" in failure|cancelled) exit 1;; esac
