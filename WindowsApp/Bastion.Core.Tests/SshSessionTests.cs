@@ -192,26 +192,38 @@ public class SshSessionStandaloneTests
         host.Port = proxy.Port;
         var knownHosts = new KnownHosts(null);
         using var session = SshSession.Connect(host, null, knownHosts);
-        using var closed = new ManualResetEventSlim(false);
-        session.Shell.Closed += (_, _) => closed.Set();
+        using var lost = new ManualResetEventSlim(false);
+        void OnConnectionLost(SshSession candidate)
+        {
+            if (ReferenceEquals(candidate, session)) lost.Set();
+        }
 
-        session.StartKeepAlive(
-            interval: TimeSpan.FromMilliseconds(50),
-            probeTimeout: TimeSpan.FromMilliseconds(200),
-            maxMissed: 2);
+        SshSession.SessionConnectionLost += OnConnectionLost;
+        try
+        {
+            session.StartKeepAlive(
+                interval: TimeSpan.FromMilliseconds(50),
+                probeTimeout: TimeSpan.FromMilliseconds(200),
+                maxMissed: 2);
 
-        // Kontrollarmen väntar längre än hela feltröskeln. Om levande sonder
-        // felaktigt timeoutar hinner två missar alltså faktiskt stänga sessionen.
-        Assert.False(
-            closed.Wait(TimeSpan.FromMilliseconds(750)),
-            "en levande SSH-session markerades felaktigt som död");
+            // Kontrollarmen väntar längre än hela feltröskeln. Om levande sonder
+            // felaktigt timeoutar hinner två missar alltså faktiskt signalera fel.
+            Assert.False(
+                lost.Wait(TimeSpan.FromMilliseconds(750)),
+                "en levande SSH-session markerades felaktigt som död");
 
-        // Sluta vidarebefordra trafik men håll TCP-socketarna öppna. Det här
-        // är exakt fallet där IsConnected/SSH_MSG_IGNORE inte räcker.
-        proxy.Blackhole();
-        Assert.True(
-            closed.Wait(TimeSpan.FromSeconds(3)),
-            "sessionen stängdes inte när svarsbärande keepalive-requester timeoutade över en svart-hålad TCP-anslutning");
+            // Sluta vidarebefordra trafik men håll TCP-socketarna öppna. Det här
+            // är exakt fallet där IsConnected/SSH_MSG_IGNORE inte räcker.
+            proxy.Blackhole();
+            Assert.True(
+                lost.Wait(TimeSpan.FromSeconds(3)),
+                "sessionen signalerade inte anslutningsförlust när svarsbärande keepalive-requester timeoutade över en svart-hålad TCP-anslutning");
+            Assert.False(session.Shell.CanWrite, "sessionens shell var fortfarande skrivbart efter verifierad anslutningsförlust");
+        }
+        finally
+        {
+            SshSession.SessionConnectionLost -= OnConnectionLost;
+        }
     }
 
     [Fact]
@@ -225,21 +237,32 @@ public class SshSessionStandaloneTests
         host.Port = proxy.Port;
         var knownHosts = new KnownHosts(null);
         using var session = SshSession.Connect(host, null, knownHosts);
-        using var closed = new ManualResetEventSlim(false);
-        session.Shell.Closed += (_, _) => closed.Set();
+        using var lost = new ManualResetEventSlim(false);
+        void OnConnectionLost(SshSession candidate)
+        {
+            if (ReferenceEquals(candidate, session)) lost.Set();
+        }
 
-        proxy.Blackhole();
-        session.StartKeepAlive(
-            interval: TimeSpan.FromMilliseconds(20),
-            probeTimeout: TimeSpan.FromMilliseconds(300),
-            maxMissed: 1);
+        SshSession.SessionConnectionLost += OnConnectionLost;
+        try
+        {
+            proxy.Blackhole();
+            session.StartKeepAlive(
+                interval: TimeSpan.FromMilliseconds(20),
+                probeTimeout: TimeSpan.FromMilliseconds(300),
+                maxMissed: 1);
 
-        // Låt sonden gå in i sin blockerande väntan, stoppa sedan bevakningen
-        // innan timeouten. Den gamla monitorn får inte stänga sessionen efteråt.
-        Thread.Sleep(80);
-        session.StopKeepAlive();
-        Assert.False(
-            closed.Wait(TimeSpan.FromMilliseconds(600)),
-            "StopKeepAlive tillät en gammal monitor att stänga sessionen efter retur");
+            // Låt sonden gå in i sin blockerande väntan, stoppa sedan bevakningen
+            // innan timeouten. Den gamla monitorn får inte stänga sessionen efteråt.
+            Thread.Sleep(80);
+            session.StopKeepAlive();
+            Assert.False(
+                lost.Wait(TimeSpan.FromMilliseconds(600)),
+                "StopKeepAlive tillät en gammal monitor att signalera anslutningsförlust efter retur");
+        }
+        finally
+        {
+            SshSession.SessionConnectionLost -= OnConnectionLost;
+        }
     }
 }
