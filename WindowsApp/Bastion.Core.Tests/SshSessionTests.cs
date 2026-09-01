@@ -216,6 +216,9 @@ public class SshSessionStandaloneTests
             // är exakt fallet där IsConnected/SSH_MSG_IGNORE inte räcker.
             proxy.Blackhole();
             Assert.True(
+                proxy.WaitForDroppedClientTraffic(TimeSpan.FromSeconds(1)),
+                "ingen keepalive-trafik nådde den svart-hålade proxyn");
+            Assert.True(
                 lost.Wait(TimeSpan.FromSeconds(3)),
                 "sessionen signalerade inte anslutningsförlust när svarsbärande keepalive-requester timeoutade över en svart-hålad TCP-anslutning");
             Assert.False(session.Shell.CanWrite, "sessionens shell var fortfarande skrivbart efter verifierad anslutningsförlust");
@@ -252,13 +255,62 @@ public class SshSessionStandaloneTests
                 probeTimeout: TimeSpan.FromMilliseconds(300),
                 maxMissed: 1);
 
-            // Låt sonden gå in i sin blockerande väntan, stoppa sedan bevakningen
-            // innan timeouten. Den gamla monitorn får inte stänga sessionen efteråt.
-            Thread.Sleep(80);
+            Assert.True(
+                proxy.WaitForDroppedClientTraffic(TimeSpan.FromSeconds(1)),
+                "ingen in-flight keepalive-request observerades före StopKeepAlive");
             session.StopKeepAlive();
             Assert.False(
                 lost.Wait(TimeSpan.FromMilliseconds(600)),
                 "StopKeepAlive tillät en gammal monitor att signalera anslutningsförlust efter retur");
+        }
+        finally
+        {
+            SshSession.SessionConnectionLost -= OnConnectionLost;
+        }
+    }
+
+    [Fact]
+    public void ReplacingAnInFlightKeepAliveThenStoppingDoesNotLetTheOldMonitorCloseTheSession()
+    {
+        using var sshd = TestSshd.Start();
+        if (sshd is null) return;
+        using var proxy = BlackholeTcpProxy.Start(sshd.Port);
+
+        var host = BuildHost(sshd);
+        host.Port = proxy.Port;
+        var knownHosts = new KnownHosts(null);
+        using var session = SshSession.Connect(host, null, knownHosts);
+        using var lost = new ManualResetEventSlim(false);
+        void OnConnectionLost(SshSession candidate)
+        {
+            if (ReferenceEquals(candidate, session)) lost.Set();
+        }
+
+        SshSession.SessionConnectionLost += OnConnectionLost;
+        try
+        {
+            proxy.Blackhole();
+            session.StartKeepAlive(
+                interval: TimeSpan.FromMilliseconds(20),
+                probeTimeout: TimeSpan.FromMilliseconds(300),
+                maxMissed: 1);
+
+            Assert.True(
+                proxy.WaitForDroppedClientTraffic(TimeSpan.FromSeconds(1)),
+                "ingen in-flight keepalive-request observerades före monitorbytet");
+
+            // Ersätt monitorn medan den gamla väntar på sitt uteblivna svar och
+            // stoppa sedan den nya. Den gamla får aldrig disponera sessionen
+            // efter att ersättningen accepterats.
+            session.StartKeepAlive(
+                interval: TimeSpan.FromSeconds(5),
+                probeTimeout: TimeSpan.FromMilliseconds(300),
+                maxMissed: 1);
+            session.StopKeepAlive();
+
+            Assert.False(
+                lost.Wait(TimeSpan.FromMilliseconds(600)),
+                "en ersatt monitor stängde sessionen efter att den nya monitorn stoppats");
         }
         finally
         {
