@@ -1,6 +1,6 @@
 package se.denied.bastion.ssh
 
-// Beteendeneutral CodeQL-bootstrap: håll Kotlin i migrations-PR-diffen tills advanced setup är aktivt och producerar java-kotlin-konfigurationen på varje PR.
+// Beteendeneutral CodeQL-trigger: håll Kotlin i PR-diffen så default setup producerar java-kotlin-konfigurationen som main-rulesetet kräver.
 
 import org.apache.sshd.client.SshClient
 import org.apache.sshd.client.session.ClientSession

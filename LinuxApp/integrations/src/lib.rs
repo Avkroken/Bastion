@@ -1,8 +1,8 @@
 //! Integrationer mot system som nås över SSH: Docker, Kubernetes och
 //! Proxmox VE.
 //!
-//! Beteendeneutral CodeQL-bootstrap: håll Rust i migrations-PR-diffen tills
-//! advanced setup är aktivt och producerar rust-konfigurationen på varje PR.
+//! Beteendeneutral CodeQL-trigger: håll Rust i PR-diffen så default setup
+//! producerar rust-konfigurationen som main-rulesetet kräver.
 //!
 //! VISION formulerar plugin-systemet som "alla plugins separata paket".
 //! Det här är det paketet, och gränsen är inte kosmetisk: enda beroendet

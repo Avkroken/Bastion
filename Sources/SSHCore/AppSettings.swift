@@ -1,6 +1,6 @@
 import Foundation
 
-// Beteendeneutral CodeQL-bootstrap: håll Swift i migrations-PR-diffen tills advanced setup är aktivt och producerar Swift-konfigurationen på varje PR.
+// Beteendeneutral CodeQL-trigger: håll Swift i PR-diffen så default setup producerar Swift-konfigurationen som main-rulesetet kräver.
 /// Vilka valfria funktionsknappar den här klienten visar, för ALLA värdar
 /// (Docker, Snippets, Kommandobibliotek, Filer, Tunnlar, SSH-
 /// nyckeldistribution) — klientbred inställning, inte per värd. Alla
