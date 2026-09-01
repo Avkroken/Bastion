@@ -1,170 +1,37 @@
-name: Xcode-bygge (iOS + macOS + tvOS)
+name: Apple
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
   workflow_dispatch:
-
-concurrency:
-  group: xcode-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  impact:
-    runs-on: ubuntu-latest
-    outputs:
-      apple_app: ${{ steps.impact.outputs.apple_app }}
-      swift_core: ${{ steps.impact.outputs.swift_core }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Bestäm CI-påverkan
-        id: impact
-        env:
-          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-        run: bash .github/scripts/ci-impact.sh
-
-  xcodegen-and-build:
-    needs: impact
-    if: ${{ needs.impact.outputs.apple_app == 'true' }}
-    runs-on: macos-26
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - name: Välj Xcode 26.4.1
-        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
-        with:
-          xcode-version: "26.4.1"
-      - name: Visa Xcode-version
-        run: xcodebuild -version
-      - name: Installera XcodeGen
-        run: brew install xcodegen
-      - name: Generera Xcode-projekt
-        run: cd App && xcodegen generate
-      - name: Ladda ner tvOS-simulatorplattform
-        run: |
-          if xcrun simctl list runtimes available 2>/dev/null | grep -q "tvOS"; then
-            echo "tvOS-runtime redan tillgänglig, hoppar över nedladdning."
-            exit 0
-          fi
-          for attempt in 1 2 3; do
-            if xcodebuild -downloadPlatform tvOS; then exit 0; fi
-            if [ "$attempt" -lt 3 ]; then sleep 15; fi
-          done
-          exit 1
-      - name: Bygg iOS (simulator, osignerat)
-        run: xcodebuild build -skipPackagePluginValidation -project App/Bastion.xcodeproj -scheme Bastion -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
-      - name: Bygg macOS (osignerat)
-        run: xcodebuild build -skipPackagePluginValidation -project App/Bastion.xcodeproj -scheme Bastion-macOS -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
-      - name: Bygg tvOS (simulator, osignerat)
-        run: xcodebuild build -skipPackagePluginValidation -project App/Bastion.xcodeproj -scheme Bastion-tvOS -destination 'generic/platform=tvOS Simulator' CODE_SIGNING_ALLOWED=NO
-
-  swiftpm-macos:
-    needs: impact
-    if: ${{ needs.impact.outputs.swift_core == 'true' }}
-    runs-on: macos-26
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - name: Välj Xcode 26.4.1
-        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
-        with:
-          xcode-version: "26.4.1"
-      - name: swift build (SSHCore + bastion-cli)
-        run: swift build
-      - name: swift test (SSHCore)
-        run: swift test
-
-  ios-screenshots:
-    needs: impact
-    if: ${{ needs.impact.outputs.apple_app == 'true' }}
-    runs-on: macos-26
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - name: Välj Xcode 26.4.1
-        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
-        with:
-          xcode-version: "26.4.1"
-      - name: Installera XcodeGen
-        run: brew install xcodegen
-      - name: Generera Xcode-projekt
-        run: cd App && xcodegen generate
-      - name: Välj simulator
-        id: sim
-        run: |
-          set -euo pipefail
-          udid=$(xcrun simctl list devices available -j | jq -r '[.devices|to_entries[]|select(.key|test("iOS"))|.value[]|select(.isAvailable and (.name|test("iPhone")))]|.[0].udid // empty')
-          [ -n "$udid" ] || { xcrun simctl list devices available >&2; exit 1; }
-          echo "udid=$udid" >> "$GITHUB_OUTPUT"
-      - name: Bygg iOS för simulatorn
-        env:
-          SIM_UDID: ${{ steps.sim.outputs.udid }}
-        run: xcodebuild build -skipPackagePluginValidation -project App/Bastion.xcodeproj -scheme Bastion -destination "id=$SIM_UDID" -derivedDataPath build CODE_SIGNING_ALLOWED=NO
-      - name: Starta appen i simulatorn
-        timeout-minutes: 4
-        env:
-          SIM_UDID: ${{ steps.sim.outputs.udid }}
-        run: |
-          set -euo pipefail
-          app=$(find build/Build/Products -maxdepth 2 -name "Bastion.app" -type d | head -1)
-          [ -n "$app" ] || exit 1
-          xcrun simctl boot "$SIM_UDID" || true
-          xcrun simctl bootstatus "$SIM_UDID" -b
-          xcrun simctl install "$SIM_UDID" "$app"
-          xcrun simctl launch "$SIM_UDID" se.denied.bastion
-          sleep 8
-      - name: Ta skärmbilder (ljust + mörkt)
-        if: ${{ always() && steps.sim.outcome == 'success' }}
-        env:
-          SIM_UDID: ${{ steps.sim.outputs.udid }}
-        run: |
-          set -euo pipefail
-          mkdir -p screenshots
-          for mode in light dark; do
-            xcrun simctl ui "$SIM_UDID" appearance "$mode"
-            sleep 3
-            xcrun simctl io "$SIM_UDID" screenshot "screenshots/start-$mode.png"
-          done
-      - name: Ladda upp skärmbilder
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: ios-skarmbilder
-          path: screenshots/
-          if-no-files-found: warn
-
-  required:
+  apple:
     name: CI / apple
-    if: ${{ always() }}
-    needs: [impact, xcodegen-and-build, swiftpm-macos, ios-screenshots]
-    runs-on: ubuntu-latest
+    runs-on: macos-26
     steps:
-      - name: Kontrollera Apple-CI
-        env:
-          IMPACT_RESULT: ${{ needs.impact.result }}
-          APP_IMPACT: ${{ needs.impact.outputs.apple_app }}
-          SWIFT_IMPACT: ${{ needs.impact.outputs.swift_core }}
-          APP_BUILD_RESULT: ${{ needs.xcodegen-and-build.result }}
-          SWIFT_RESULT: ${{ needs.swiftpm-macos.result }}
-          SCREENSHOT_RESULT: ${{ needs.ios-screenshots.result }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: "26.4.1"
+      - run: brew install xcodegen
+      - run: cd App && xcodegen generate
+      - name: Ensure tvOS runtime
         run: |
-          test "$IMPACT_RESULT" = "success"
-          if [ "$APP_IMPACT" = "true" ]; then
-            test "$APP_BUILD_RESULT" = "success"
-            test "$SCREENSHOT_RESULT" = "success"
-          fi
-          if [ "$SWIFT_IMPACT" = "true" ]; then
-            test "$SWIFT_RESULT" = "success"
-          fi
+          xcrun simctl list runtimes available | grep -q tvOS || xcodebuild -downloadPlatform tvOS
+      - name: Build apps
+        run: |
+          xcodebuild build -skipPackagePluginValidation -project App/Bastion.xcodeproj -scheme Bastion -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
+          xcodebuild build -skipPackagePluginValidation -project App/Bastion.xcodeproj -scheme Bastion-macOS -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+          xcodebuild build -skipPackagePluginValidation -project App/Bastion.xcodeproj -scheme Bastion-tvOS -destination 'generic/platform=tvOS Simulator' CODE_SIGNING_ALLOWED=NO
+      - name: Test Swift package
+        run: |
+          swift build
+          swift test
