@@ -1,122 +1,61 @@
-name: LinuxApp-paketering (.deb)
+name: Linux app Debian package
 
-# `build-deb-linuxapp` är required i rulesetet och måste därför alltid
-# rapporteras på PR. Den dyra Rust/GTK4-paketeringen körs bara när LinuxApp
-# faktiskt påverkas; required-checken är en billig aggregator.
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
-  merge_group:
-    types: [checks_requested]
+  push:
+    branches: [main]
   workflow_dispatch:
-
-concurrency:
-  group: linuxapp-packaging-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  impact:
-    runs-on: ubuntu-latest
-    outputs:
-      linuxapp: ${{ steps.impact.outputs.linuxapp }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Bestäm CI-påverkan
-        id: impact
-        env:
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
-          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-        run: bash .github/scripts/ci-impact.sh
-
-  package-deb-linuxapp:
-    needs: impact
-    if: ${{ needs.impact.outputs.linuxapp == 'true' }}
+  build-deb-linuxapp:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
     defaults:
       run:
         working-directory: LinuxApp
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Läs version (senaste v[0-9]*-tagg, annars 0.0.0)
-        id: version
+      - id: version
         working-directory: .
         run: |
-          TAG=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
-          VERSION="${TAG#v}"
-          if [ -z "$VERSION" ]; then VERSION="0.0.0"; fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Installera GTK4/libadwaita/vte4-headers + binutils
-        run: |
+          tag=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+      - run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev pkg-config binutils
-
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: stable
-
-      - name: cargo build --release
-        run: cargo build --release --verbose
-
-      - name: Bestäm faktiska körtidsberoenden (DT_NEEDED → Debian-paket)
-        id: deps
+      - run: cargo build --release
+      - id: deps
         run: |
           set -euo pipefail
-          BIN=target/release/bastion-linuxapp
-          NEEDED=$(LC_ALL=C readelf -d "$BIN" | sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p')
-          echo "Direkta delade bibliotek (DT_NEEDED):"
-          echo "$NEEDED"
-
-          PACKAGES=""
-          for LIB in $NEEDED; do
-            case "$LIB" in
-              libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libutil.so*|libgcc_s.so*|ld-linux*|linux-vdso*) continue ;;
-            esac
-            LIBPATH=$(ldconfig -p | awk -v lib="$LIB" '$1 == lib && $0 ~ /x86-64/ { print $NF; exit }')
-            if [ -z "$LIBPATH" ]; then
-              echo "::error::hittar inte $LIB (x86-64) via ldconfig — kan inte slå upp vilket Debian-paket det tillhör"
-              exit 1
-            fi
-            LIBPATH=$(readlink -f "$LIBPATH")
-            PKG=$(dpkg -S "$LIBPATH" | head -1 | cut -d: -f1 | cut -d, -f1 | xargs)
-            if [ -z "$PKG" ]; then
-              echo "::error::$LIBPATH (från $LIB) tillhör inget känt Debian-paket"
-              exit 1
-            fi
-            PACKAGES="$PACKAGES $PKG"
+          needed=$(LC_ALL=C readelf -d target/release/bastion-linuxapp | sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p')
+          packages=''
+          for lib in $needed; do
+            case "$lib" in libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libutil.so*|libgcc_s.so*|ld-linux*|linux-vdso*) continue;; esac
+            path=$(ldconfig -p | awk -v lib="$lib" '$1 == lib && $0 ~ /x86-64/ { print $NF; exit }')
+            pkg=$(dpkg -S "$(readlink -f "$path")" | head -1 | cut -d: -f1 | cut -d, -f1 | xargs)
+            packages="$packages $pkg"
           done
-
-          EXTRA=$(printf '%s\n' $PACKAGES | sort -u | grep -v '^$' | grep -v '^libc6$' | paste -sd, - | sed 's/,/, /g')
-          DEPENDS="libc6${EXTRA:+, $EXTRA}"
-          echo "Härledd Depends-rad: $DEPENDS"
-          echo "depends=$DEPENDS" >> "$GITHUB_OUTPUT"
-
-      - name: Bygg .deb-paketträd
+          extra=$(printf '%s\n' $packages | sort -u | grep -v '^$' | grep -v '^libc6$' | paste -sd, - | sed 's/,/, /g')
+          echo "depends=libc6${extra:+, $extra}" >> "$GITHUB_OUTPUT"
+      - name: Build package
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ steps.version.outputs.version || '0.0.0' }}
           DEPENDS: ${{ steps.deps.outputs.depends }}
         run: |
-          set -euo pipefail
-          ROOT="dist/bastion-linuxapp_${VERSION}_amd64"
-          mkdir -p "$ROOT/DEBIAN" "$ROOT/usr/bin" "$ROOT/usr/share/applications"
-          cp target/release/bastion-linuxapp "$ROOT/usr/bin/bastion-linuxapp"
-          chmod 755 "$ROOT/usr/bin/bastion-linuxapp"
-          cp packaging/bastion-linuxapp.desktop "$ROOT/usr/share/applications/bastion-linuxapp.desktop"
-          cat > "$ROOT/DEBIAN/control" <<EOF
+          root="dist/bastion-linuxapp_${VERSION}_amd64"
+          mkdir -p "$root/DEBIAN" "$root/usr/bin" "$root/usr/share/applications" dist-out
+          install -m 755 target/release/bastion-linuxapp "$root/usr/bin/bastion-linuxapp"
+          cp packaging/bastion-linuxapp.desktop "$root/usr/share/applications/"
+          cat > "$root/DEBIAN/control" <<EOF
           Package: bastion-linuxapp
           Version: $VERSION
           Section: net
@@ -125,60 +64,21 @@ jobs:
           Maintainer: blixten85 <noreply@github.com>
           Homepage: https://github.com/${GITHUB_REPOSITORY}
           Depends: $DEPENDS
-          Description: Fri, öppen, fristående SSH-klient (GTK4-skrivbordsklient)
-           bastion-linuxapp är den native Rust/GTK4/libadwaita-skrivbordsklienten:
-           värdlista, terminal (VTE4), SFTP, Docker, kommandobibliotek, synk.
+          Description: Bastion GTK4 SSH client
           EOF
-          dpkg-deb --build --root-owner-group "$ROOT"
-          mkdir -p dist-out
+          dpkg-deb --build --root-owner-group "$root"
           mv "dist/bastion-linuxapp_${VERSION}_amd64.deb" dist-out/
-
-      - name: Installera och kör paketet i en frisk container
-        timeout-minutes: 12
+      - name: Smoke test package
         run: |
-          set -euo pipefail
-          docker run --rm -v "$PWD/dist-out:/dist-out:ro" \
-            -e DEBIAN_FRONTEND=noninteractive -e NEEDRESTART_MODE=a \
-            ubuntu:24.04 bash -euo pipefail -c '
-            echo "[$(date -u +%H:%M:%S)] apt-get update"
-            apt-get update -q </dev/null
-            echo "[$(date -u +%H:%M:%S)] installerar bastion-linuxapp + beroenden"
-            apt-get install -y -q --no-install-recommends /dist-out/*.deb </dev/null
-            echo "[$(date -u +%H:%M:%S)] installerar xvfb + dbus-x11"
-            apt-get install -y -q --no-install-recommends xvfb dbus-x11 </dev/null
-            echo "[$(date -u +%H:%M:%S)] apt klar"
-            Xvfb :99 -screen 0 1280x800x24 >/tmp/xvfb.log 2>&1 &
-            XVFB_PID=$!
-            export DISPLAY=:99
-            sleep 1
-            dbus-run-session -- bastion-linuxapp >/tmp/app.log 2>&1 &
-            APP_PID=$!
-            sleep 5
-            if ! kill -0 "$APP_PID" 2>/dev/null; then
-              echo "::error::bastion-linuxapp dog inom 5s efter start (troligen ett olöst runtime-beroende)"
-              cat /tmp/app.log
-              exit 1
-            fi
-            echo "[$(date -u +%H:%M:%S)] bastion-linuxapp lever, städar upp"
-            kill "$APP_PID" 2>/dev/null || true
-            kill "$XVFB_PID" 2>/dev/null || true
+          docker run --rm -v "$PWD/dist-out:/dist-out:ro" -e DEBIAN_FRONTEND=noninteractive ubuntu:24.04 bash -euo pipefail -c '
+            apt-get update -q
+            apt-get install -y -q --no-install-recommends /dist-out/*.deb xvfb dbus-x11
+            Xvfb :99 -screen 0 1280x800x24 >/tmp/xvfb.log 2>&1 & export DISPLAY=:99; sleep 1
+            dbus-run-session -- bastion-linuxapp >/tmp/app.log 2>&1 & app=$!; sleep 5
+            kill -0 "$app"
+            kill "$app"
           '
-
-      - name: Ladda upp .deb-artefakt
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bastion-linuxapp-deb
           path: LinuxApp/dist-out/*.deb
-          if-no-files-found: error
-
-  build-deb-linuxapp:
-    if: always()
-    needs: [impact, package-deb-linuxapp]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Sammanfatta LinuxApp .deb-verifieringen
-        run: |
-          echo "impact: ${{ needs.impact.result }}"
-          echo "package-deb-linuxapp: ${{ needs.package-deb-linuxapp.result }}"
-          case "${{ needs.impact.result }}" in failure|cancelled) exit 1;; esac
-          case "${{ needs.package-deb-linuxapp.result }}" in failure|cancelled) exit 1;; esac
