@@ -56,7 +56,7 @@ Den tidigare `.github/workflows/required-ci.yml` är avsiktligt borttagen. Dess 
 
 Paketerings-, release-, security- och deploy-workflows som inte uttryckligen listas som merge-gates ovan är kompletterande verifiering. OSV är däremot obligatoriskt via `scan-pr / osv-scan`, och CodeQL säkras genom rulesetets Code Scanning merge protection i stället för genom en skör lista av dynamiska analysjobb.
 
-Security alerts hanteras native-first av GitHub och därefter centralt av Skvallerbyttan. Repositoryt ska inte ha en separat schemalagd Code Scanning-snapshot/poller eller en egen security-remediation-dispatcher.
+Security alerts hanteras av GitHubs native säkerhetsfunktioner. Repositoryt ska inte ha en separat schemalagd Code Scanning-snapshot/poller eller en egen security-remediation-dispatcher.
 
 ## Pre-PR quality gate
 
