@@ -165,19 +165,23 @@ public sealed class SshSession : IDisposable
                 missed += 1;
                 if (missed < maxMissed) continue;
 
-                // Claim ownership under samma lås som Stop/Start använder.
-                // Om keepalive hann stoppas eller ersättas får en gammal monitor
-                // aldrig stänga den nuvarande sessionen efteråt.
+                // Ägarskapskontroll och teardown måste vara atomiska gentemot
+                // StartKeepAlive/StopKeepAlive. Om låset släpps före Dispose()
+                // kan en ny monitor installeras och sedan stängas av den gamla.
                 lock (_keepAliveGate)
                 {
                     if (!ReferenceEquals(_keepAliveMonitor, monitor) || cancellation.IsCancellationRequested)
                     {
                         return;
                     }
-                    _keepAliveMonitor = null;
+
+                    // Monitor-låset är reentrant. Dispose -> StopKeepAlive kan
+                    // därför ta samma lås igen, nollställa/cancel:a just denna
+                    // monitor och sätta _disposed innan någon ny StartKeepAlive
+                    // får möjlighet att installera en ersättare.
+                    Dispose();
                 }
 
-                Dispose();
                 SessionConnectionLost?.Invoke(this);
                 return;
             }
@@ -195,7 +199,12 @@ public sealed class SshSession : IDisposable
                     _keepAliveMonitor = null;
                 }
             }
-            cancellation.Dispose();
+
+            // CancellationTokenSource disponeras medvetet inte här. Start/Stop
+            // avbryter föregående monitor efter att _keepAliveGate släppts; en
+            // samtidig Dispose här skulle göra Cancel() race-känsligt och kunna
+            // kasta ObjectDisposedException. Källan blir GC-återvunnen när den
+            // avslutade monitorn inte längre refereras.
         }
     }
 
@@ -221,11 +230,7 @@ public sealed class SshSession : IDisposable
             SshNetChannelLivenessProbe.SendAndWaitForReply(Shell);
             return true; // success ELLER failure är ett svar och bevisar liv.
         }
-        catch (SshConnectionException)
-        {
-            return false;
-        }
-        catch (SshOperationTimeoutException)
+        catch (SshException)
         {
             return false;
         }
@@ -235,6 +240,11 @@ public sealed class SshSession : IDisposable
         }
         catch (ObjectDisposedException)
         {
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            // ShellStream kan sakna aktiv kanal efter parallell fjärrstängning.
             return false;
         }
         finally
@@ -340,9 +350,9 @@ public sealed class SshSession : IDisposable
         {
             // Sessionen kan redan ha städats via fjärrstängning.
         }
-        catch (SshConnectionException)
+        catch (SshException)
         {
-            // En död transport får inte stoppa lokal städning.
+            // En död SSH-transport får inte stoppa lokal städning.
         }
         catch (SocketException)
         {
@@ -357,7 +367,7 @@ public sealed class SshSession : IDisposable
         {
             // Redan städad av en parallell fjärrstängning.
         }
-        catch (SshConnectionException)
+        catch (SshException)
         {
             // Transporten är redan bruten; Dispose nedan släpper resurserna.
         }
