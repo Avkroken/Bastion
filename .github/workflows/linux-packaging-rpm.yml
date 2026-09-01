@@ -10,10 +10,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: cli-rpm-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-rpm:
     runs-on: ubuntu-latest
     container: swift:6.1-rhel-ubi9
+    timeout-minutes: 20
     defaults:
       run:
         shell: bash
@@ -33,15 +38,21 @@ jobs:
         run: |
           set -euo pipefail
           needed=$(readelf -d .build/release/bastion-cli | sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p')
-          ! grep -qi libswift <<<"$needed"
-          packages=''
-          for lib in $needed; do
+          if grep -qi libswift <<<"$needed"; then
+            echo "::error::bastion-cli still depends on the dynamic Swift runtime."
+            exit 1
+          fi
+          packages=()
+          while IFS= read -r lib; do
+            [[ -n "$lib" ]] || continue
             case "$lib" in libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libutil.so*|ld-linux*|linux-vdso*) continue;; esac
             path=$(ldconfig -p | awk -v lib="$lib" '$1 == lib { print $NF; exit }')
+            [[ -n "$path" ]] || { echo "::error::Could not locate $lib"; exit 1; }
             pkg=$(rpm -qf --qf '%{NAME}\n' "$(readlink -f "$path")" | head -1)
-            packages="$packages $pkg"
-          done
-          extra=$(printf '%s\n' $packages | sort -u | grep -v '^$' | grep -v '^glibc$' | tr '\n' ' ' | sed 's/ *$//')
+            [[ -n "$pkg" ]] || { echo "::error::Could not map $lib to an RPM package"; exit 1; }
+            packages+=("$pkg")
+          done <<< "$needed"
+          extra=$(printf '%s\n' "${packages[@]}" | sort -u | grep -v '^$' | grep -v '^glibc$' | paste -sd' ' -)
           echo "requires=glibc${extra:+ $extra}" >> "$GITHUB_OUTPUT"
       - name: Build package
         env:
