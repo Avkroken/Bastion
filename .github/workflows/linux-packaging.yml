@@ -1,46 +1,21 @@
-name: Linux-paketering (.deb)
+name: CLI Debian package
 
-# `build-deb` är ett required checknamn i rulesetet. Workflowet måste därför
-# alltid starta på PR, även när CLI-paketeringen inte påverkas. Ett billigt
-# impact-jobb avgör om den tunga paketeringen behövs; `build-deb` är en stabil
-# aggregator som alltid rapporterar resultat.
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
-  merge_group:
-    types: [checks_requested]
+  push:
+    branches: [main]
   workflow_dispatch:
-
-concurrency:
-  group: linux-packaging-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 permissions:
   contents: read
 
-jobs:
-  impact:
-    runs-on: ubuntu-latest
-    outputs:
-      cli_package: ${{ steps.impact.outputs.cli_package }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Bestäm CI-påverkan
-        id: impact
-        env:
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
-          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-        run: bash .github/scripts/ci-impact.sh
+concurrency:
+  group: cli-debian-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-  package-deb:
-    needs: impact
-    if: ${{ needs.impact.outputs.cli_package == 'true' }}
+jobs:
+  build-deb:
     runs-on: ubuntu-latest
     container: swift:6.1-noble
     timeout-minutes: 20
@@ -48,81 +23,47 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Läs version (senaste v*-tagg från auto-release.yml, annars 0.0.0)
-        id: version
+      - id: version
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          TAG=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
-          VERSION="${TAG#v}"
-          if [ -z "$VERSION" ]; then VERSION="0.0.0"; fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Visa Swift-version
-        run: swift --version
-
-      - name: swift build (release, statisk Swift-runtime)
-        run: swift build -c release --product bastion-cli --static-swift-stdlib
-
-      - name: Installera binutils (readelf, om det saknas i basavbildningen)
-        run: |
-          command -v readelf >/dev/null 2>&1 && exit 0
-          apt-get update -qq
-          apt-get install -y -qq binutils
-
-      - name: Bestäm faktiska körtidsberoenden (DT_NEEDED → Debian-paket)
-        id: deps
+          tag=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+      - run: swift build -c release --product bastion-cli --static-swift-stdlib
+      - run: |
+          command -v readelf >/dev/null || { apt-get update -qq; apt-get install -y -qq binutils; }
+      - id: deps
         run: |
           set -euo pipefail
-          BIN=.build/release/bastion-cli
-          NEEDED=$(readelf -d "$BIN" | sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p')
-          echo "Direkta delade bibliotek (DT_NEEDED):"
-          echo "$NEEDED"
-
-          if echo "$NEEDED" | grep -qi libswift; then
-            echo "::error::bastion-cli beror fortfarande dynamiskt på Swift-runtimen — --static-swift-stdlib gav inte en fristående binär"
+          needed=$(readelf -d .build/release/bastion-cli | sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p')
+          if grep -qi libswift <<<"$needed"; then
+            echo "::error::bastion-cli still depends on the dynamic Swift runtime."
             exit 1
           fi
-
-          PACKAGES=""
-          for LIB in $NEEDED; do
-            case "$LIB" in
-              libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libutil.so*|ld-linux*|linux-vdso*) continue ;;
-            esac
-            LIBPATH=$(ldconfig -p | awk -v lib="$LIB" '$1 == lib { print $NF; exit }')
-            if [ -z "$LIBPATH" ]; then
-              echo "::error::hittar inte $LIB via ldconfig — kan inte slå upp vilket Debian-paket det tillhör"
-              exit 1
-            fi
-            LIBPATH=$(readlink -f "$LIBPATH")
-            PKG=$(dpkg -S "$LIBPATH" | head -1 | cut -d: -f1 | cut -d, -f1 | xargs)
-            if [ -z "$PKG" ]; then
-              echo "::error::$LIBPATH (från $LIB) tillhör inget känt Debian-paket"
-              exit 1
-            fi
-            PACKAGES="$PACKAGES $PKG"
-          done
-
-          EXTRA=$(printf '%s\n' $PACKAGES | sort -u | grep -v '^$' | grep -v '^libc6$' | paste -sd, - | sed 's/,/, /g')
-          DEPENDS="libc6${EXTRA:+, $EXTRA}"
-          echo "Härledd Depends-rad: $DEPENDS"
-          echo "depends=$DEPENDS" >> "$GITHUB_OUTPUT"
-
-      - name: Bygg .deb-paketträd
+          packages=()
+          while IFS= read -r lib; do
+            [[ -n "$lib" ]] || continue
+            case "$lib" in libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libutil.so*|ld-linux*|linux-vdso*) continue;; esac
+            path=$(ldconfig -p | awk -v lib="$lib" '$1 == lib { print $NF; exit }')
+            [[ -n "$path" ]] || { echo "::error::Could not locate $lib"; exit 1; }
+            pkg=$(dpkg -S "$(readlink -f "$path")" | head -1 | cut -d: -f1 | cut -d, -f1 | xargs)
+            [[ -n "$pkg" ]] || { echo "::error::Could not map $lib to a Debian package"; exit 1; }
+            packages+=("$pkg")
+          done <<< "$needed"
+          extra=$(printf '%s\n' "${packages[@]}" | sort -u | grep -v '^$' | grep -v '^libc6$' | paste -sd, - | sed 's/,/, /g')
+          echo "depends=libc6${extra:+, $extra}" >> "$GITHUB_OUTPUT"
+      - name: Build package
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ steps.version.outputs.version || '0.0.0' }}
           DEPENDS: ${{ steps.deps.outputs.depends }}
         run: |
-          set -euo pipefail
-          ROOT="dist/bastion-cli_${VERSION}_amd64"
-          mkdir -p "$ROOT/DEBIAN" "$ROOT/usr/bin"
-          cp .build/release/bastion-cli "$ROOT/usr/bin/bastion-cli"
-          chmod 755 "$ROOT/usr/bin/bastion-cli"
-          cat > "$ROOT/DEBIAN/control" <<EOF
+          root="dist/bastion-cli_${VERSION}_amd64"
+          mkdir -p "$root/DEBIAN" "$root/usr/bin" dist-out
+          install -m 755 .build/release/bastion-cli "$root/usr/bin/bastion-cli"
+          cat > "$root/DEBIAN/control" <<EOF
           Package: bastion-cli
           Version: $VERSION
           Section: net
@@ -131,49 +72,15 @@ jobs:
           Maintainer: blixten85 <noreply@github.com>
           Homepage: https://github.com/${GITHUB_REPOSITORY}
           Depends: $DEPENDS
-          Description: Fri, öppen, fristående SSH-klient (kommandorad)
-           bastion-cli bevisar SSHCore-kärnan mot en riktig server — exec,
-           interaktiv shell, portvidarebefordran (-L/-R/-D), ProxyJump.
-           Statiskt länkad mot Swift-runtimen, inga körtidsberoenden utöver
-           de i Depends.
+          Description: Bastion SSH command-line client
           EOF
-          dpkg-deb --build --root-owner-group "$ROOT"
-          mkdir -p dist-out
+          dpkg-deb --build --root-owner-group "$root"
           mv "dist/bastion-cli_${VERSION}_amd64.deb" dist-out/
-
-      - name: Installera och kör paketet
-        run: |
-          set -euo pipefail
           dpkg -i dist-out/*.deb
-          set +e
-          OUTPUT=$(bastion-cli 2>&1)
-          STATUS=$?
-          set -e
-          echo "$OUTPUT"
-          if [ "$STATUS" -ne 2 ]; then
-            echo "::error::väntade exitkod 2 (användningsfel utan argument), fick $STATUS"
-            exit 1
-          fi
-          if ! echo "$OUTPUT" | grep -q "Användning:"; then
-            echo "::error::väntade ett användningsmeddelande, fick: $OUTPUT"
-            exit 1
-          fi
-
-      - name: Ladda upp .deb-artefakt
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          set +e; output=$(bastion-cli 2>&1); status=$?; set -e
+          test "$status" -eq 2
+          grep -q 'Användning:' <<<"$output"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bastion-cli-deb
           path: dist-out/*.deb
-          if-no-files-found: error
-
-  build-deb:
-    if: always()
-    needs: [impact, package-deb]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Sammanfatta .deb-verifieringen
-        run: |
-          echo "impact: ${{ needs.impact.result }}"
-          echo "package-deb: ${{ needs.package-deb.result }}"
-          case "${{ needs.impact.result }}" in failure|cancelled) exit 1;; esac
-          case "${{ needs.package-deb.result }}" in failure|cancelled) exit 1;; esac

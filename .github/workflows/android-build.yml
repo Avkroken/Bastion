@@ -1,42 +1,19 @@
-name: Android-bygge
+name: Android
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
   workflow_dispatch:
-
-concurrency:
-  group: android-build-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
-  impact:
+  android:
+    name: CI / android
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      android: ${{ steps.impact.outputs.android }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Bestäm CI-påverkan
-        id: impact
-        env:
-          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-        run: bash .github/scripts/ci-impact.sh
-
-  android-build:
-    needs: impact
-    if: ${{ needs.impact.outputs.android == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -46,28 +23,7 @@ jobs:
           distribution: temurin
           java-version: "17"
           cache: gradle
-      - name: Bygg + testa
+      - working-directory: Android
         run: |
-          set -euo pipefail
-          cd Android
           chmod +x gradlew
           ./gradlew build --stacktrace
-
-  required:
-    name: CI / android
-    if: ${{ always() }}
-    needs: [impact, android-build]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Kontrollera Android-CI
-        env:
-          IMPACT_RESULT: ${{ needs.impact.result }}
-          ANDROID_IMPACT: ${{ needs.impact.outputs.android }}
-          BUILD_RESULT: ${{ needs.android-build.result }}
-        run: |
-          test "$IMPACT_RESULT" = "success"
-          if [ "$ANDROID_IMPACT" != "true" ]; then
-            echo "Android är inte påverkad."
-            exit 0
-          fi
-          test "$BUILD_RESULT" = "success"

@@ -1,48 +1,23 @@
-name: WindowsApp-bygge (WinUI 3/.NET)
+name: Windows
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
   workflow_dispatch:
-
-concurrency:
-  group: windowsapp-build-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
-  impact:
+  core-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      windows: ${{ steps.impact.outputs.windows }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Bestäm CI-påverkan
-        id: impact
-        env:
-          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-        run: bash .github/scripts/ci-impact.sh
-
-  windowsapp-core-tests:
-    needs: impact
-    if: ${{ needs.impact.outputs.windows == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Installera OpenSSH
-        run: |
+      - run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq openssh-server openssh-client
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
@@ -50,14 +25,10 @@ jobs:
           dotnet-version: |
             8.0.x
             10.0.x
-      - name: dotnet test (Bastion.Core)
-        run: dotnet test WindowsApp/Bastion.Core.Tests/Bastion.Core.Tests.csproj -c Release --verbosity normal
+      - run: dotnet test WindowsApp/Bastion.Core.Tests/Bastion.Core.Tests.csproj -c Release
 
-  windowsapp-build:
-    needs: impact
-    if: ${{ needs.impact.outputs.windows == 'true' }}
+  build:
     runs-on: windows-2025
-    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -67,26 +38,14 @@ jobs:
           dotnet-version: |
             8.0.x
             10.0.x
-      - name: dotnet build (WinUI 3, x64)
-        run: dotnet build WindowsApp/WindowsApp.csproj -c Release -p:Platform=x64
+      - run: dotnet build WindowsApp/WindowsApp.csproj -c Release -p:Platform=x64
 
-  required:
+  windows:
     name: CI / windows
-    if: ${{ always() }}
-    needs: [impact, windowsapp-core-tests, windowsapp-build]
+    if: always()
+    needs: [core-tests, build]
     runs-on: ubuntu-latest
     steps:
-      - name: Kontrollera Windows-CI
-        env:
-          IMPACT_RESULT: ${{ needs.impact.result }}
-          WINDOWS_IMPACT: ${{ needs.impact.outputs.windows }}
-          TEST_RESULT: ${{ needs.windowsapp-core-tests.result }}
-          BUILD_RESULT: ${{ needs.windowsapp-build.result }}
-        run: |
-          test "$IMPACT_RESULT" = "success"
-          if [ "$WINDOWS_IMPACT" != "true" ]; then
-            echo "Windows är inte påverkad."
-            exit 0
-          fi
-          test "$TEST_RESULT" = "success"
-          test "$BUILD_RESULT" = "success"
+      - run: |
+          test "${{ needs.core-tests.result }}" = success
+          test "${{ needs.build.result }}" = success

@@ -1,113 +1,39 @@
-name: LinuxApp-bygge (Rust/GTK4)
+name: Linux
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
   workflow_dispatch:
-
-concurrency:
-  group: linuxapp-build-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  impact:
+  linux:
+    name: CI / linux
     runs-on: ubuntu-latest
-    outputs:
-      linuxapp: ${{ steps.impact.outputs.linuxapp }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Bestäm CI-påverkan
-        id: impact
-        env:
-          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-        run: bash .github/scripts/ci-impact.sh
-
-  linuxapp-build:
-    needs: impact
-    if: ${{ needs.impact.outputs.linuxapp == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
     defaults:
       run:
         working-directory: LinuxApp
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Installera GTK4/libadwaita/vte4-headers
+      - name: Install system dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev pkg-config
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: stable
-      - name: Visa Rust-version
-        run: rustc --version && cargo --version
-      - name: cargo build
-        run: cargo build --workspace --verbose
-      - name: cargo test
-        run: cargo test --workspace --verbose
-
-  linuxapp-msrv:
-    needs: impact
-    if: ${{ needs.impact.outputs.linuxapp == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: LinuxApp
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - name: Installera GTK4/libadwaita/vte4-headers
+      - run: |
+          cargo build --workspace
+          cargo test --workspace
+      - name: Verify MSRV
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev pkg-config
-      - name: Läs MSRV ur Cargo.toml
-        id: msrv
-        run: |
-          version="$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)"
-          if [ -z "$version" ]; then
-            echo "::error::rust-version saknas i LinuxApp/Cargo.toml"
-            exit 1
-          fi
-          echo "Deklarerad MSRV: $version"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-        with:
-          toolchain: ${{ steps.msrv.outputs.version }}
-      - name: Visa Rust-version
-        run: rustc --version && cargo --version
-      - name: cargo build på MSRV
-        run: cargo build --workspace --verbose
-
-  required:
-    name: CI / linux
-    if: ${{ always() }}
-    needs: [impact, linuxapp-build, linuxapp-msrv]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Kontrollera LinuxApp-CI
-        env:
-          IMPACT_RESULT: ${{ needs.impact.result }}
-          LINUX_IMPACT: ${{ needs.impact.outputs.linuxapp }}
-          BUILD_RESULT: ${{ needs.linuxapp-build.result }}
-          MSRV_RESULT: ${{ needs.linuxapp-msrv.result }}
-        run: |
-          test "$IMPACT_RESULT" = "success"
-          if [ "$LINUX_IMPACT" != "true" ]; then
-            echo "LinuxApp är inte påverkad."
-            exit 0
-          fi
-          test "$BUILD_RESULT" = "success"
-          test "$MSRV_RESULT" = "success"
+          version=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)
+          test -n "$version"
+          rustup toolchain install "$version" --profile minimal
+          cargo +"$version" build --workspace

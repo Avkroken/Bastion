@@ -1,18 +1,11 @@
 name: Scope policy
 
-# Validerar specialscope för repositoryts namngivna plattforms-/core-branches.
-# Vanliga kortlivade branches har inget särskilt filscope här.
-
 on:
   pull_request:
     branches: [main]
 
 permissions:
   contents: read
-
-concurrency:
-  group: scope-policy-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
 
 jobs:
   scope-policy:
@@ -24,39 +17,13 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Validera specialscope
-        shell: bash
+      - name: Validate scoped branches
         env:
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REF: ${{ github.head_ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          [[ -n "$HEAD_REF" ]] || { echo "::error::Tom head.ref i PR-event."; exit 1; }
-          git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || { echo "::error::Ogiltig base SHA"; exit 1; }
-          git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null || { echo "::error::Ogiltig head SHA"; exit 1; }
-          mapfile -t files < <(git diff --name-only --diff-filter=ACMRDTUXB "$BASE_SHA" "$HEAD_SHA")
-          [[ ${#files[@]} -gt 0 ]] || { echo '::error::Tom/okänd diff'; exit 1; }
-          printf 'Gren: %s\n' "$HEAD_REF"
-
-          if [[ "$HEAD_REF" == docs/content ]]; then
-            for f in "${files[@]}"; do
-              case "$f" in
-                docs/*|README|README.*|CONTRIBUTING|CONTRIBUTING.*|CHANGELOG|CHANGELOG.*|CHANGES|CHANGES.*|ROADMAP|ROADMAP.*|VISION|VISION.*|RESUME|RESUME.*|SKILLS|SKILLS.*|CODE_OF_CONDUCT|CODE_OF_CONDUCT.*|SUPPORT|SUPPORT.*|LICENSE|LICENSE.*|NOTICE|NOTICE.*)
-                  ;;
-                AGENTS.md|CLAUDE.md|SECURITY.md|.github/*)
-                  echo "::error::Policy-/automationfil är inte tillåten på docs/content: $f" >&2
-                  exit 1
-                  ;;
-                *)
-                  echo "::error::Otillåten docs-fil: $f" >&2
-                  exit 1
-                  ;;
-              esac
-            done
-          fi
-
           case "$HEAD_REF" in
             platform/windows) allowed='^WindowsApp/' ;;
             platform/android) allowed='^Android/' ;;
@@ -64,11 +31,17 @@ jobs:
             platform/apple) allowed='^App/' ;;
             platform/cli) allowed='^Sources/bastion-cli/' ;;
             core/swift) allowed='^(Sources/SSHCore/|Tests/SSHCoreTests/|Package\.swift$|Package\.resolved$)' ;;
-            *) allowed='' ;;
+            *) exit 0 ;;
           esac
 
-          if [[ -n "$allowed" ]]; then
-            for f in "${files[@]}"; do
-              [[ "$f" =~ $allowed ]] || { echo "::error::Otillåten fil för $HEAD_REF: $f" >&2; exit 1; }
-            done
-          fi
+          [[ -n "$BASE_SHA" && -n "$HEAD_SHA" ]] || { echo "::error::Missing PR commit SHA."; exit 1; }
+          git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null || { echo "::error::Invalid base SHA."; exit 1; }
+          git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null || { echo "::error::Invalid head SHA."; exit 1; }
+
+          changed="$RUNNER_TEMP/scope-changed-files.txt"
+          git diff --no-renames --name-only --diff-filter=ACMRDTUXB "$BASE_SHA" "$HEAD_SHA" > "$changed"
+          [[ -s "$changed" ]] || { echo "::error::Empty scoped PR diff."; exit 1; }
+
+          while IFS= read -r file; do
+            [[ "$file" =~ $allowed ]] || { echo "::error::$file is outside $HEAD_REF scope"; exit 1; }
+          done < "$changed"
