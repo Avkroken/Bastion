@@ -1,112 +1,44 @@
-name: LinuxApp-paketering (.rpm)
+name: Linux app RPM package
 
-# `build-rpm-linuxapp` är required i rulesetet och måste därför alltid
-# rapporteras på PR. Den tunga RPM-paketeringen körs bara när LinuxApp faktiskt
-# påverkas; required-checken är en billig aggregator.
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
-  merge_group:
-    types: [checks_requested]
+  push:
+    branches: [main]
   workflow_dispatch:
-
-concurrency:
-  group: linuxapp-packaging-rpm-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  impact:
+  build-rpm-linuxapp:
     runs-on: ubuntu-latest
-    outputs:
-      linuxapp: ${{ steps.impact.outputs.linuxapp }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Bestäm CI-påverkan
-        id: impact
-        env:
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
-          CI_BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          CI_HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-        run: bash .github/scripts/ci-impact.sh
-
-  package-rpm-linuxapp:
-    needs: impact
-    if: ${{ needs.impact.outputs.linuxapp == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Läs version (senaste v[0-9]*-tagg, annars 0.0.0)
-        id: version
+      - id: version
         run: |
-          TAG=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
-          VERSION="${TAG#v}"
-          if [ -z "$VERSION" ]; then VERSION="0.0.0"; fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Bygg release-binär + .rpm-paket i en Fedora-container
+          tag=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+      - name: Build package
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ steps.version.outputs.version || '0.0.0' }}
+          REPOSITORY_URL: https://github.com/${{ github.repository }}
         run: |
-          set -euo pipefail
           mkdir -p dist-out
-          docker run --rm \
-            -v "$PWD:/work" \
-            -e VERSION="$VERSION" \
-            -e REPOSITORY_URL="https://github.com/${GITHUB_REPOSITORY}" \
-            fedora:40 bash /work/LinuxApp/packaging/build-rpm.sh
-          ls -la dist-out/
-
-      - name: Installera och kör paketet i en frisk container
-        timeout-minutes: 5
+          docker run --rm -v "$PWD:/work" -e VERSION -e REPOSITORY_URL fedora:40 bash /work/LinuxApp/packaging/build-rpm.sh
+      - name: Smoke test package
         run: |
-          set -euo pipefail
           docker run --rm -v "$PWD/dist-out:/dist-out:ro" fedora:40 bash -euo pipefail -c '
-            dnf install -y -q /dist-out/*.rpm
-            dnf install -y -q xorg-x11-server-Xvfb dbus-x11 mesa-libGLES
-            Xvfb :99 -screen 0 1280x800x24 >/tmp/xvfb.log 2>&1 &
-            XVFB_PID=$!
-            export DISPLAY=:99
-            sleep 1
-            dbus-run-session -- bastion-linuxapp >/tmp/app.log 2>&1 &
-            APP_PID=$!
-            sleep 5
-            if ! kill -0 "$APP_PID" 2>/dev/null; then
-              echo "::error::bastion-linuxapp dog inom 5s efter start (troligen ett olöst runtime-beroende)"
-              cat /tmp/app.log
-              exit 1
-            fi
-            kill "$APP_PID" 2>/dev/null || true
-            kill "$XVFB_PID" 2>/dev/null || true
+            dnf install -y -q /dist-out/*.rpm xorg-x11-server-Xvfb dbus-x11 mesa-libGLES
+            Xvfb :99 -screen 0 1280x800x24 >/tmp/xvfb.log 2>&1 & export DISPLAY=:99; sleep 1
+            dbus-run-session -- bastion-linuxapp >/tmp/app.log 2>&1 & app=$!; sleep 5
+            kill -0 "$app"
+            kill "$app"
           '
-
-      - name: Ladda upp .rpm-artefakt
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bastion-linuxapp-rpm
           path: dist-out/*.rpm
-          if-no-files-found: error
-
-  build-rpm-linuxapp:
-    if: always()
-    needs: [impact, package-rpm-linuxapp]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Sammanfatta LinuxApp RPM-verifieringen
-        run: |
-          echo "impact: ${{ needs.impact.result }}"
-          echo "package-rpm-linuxapp: ${{ needs.package-rpm-linuxapp.result }}"
-          case "${{ needs.impact.result }}" in failure|cancelled) exit 1;; esac
-          case "${{ needs.package-rpm-linuxapp.result }}" in failure|cancelled) exit 1;; esac
