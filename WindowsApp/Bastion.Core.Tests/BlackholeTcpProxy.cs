@@ -56,9 +56,25 @@ internal sealed class BlackholeTcpProxy : IDisposable
         {
             _ready.TrySetCanceled();
         }
-        catch (Exception ex)
+        catch (ObjectDisposedException ex) when (!_ready.Task.IsCompleted)
         {
             _ready.TrySetException(ex);
+        }
+        catch (SocketException ex) when (!_ready.Task.IsCompleted)
+        {
+            _ready.TrySetException(ex);
+        }
+        catch (IOException ex) when (!_ready.Task.IsCompleted)
+        {
+            _ready.TrySetException(ex);
+        }
+        catch (ObjectDisposedException) when (_lifetime.IsCancellationRequested || _forwarding.IsCancellationRequested)
+        {
+            // Normal städning av en pågående ReadAsync/WriteAsync.
+        }
+        catch (IOException) when (_lifetime.IsCancellationRequested || _forwarding.IsCancellationRequested)
+        {
+            // Samma städningsfall på NetworkStream-nivå.
         }
     }
 
