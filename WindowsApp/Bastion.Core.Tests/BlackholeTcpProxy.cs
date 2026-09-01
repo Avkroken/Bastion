@@ -14,10 +14,11 @@ internal sealed class BlackholeTcpProxy : IDisposable
     private readonly TcpListener _listener;
     private readonly int _targetPort;
     private readonly CancellationTokenSource _lifetime = new();
-    private readonly CancellationTokenSource _forwarding = new();
     private readonly TaskCompletionSource<bool> _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource<bool> _droppedClientTraffic = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private TcpClient? _clientSide;
     private TcpClient? _serverSide;
+    private int _blackholed;
     private int _disposed;
 
     private BlackholeTcpProxy(int targetPort)
@@ -36,8 +37,16 @@ internal sealed class BlackholeTcpProxy : IDisposable
     public void Blackhole()
     {
         _ready.Task.GetAwaiter().GetResult();
-        _forwarding.Cancel();
+        Volatile.Write(ref _blackholed, 1);
     }
+
+    /// <summary>
+    /// Väntar tills proxyn faktiskt har läst och kastat klienttrafik efter
+    /// <see cref="Blackhole"/>. Testerna använder detta i stället för
+    /// tidsbaserade sleeps för att veta att en SSH-request är in-flight.
+    /// </summary>
+    public bool WaitForDroppedClientTraffic(TimeSpan timeout) =>
+        _droppedClientTraffic.Task.Wait(timeout);
 
     private async Task AcceptAndForwardAsync()
     {
@@ -49,10 +58,10 @@ internal sealed class BlackholeTcpProxy : IDisposable
             _ready.TrySetResult(true);
 
             await Task.WhenAll(
-                ForwardAsync(_clientSide.GetStream(), _serverSide.GetStream(), _forwarding.Token),
-                ForwardAsync(_serverSide.GetStream(), _clientSide.GetStream(), _forwarding.Token));
+                ForwardAsync(_clientSide.GetStream(), _serverSide.GetStream(), clientToServer: true, _lifetime.Token),
+                ForwardAsync(_serverSide.GetStream(), _clientSide.GetStream(), clientToServer: false, _lifetime.Token));
         }
-        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested || _forwarding.IsCancellationRequested)
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
             _ready.TrySetCanceled();
         }
@@ -68,23 +77,37 @@ internal sealed class BlackholeTcpProxy : IDisposable
         {
             _ready.TrySetException(ex);
         }
-        catch (ObjectDisposedException) when (_lifetime.IsCancellationRequested || _forwarding.IsCancellationRequested)
+        catch (ObjectDisposedException) when (_lifetime.IsCancellationRequested)
         {
             // Normal städning av en pågående ReadAsync/WriteAsync.
         }
-        catch (IOException) when (_lifetime.IsCancellationRequested || _forwarding.IsCancellationRequested)
+        catch (IOException) when (_lifetime.IsCancellationRequested)
         {
             // Samma städningsfall på NetworkStream-nivå.
         }
     }
 
-    private static async Task ForwardAsync(NetworkStream input, NetworkStream output, CancellationToken cancellationToken)
+    private async Task ForwardAsync(
+        NetworkStream input,
+        NetworkStream output,
+        bool clientToServer,
+        CancellationToken cancellationToken)
     {
         var buffer = new byte[16 * 1024];
         while (!cancellationToken.IsCancellationRequested)
         {
             var read = await input.ReadAsync(buffer, cancellationToken);
             if (read == 0) return;
+
+            if (Volatile.Read(ref _blackholed) != 0)
+            {
+                if (clientToServer)
+                {
+                    _droppedClientTraffic.TrySetResult(true);
+                }
+                continue;
+            }
+
             await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
         }
     }
@@ -92,12 +115,10 @@ internal sealed class BlackholeTcpProxy : IDisposable
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
-        _forwarding.Cancel();
         _lifetime.Cancel();
         _listener.Stop();
         _clientSide?.Dispose();
         _serverSide?.Dispose();
-        _forwarding.Dispose();
         _lifetime.Dispose();
     }
 }
