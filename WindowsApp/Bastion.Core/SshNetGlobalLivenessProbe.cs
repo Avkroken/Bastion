@@ -41,8 +41,7 @@ internal static class SshNetGlobalLivenessProbe
 
     static SshNetGlobalLivenessProbe()
     {
-        if (!typeof(Session).IsAssignableFrom(ClientSessionProperty.PropertyType) &&
-            !ClientSessionProperty.PropertyType.IsAssignableFrom(typeof(Session)))
+        if (!ClientSessionProperty.PropertyType.IsAssignableFrom(typeof(Session)))
         {
             throw new NotSupportedException("SSH.NET BaseClient.Session har ändrat typ");
         }
@@ -78,9 +77,12 @@ internal static class SshNetGlobalLivenessProbe
             throw new InvalidOperationException("SSH.NET-klienten saknar en aktiv Session");
         }
 
-        using var reply = new AutoResetEvent(initialState: false);
-        EventHandler<MessageEventArgs<RequestSuccessMessage>> success = (_, _) => _ = reply.Set();
-        EventHandler<MessageEventArgs<RequestFailureMessage>> failure = (_, _) => _ = reply.Set();
+        // TCS behöver ingen Dispose och TrySetResult är säker även om ett svar
+        // hinner in parallellt med timeout/unsubscribe. Ett WaitHandle här skulle
+        // annars kunna träffas av ett sent event efter att handtaget disponerats.
+        var reply = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        EventHandler<MessageEventArgs<RequestSuccessMessage>> success = (_, _) => reply.TrySetResult(true);
+        EventHandler<MessageEventArgs<RequestFailureMessage>> failure = (_, _) => reply.TrySetResult(true);
 
         session.RequestSuccessReceived += success;
         session.RequestFailureReceived += failure;
@@ -89,7 +91,7 @@ internal static class SshNetGlobalLivenessProbe
             var request = (GlobalRequestMessage)GlobalRequestConstructor.Invoke(
                 new object[] { KeepAliveRequestName, true });
             InvokeUnwrapped(SendMessageMethod, session, new object[] { request });
-            return reply.WaitOne(timeout);
+            return reply.Task.Wait(timeout);
         }
         finally
         {
