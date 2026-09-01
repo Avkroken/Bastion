@@ -10,10 +10,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: cli-debian-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-deb:
     runs-on: ubuntu-latest
     container: swift:6.1-noble
+    timeout-minutes: 20
     defaults:
       run:
         shell: bash
@@ -34,15 +39,21 @@ jobs:
         run: |
           set -euo pipefail
           needed=$(readelf -d .build/release/bastion-cli | sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p')
-          ! grep -qi libswift <<<"$needed"
-          packages=''
-          for lib in $needed; do
+          if grep -qi libswift <<<"$needed"; then
+            echo "::error::bastion-cli still depends on the dynamic Swift runtime."
+            exit 1
+          fi
+          packages=()
+          while IFS= read -r lib; do
+            [[ -n "$lib" ]] || continue
             case "$lib" in libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libutil.so*|ld-linux*|linux-vdso*) continue;; esac
             path=$(ldconfig -p | awk -v lib="$lib" '$1 == lib { print $NF; exit }')
+            [[ -n "$path" ]] || { echo "::error::Could not locate $lib"; exit 1; }
             pkg=$(dpkg -S "$(readlink -f "$path")" | head -1 | cut -d: -f1 | cut -d, -f1 | xargs)
-            packages="$packages $pkg"
-          done
-          extra=$(printf '%s\n' $packages | sort -u | grep -v '^$' | grep -v '^libc6$' | paste -sd, - | sed 's/,/, /g')
+            [[ -n "$pkg" ]] || { echo "::error::Could not map $lib to a Debian package"; exit 1; }
+            packages+=("$pkg")
+          done <<< "$needed"
+          extra=$(printf '%s\n' "${packages[@]}" | sort -u | grep -v '^$' | grep -v '^libc6$' | paste -sd, - | sed 's/,/, /g')
           echo "depends=libc6${extra:+, $extra}" >> "$GITHUB_OUTPUT"
       - name: Build package
         env:
