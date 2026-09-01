@@ -72,7 +72,7 @@ internal static class SshNetGlobalLivenessProbe
     {
         ArgumentNullException.ThrowIfNull(client);
 
-        if (ClientSessionProperty.GetValue(client) is not Session session)
+        if (GetValueUnwrapped(ClientSessionProperty, client) is not Session session)
         {
             throw new InvalidOperationException("SSH.NET-klienten saknar en aktiv Session");
         }
@@ -88,7 +88,8 @@ internal static class SshNetGlobalLivenessProbe
         session.RequestFailureReceived += failure;
         try
         {
-            var request = (GlobalRequestMessage)GlobalRequestConstructor.Invoke(
+            var request = (GlobalRequestMessage)InvokeUnwrapped(
+                GlobalRequestConstructor,
                 new object[] { KeepAliveRequestName, true });
             InvokeUnwrapped(SendMessageMethod, session, new object[] { request });
             return reply.Task.Wait(timeout);
@@ -97,6 +98,32 @@ internal static class SshNetGlobalLivenessProbe
         {
             session.RequestSuccessReceived -= success;
             session.RequestFailureReceived -= failure;
+        }
+    }
+
+    private static object? GetValueUnwrapped(PropertyInfo property, object target)
+    {
+        try
+        {
+            return property.GetValue(target);
+        }
+        catch (TargetInvocationException ex) when (ex.InnerException is not null)
+        {
+            ExceptionDispatchInfo.Capture(ex.InnerException).Throw();
+            throw;
+        }
+    }
+
+    private static object InvokeUnwrapped(ConstructorInfo constructor, object[] parameters)
+    {
+        try
+        {
+            return constructor.Invoke(parameters);
+        }
+        catch (TargetInvocationException ex) when (ex.InnerException is not null)
+        {
+            ExceptionDispatchInfo.Capture(ex.InnerException).Throw();
+            throw;
         }
     }
 
