@@ -1,103 +1,45 @@
-name: TestFlight-uppladdning
+name: TestFlight
 
-# Manuell knapp, INTE på varje push/PR — varje körning konsumerar ett
-# byggnummer hos Apple och laddar upp en riktig build till TestFlight.
-# Välj "ios" eller "tvos" i dropdownen — separata App Store Connect-
-# app-record (se.denied.bastion / se.denied.bastion.tv), separata
-# byggnummer-sekvenser. Körningar serialiseras per plattform (se
-# `concurrency` nedan) så två samtidiga uppladdningar inte krockar.
-#
-# tvOS-lanen KRÄVER (ingetdera görbart härifrån, se App/fastlane/Fastfile):
-#   1. Ett App Store Connect-app-record för se.denied.bastion.tv.
-#   2. Ett tvOS "Apple Distribution"-certifikat + en
-#      "match AppStore se.denied.bastion.tv"-profil i bastion-certificates
-#      (bootstrappas EN gång med `readonly: false` på en riktig Mac).
-#
-# Signering via `fastlane match` (readonly) — certifikat/profil skapades
-# EN gång manuellt (2026-07-08, kräver en riktig Mac med inloggad GUI-
-# session; `-allowProvisioningUpdates` visade sig aldrig lyckas skapa ett
-# distributionscertifikat på en engångs-CI-runner, se App/fastlane/Fastfile)
-# och ligger krypterat i det privata repot blixten85/bastion-certificates.
-#
-# Secrets som krävs (Settings -> Secrets and variables -> Actions):
-#   APP_STORE_CONNECT_TEAM_ID       10-teckens Team ID (Membership-sidan)
-#   APP_STORE_CONNECT_KEY_ID        Key ID från App Store Connect API-nyckeln
-#   APP_STORE_CONNECT_ISSUER_ID     Issuer ID (samma sida)
-#   APP_STORE_CONNECT_KEY_CONTENT   .p8-filens innehåll, base64-kodat
-#                                   (base64 -i AuthKey_XXXXXXXXXX.p8 | pbcopy)
-#   MATCH_PASSWORD                  Lösenfras som krypterar bastion-certificates
-#   MATCH_DEPLOY_KEY                Privat SSH-nyckel, skrivbehörig deploy key
-#                                   på blixten85/bastion-certificates
 on:
   workflow_dispatch:
     inputs:
       platform:
-        description: "Vilken app ska laddas upp?"
+        description: App to upload
         type: choice
         options: [ios, tvos]
         default: ios
 
-# Jobbet läser bara koden: checkout kör med `persist-credentials: false` och
-# inget steg anropar gh/GITHUB_TOKEN. Uppladdningen till TestFlight går via
-# fastlane och App Store Connect-nycklarna, inte via GitHub-token.
 permissions:
   contents: read
 
-# Serialisera körningar per plattform — två samtidiga `tvos beta` (eller två
-# `ios beta`) skulle annars kunna hämta SAMMA nästa lediga TestFlight-byggnummer
-# och kollidera vid uppladdning. Olika plattformar (ios vs tvos) har egna
-# byggnummer-sekvenser och blockerar därför inte varandra.
 concurrency:
-  # Två oberoende granskningsrundor (devin+cubic) flaggade `inputs.platform`
-  # här som att den serialiserade ios- och tvos-körningar mot varandra
-  # istället för bara mot sig själva — en tredje rundas motkommentar
-  # ifrågasatte om `inputs.*` verkligen saknas i den här scopen, så den
-  # exakta mekanismen är inte helt utredd. `github.event.inputs.*` är
-  # under alla omständigheter den äldre, väletablerade och garanterat
-  # fungerande vägen för workflow_dispatch-indata på workflow-nivå — ett
-  # säkert val oavsett vilken förklaring som stämmer.
   group: testflight-${{ github.event.inputs.platform }}
   cancel-in-progress: false
 
 jobs:
-  testflight:
+  upload:
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      # Samma pin som xcode.yml — se den filen för varför.
-      - name: Välj Xcode 26.4.1
-        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
           xcode-version: "26.4.1"
-
-      - name: Installera XcodeGen
-        run: brew install xcodegen
-
-      - name: Generera Xcode-projekt
-        run: cd App && xcodegen generate
-
+      - run: brew install xcodegen
+      - run: cd App && xcodegen generate
       - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
           ruby-version: "4.0.6"
           bundler-cache: true
           working-directory: App
-
-      # match klonar/pushar bastion-certificates över SSH — samma
-      # deploy-key-mönster som filtered-movies redan använder för sin
-      # PAT-baserade motsvarighet, fast SSH-nyckel-baserat här. Skriven
-      # direkt till en tempfil (inte via ssh-agent-tredjepartsaction) för
-      # att hålla beroendegrafen minimal, samma linje som resten av repot.
-      - name: Sätt upp SSH-nyckel för bastion-certificates
+      - name: Configure signing repository
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.MATCH_DEPLOY_KEY }}" > ~/.ssh/match_deploy_key
+          printf '%s\n' "${{ secrets.MATCH_DEPLOY_KEY }}" > ~/.ssh/match_deploy_key
           chmod 600 ~/.ssh/match_deploy_key
           ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
-
-      - name: fastlane ${{ inputs.platform }} beta
+      - name: Upload
         working-directory: App
         env:
           APP_STORE_CONNECT_TEAM_ID: ${{ secrets.APP_STORE_CONNECT_TEAM_ID }}
@@ -105,8 +47,5 @@ jobs:
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
           APP_STORE_CONNECT_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_KEY_CONTENT }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
-          GIT_SSH_COMMAND: "ssh -i ~/.ssh/match_deploy_key -o IdentitiesOnly=yes"
-        # `fastlane ios beta`/`fastlane tvos beta` — INTE bara `fastlane beta`
-        # (som alltid kör default_platform, :ios) — annars hade tvOS-valet i
-        # dropdownen tyst laddat upp iOS-appen istället.
+          GIT_SSH_COMMAND: ssh -i ~/.ssh/match_deploy_key -o IdentitiesOnly=yes
         run: bundle exec fastlane ${{ inputs.platform }} beta
