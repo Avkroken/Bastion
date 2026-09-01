@@ -1,16 +1,10 @@
 # CI och branchflöde
 
-## Branchmodell
+## Branchmodell och live merge-policy
 
-`main` är den enda långlivade arbetsgrenen. Varje ändring görs på en kortlivad branch och går via PR till `main`. Auto-merge får aktiveras först när det aktiva rulesetet motsvarar mergekontraktet nedan och aktuell PR-HEAD uppfyller samtliga obligatoriska gates. **Squash merge är den enda tillåtna merge-metoden.** Head-branchen raderas automatiskt efter merge.
+`main` är den enda långlivade arbetsgrenen. Ändringar går via ready pull request från en kortlivad branch och squash är enda tillåtna merge-metod.
 
-CI körs på PR mot `main` och, där efter-merge-verifiering eller publicering behövs, på push till `main`. Kortlivade arbetsbrancher behöver ingen separat push-CI när samma commit redan verifieras av PR-eventet.
-
-## Mergekontrakt
-
-Det aktiva repository-rulesetet `main-protection` gäller default branch. Det har inga bypass-aktörer, blockerar deletion och force push samt kräver PR med squash merge, 0 generella approvals, ingen last-push-approval och lösta review-trådar.
-
-Följande status checks är obligatoriska på senaste PR-HEAD:
+Organisationens aktiva rulesets är verkställande sanning. Vid senaste live-verifieringen krävs på aktuell PR-HEAD:
 
 - `CI / android`
 - `CI / windows`
@@ -20,29 +14,36 @@ Följande status checks är obligatoriska på senaste PR-HEAD:
 - `scope-policy`
 - `scan-pr / osv-scan`
 
-Required-status-policyn är strict, vilket innebär att PR:n måste vara verifierad mot senaste `main` innan merge.
+Required status checks är strict mot aktuell `main`. Default-branch-policyn kräver dessutom 1 approval, avfärdar stale approvals efter push, kräver last-push approval från någon annan än senaste pushern, kräver resolved review threads, blockerar deletion/force push och har inga bypass actors.
 
-De fem `CI / …`-jobben är stabila aggregate-gates. De kör alltid. Ett internt plattformsjobb får vara `skipped` när impact-routern uttryckligen bedömer plattformen som opåverkad; aggregate-jobbet blir då success. Om impact-jobbet eller en relevant build/test misslyckas måste motsvarande aggregate-gate misslyckas.
+CodeQL verkställs av Code Scanning merge protection med `medium_or_higher` för security alerts och `errors_and_warnings` för övriga alerts. Copilot Code Review och CodeRabbit är rådgivande; faktiska findings ska utvärderas men tjänsternas tillgänglighet är inte i sig en required status check.
 
-CodeQL hanteras av rulesetets Code Scanning merge protection, inte som en vanlig required status check. Tröskeln är `errors_and_warnings` för vanliga alerts och `medium_or_higher` för security alerts.
+Org-rulesetet `main` refererar fortfarande till Regelverkets `.github/workflows/osv-scanner.yml` som central required workflow. Det är organisationsnivå och måste ändras separat när den centrala OSV-kopplingen tas bort.
 
-Copilot Code Review är rådgivande, har `review_on_push: true` och är inte en mergegate eftersom tillgänglighet och quota inte är deterministiska.
+## Direkta plattformsgates
 
-CodeRabbit är best-effort och är inte en required status check. Konfigurationen använder `review_progress: true`, `fail_commit_status: true`, incremental review efter varje push och `auto_pause_after_reviewed_commits: 0`. Saknad, väntande, rate-limitad eller otillgänglig CodeRabbit-review blockerar inte ensam merge. Faktiska findings ska däremot utvärderas och relevanta review-trådar måste lösas innan merge.
+Bastion använder inte längre `.github/scripts/ci-impact.sh`, dess testscript eller `ci-impact-test.yml`. De fem required plattformsworkflows kör i stället den verifiering som deras statusnamn påstår på varje PR:
 
-## Impact-routing
+- `CI / android` — Gradle build/test för Android.
+- `CI / windows` — .NET core-tester och WinUI-build.
+- `CI / linux` — Rust/GTK4 workspace build/test samt deklarerad MSRV-build.
+- `CI / swift-linux` — Swift package build/test i Linux-container.
+- `CI / apple` — XcodeGen, iOS/macOS/tvOS build, SwiftPM på macOS och iOS-screenshot smoke path.
 
-`.github/scripts/ci-impact.sh` klassificerar diffen till Apple, root-Swift/SSHCore, Android, Windows, LinuxApp och CLI-paketering.
+Det gör required-gates enklare att resonera om och eliminerar en separat routingmotor som kunde ge falska negativa skip-beslut. Kostnaden är att fler plattformsjobb körs på dokumentations- och workflowändringar; det är ett medvetet fail-closed-val.
 
-- Apple UI/projekt => Apple-jobb.
-- `Sources/SSHCore/**` => Apple + root-Swift + CLI-paketering.
-- `Sources/bastion-cli/**` => root-Swift + CLI-paketering.
-- `Tests/SSHCoreTests/**` => root-Swift.
-- `Android/**`, `WindowsApp/**`, `LinuxApp/**` => respektive plattform.
-- Okänd kod/config eller ändring i impact-motorn => full matris.
+## Scope policy
 
-Required checks får inte filtreras bort på workflow-nivå med `paths:` om det kan lämna dem i `Expected/Pending`. Required workflows använder därför billiga impact-jobb och job-level `if:` för dyrt arbete. Routingtabellen testas av `.github/scripts/test-ci-impact.sh` och `.github/workflows/ci-impact-test.yml`.
+`.github/workflows/scope-policy.yml` producerar `scope-policy`. Vanliga kortlivade branches har inget särskilt filscope. Namngivna `platform/*`-branches och `core/swift` har avgränsat filscope; workflowen verifierar base/head-SHA, kräver en giltig icke-tom diff och failar om en ändrad fil ligger utanför tillåtet område.
 
-Målet är att verifiera relevant kod utan att köra hela plattformsmatrisen i onödan. Vid osäkerhet körs mer CI, inte mindre.
+## Paketering och release
 
-Den tidigare workflowen `.github/workflows/required-ci.yml` är borttagen. Dess `CI / required` syntaxkontrollerade endast impact-scriptet och var därför inte ett korrekt aggregate-bevis för plattforms-CI.
+CLI `.deb`/`.rpm` samt LinuxApp `.deb`/`.rpm` är kompletterande build/install-smoke-verifiering. De är inte de fem plattforms-rulesetgates men körs på PR för att upptäcka paketeringsregressioner.
+
+`TestFlight` är manuellt och separat från PR-CI. Signering och App Store Connect-data kommer endast från Actions secrets och ska aldrig committas.
+
+## Security
+
+`.github/workflows/osv-scanner.yml` är repositoryts egen dependency-vulnerability scan. PR-jobbet producerar `scan-pr / osv-scan`; `main`/schedule/manual används för kompletterande rapportering.
+
+Repositoryt har ingen egen security-remediation-dispatcher, PR-watchdog, review-auto-fix eller Code Scanning-snapshotwriter. GitHub Actions ska inte skapa/uppdatera branches eller PR:er eller arma auto-merge.
