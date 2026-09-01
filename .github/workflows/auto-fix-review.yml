@@ -3,15 +3,14 @@ name: Auto-fix trusted review feedback
 # Reagerar bara på kodreviews från uttryckligen betrodda botkonton.
 # Den här workflowen skriver inte kod själv. Den ber Codex åtgärda den
 # specifika reviewn/kommentaren; Codex-pushen måste sedan klara ordinarie
-# PR-checkar, review-thread-resolution och merge queue.
+# PR-checkar, review-thread-resolution och repositoryregler.
 #
 # Valfritt: sätt repository variable AUTO_FIX_REVIEW_BOTS till en
 # kommaseparerad lista med ytterligare betrodda bot-login.
 #
 # Identitet: en kommentar skriven av github-actions[bot] via GITHUB_TOKEN
 # plockas inte alltid upp av andra botar (mentions från GITHUB_TOKEN triggar
-# inte nedströms automation). Konfigurera därför samma App-identitet som
-# security-alert-snapshot använder:
+# inte nedströms automation). Använd därför Gamnacken App-identiteten:
 #   repository variable GAMNACKEN_ID
 #   repository secret   GAMNACKEN_PEMKEY
 # App-identiteten är obligatorisk; utan den ska jobbet faila tydligt i stället
@@ -115,7 +114,7 @@ jobs:
               marker,
               `@codex address that feedback from ${summary}: ${sourceUrl}`,
               '',
-              'Ändra endast PR-grenen. Lös inte review-tråden förrän ändringen är pushad och relevant feedback faktiskt är åtgärdad. Ordinarie required checks och merge queue avgör om ändringen får mergas.'
+              'Ändra endast PR-grenen. Lös inte review-tråden förrän ändringen är pushad och relevant feedback faktiskt är åtgärdad. Ordinarie required checks och repositoryregler avgör om ändringen får mergas.'
             ].join('\n');
 
             await github.rest.issues.createComment({
