@@ -1,5 +1,7 @@
 default_platform(:ios)
 
+# Beteendeneutral CodeQL-trigger: håll Ruby i PR-diffen så default setup producerar ruby-konfigurationen som main-rulesetet kräver.
+
 # TestFlight-uppladdning. Körs manuellt (workflow_dispatch, se
 # .github/workflows/testflight.yml) — inte på varje push, eftersom varje
 # körning konsumerar ett byggnummer hos Apple.

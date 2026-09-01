@@ -1,5 +1,7 @@
 package se.denied.bastion.ssh
 
+// Beteendeneutral CodeQL-trigger: håll Kotlin i PR-diffen så default setup producerar java-kotlin-konfigurationen som main-rulesetet kräver.
+
 import org.apache.sshd.client.SshClient
 import org.apache.sshd.client.session.ClientSession
 import org.apache.sshd.client.channel.ClientChannelEvent

@@ -1,3 +1,4 @@
+using System.Net.Sockets;
 using Renci.SshNet;
 using Renci.SshNet.Common;
 
@@ -18,7 +19,28 @@ public sealed class SshHostKeyChangedException(string message) : Exception(messa
 
 public sealed class SshSession : IDisposable
 {
+    private static readonly TimeSpan DefaultKeepAliveInterval = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan DefaultProbeTimeout = TimeSpan.FromSeconds(10);
+
+    private sealed class KeepAliveMonitor
+    {
+        public CancellationTokenSource Cancellation { get; } = new();
+    }
+
     private readonly SshClient _client;
+    private readonly object _keepAliveGate = new();
+    private readonly object _probeGate = new();
+    private KeepAliveMonitor? _keepAliveMonitor;
+    private int _disposed;
+
+    /// <summary>
+    /// Processvid signal för interaktiva sessioner vars svarsbärande
+    /// liveness-sonder har nått feltröskeln. Signalen innehåller den exakta
+    /// sessionen så UI:t kan hitta rätt flik utan att SSH-kärnan känner till
+    /// WinUI. Vanlig remote shell-close fortsätter via <see cref="ShellStream.Closed"/>.
+    /// </summary>
+    public static event Action<SshSession>? SessionConnectionLost;
+
     public ShellStream Shell { get; }
 
     private SshSession(SshClient client, ShellStream shell)
@@ -51,12 +73,165 @@ public sealed class SshSession : IDisposable
                 shell.WriteLine(host.StartupCommand);
             }
 
-            return new SshSession(client, shell);
+            var session = new SshSession(client, shell);
+            session.StartKeepAlive();
+            return session;
         }
         catch
         {
             client.Dispose();
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Startar död-detektering för den befintliga SSH-sessionen. SSH.NETs
+    /// inbyggda <c>KeepAliveInterval</c> skickar bara SSH_MSG_IGNORE och kan
+    /// därför hålla NAT/brandväggar varma men inte bevisa att motparten svarar.
+    /// Sonden använder i stället OpenSSH:s svarsbärande globala
+    /// <c>keepalive@openssh.com</c>-request med <c>want-reply=true</c>. Den
+    /// öppnar ingen kanal och startar inget fjärrkommando. Endast timeout/
+    /// transportfel räknas som en missad sond. Efter <paramref name="maxMissed"/>
+    /// missar stängs sessionen och <see cref="SessionConnectionLost"/>
+    /// signalerar UI:t. Normal remote shell-close fortsätter signaleras av
+    /// <see cref="ShellStream.Closed"/>.
+    /// </summary>
+    public void StartKeepAlive(
+        TimeSpan? interval = null,
+        TimeSpan? probeTimeout = null,
+        int maxMissed = 3)
+    {
+        var effectiveInterval = interval ?? DefaultKeepAliveInterval;
+        var effectiveTimeout = probeTimeout ?? DefaultProbeTimeout;
+        if (effectiveInterval <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(interval));
+        if (effectiveTimeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(probeTimeout));
+        if (maxMissed <= 0) throw new ArgumentOutOfRangeException(nameof(maxMissed));
+
+        // Validera SSH.NET-kontraktet synkront. En framtida biblioteksversion
+        // som flyttar de interna session-/message-kontrakten ska ge ett tydligt
+        // fel här, inte en bakgrundstask som tyst slutar bevaka sessionen.
+        SshNetGlobalLivenessProbe.ValidateContract();
+
+        var monitor = new KeepAliveMonitor();
+        KeepAliveMonitor? previous;
+        lock (_keepAliveGate)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            previous = _keepAliveMonitor;
+            _keepAliveMonitor = monitor;
+            _ = MonitorLivenessAsync(monitor, effectiveInterval, effectiveTimeout, maxMissed);
+        }
+        previous?.Cancellation.Cancel();
+    }
+
+    public void StopKeepAlive()
+    {
+        KeepAliveMonitor? monitor;
+        lock (_keepAliveGate)
+        {
+            monitor = _keepAliveMonitor;
+            _keepAliveMonitor = null;
+        }
+        monitor?.Cancellation.Cancel();
+    }
+
+    private async Task MonitorLivenessAsync(
+        KeepAliveMonitor monitor,
+        TimeSpan interval,
+        TimeSpan probeTimeout,
+        int maxMissed)
+    {
+        var cancellation = monitor.Cancellation;
+        var missed = 0;
+        try
+        {
+            while (!cancellation.IsCancellationRequested)
+            {
+                await Task.Delay(interval, cancellation.Token).ConfigureAwait(false);
+
+                bool alive;
+                lock (_probeGate)
+                {
+                    if (cancellation.IsCancellationRequested) return;
+                    alive = ProbeLiveness(probeTimeout);
+                }
+                if (cancellation.IsCancellationRequested) return;
+
+                if (alive)
+                {
+                    missed = 0;
+                    continue;
+                }
+
+                missed += 1;
+                if (missed < maxMissed) continue;
+
+                // Ägarskapskontroll och teardown måste vara atomiska gentemot
+                // StartKeepAlive/StopKeepAlive. Om låset släpps före Dispose()
+                // kan en ny monitor installeras och sedan stängas av den gamla.
+                lock (_keepAliveGate)
+                {
+                    if (!ReferenceEquals(_keepAliveMonitor, monitor) || cancellation.IsCancellationRequested)
+                    {
+                        return;
+                    }
+
+                    // Monitor-låset är reentrant. Dispose -> StopKeepAlive kan
+                    // därför ta samma lås igen, nollställa/cancel:a just denna
+                    // monitor och sätta _disposed innan någon ny StartKeepAlive
+                    // får möjlighet att installera en ersättare.
+                    Dispose();
+                }
+
+                SessionConnectionLost?.Invoke(this);
+                return;
+            }
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            // normal StopKeepAlive/Dispose
+        }
+        finally
+        {
+            lock (_keepAliveGate)
+            {
+                if (ReferenceEquals(_keepAliveMonitor, monitor))
+                {
+                    _keepAliveMonitor = null;
+                }
+            }
+
+            // CancellationTokenSource disponeras medvetet inte här. Start/Stop
+            // avbryter föregående monitor efter att _keepAliveGate släppts; en
+            // samtidig Dispose här skulle göra Cancel() race-känsligt och kunna
+            // kasta ObjectDisposedException. Källan blir GC-återvunnen när den
+            // avslutade monitorn inte längre refereras.
+        }
+    }
+
+    private bool ProbeLiveness(TimeSpan timeout)
+    {
+        try
+        {
+            if (!_client.IsConnected) return false;
+            return SshNetGlobalLivenessProbe.SendAndWaitForReply(_client, timeout);
+        }
+        catch (SshException)
+        {
+            return false;
+        }
+        catch (SocketException)
+        {
+            return false;
+        }
+        catch (ObjectDisposedException)
+        {
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            // Sessionen kan ha hunnit stängas parallellt med sonden.
+            return false;
         }
     }
 
@@ -146,8 +321,42 @@ public sealed class SshSession : IDisposable
 
     public void Dispose()
     {
-        Shell.Dispose();
-        _client.Disconnect();
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+
+        StopKeepAlive();
+        try
+        {
+            Shell.Dispose();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Sessionen kan redan ha städats via fjärrstängning.
+        }
+        catch (SshException)
+        {
+            // En död SSH-transport får inte stoppa lokal städning.
+        }
+        catch (SocketException)
+        {
+            // Samma transportfall på socketnivå.
+        }
+
+        try
+        {
+            if (_client.IsConnected) _client.Disconnect();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Redan städad av en parallell fjärrstängning.
+        }
+        catch (SshException)
+        {
+            // Transporten är redan bruten; Dispose nedan släpper resurserna.
+        }
+        catch (SocketException)
+        {
+            // Transporten är redan bruten på socketnivå.
+        }
         _client.Dispose();
     }
 }
