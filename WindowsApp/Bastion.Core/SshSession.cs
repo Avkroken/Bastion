@@ -33,6 +33,14 @@ public sealed class SshSession : IDisposable
     private KeepAliveMonitor? _keepAliveMonitor;
     private int _disposed;
 
+    /// <summary>
+    /// Processvid signal för interaktiva sessioner vars svarsbärande
+    /// liveness-sonder har nått feltröskeln. Signalen innehåller den exakta
+    /// sessionen så UI:t kan hitta rätt flik utan att SSH-kärnan känner till
+    /// WinUI. Vanlig remote shell-close fortsätter via <see cref="ShellStream.Closed"/>.
+    /// </summary>
+    public static event Action<SshSession>? SessionConnectionLost;
+
     public ShellStream Shell { get; }
 
     private SshSession(SshClient client, ShellStream shell)
@@ -83,8 +91,9 @@ public sealed class SshSession : IDisposable
     /// Sonden använder i stället SSH.NETs kanal-request
     /// <c>keepalive@openssh.com</c>, som kräver success/failure-svar men inte
     /// startar något fjärrkommando. Endast timeout/transportfel räknas som en
-    /// missad sond. Efter <paramref name="maxMissed"/> missar stängs sessionen,
-    /// vilket får <see cref="ShellStream.Closed"/> att signalera befintlig UI-kod.
+    /// missad sond. Efter <paramref name="maxMissed"/> missar stängs sessionen
+    /// och <see cref="SessionConnectionLost"/> signalerar UI:t. Normal remote
+    /// shell-close fortsätter signaleras av <see cref="ShellStream.Closed"/>.
     /// </summary>
     public void StartKeepAlive(
         TimeSpan? interval = null,
@@ -169,6 +178,7 @@ public sealed class SshSession : IDisposable
                 }
 
                 Dispose();
+                SessionConnectionLost?.Invoke(this);
                 return;
             }
         }
