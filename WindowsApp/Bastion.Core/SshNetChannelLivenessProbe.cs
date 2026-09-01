@@ -19,7 +19,7 @@ internal static class SshNetChannelLivenessProbe
 {
     private static readonly FieldInfo ChannelField =
         typeof(ShellStream).GetField("_channel", BindingFlags.Instance | BindingFlags.NonPublic)
-        ?? throw new NotSupportedException("SSH.NET ShellStream saknar den förväntade _channel-fältet");
+        ?? throw new NotSupportedException("SSH.NET ShellStream saknar det förväntade _channel-fältet");
 
     private static readonly MethodInfo SendKeepAliveRequest =
         ChannelField.FieldType.GetMethod("SendKeepAliveRequest", BindingFlags.Instance | BindingFlags.Public)
@@ -32,6 +32,9 @@ internal static class SshNetChannelLivenessProbe
             throw new NotSupportedException("SSH.NET SendKeepAliveRequest har ändrat signatur");
         }
     }
+
+    /// <summary>Forcerar statisk kontraktsvalidering innan bakgrundsbevakningen startas.</summary>
+    public static void ValidateContract() => _ = SendKeepAliveRequest;
 
     /// <summary>
     /// Skickar en no-op kanal-request och väntar på success/failure-svar.
