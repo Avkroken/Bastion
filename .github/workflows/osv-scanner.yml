@@ -1,8 +1,4 @@
-name: OSV-Scanner
-
-# Differentiell skanning på PR och full rapportering på main/schema.
-# OSV är kompletterande säkerhetsverifiering och inte ett required context i
-# repositoryts nuvarande live-ruleset.
+name: OSV
 
 on:
   pull_request:
@@ -10,7 +6,7 @@ on:
   push:
     branches: [main]
   schedule:
-    - cron: '40 4 * * 1'
+    - cron: "50 5 * * 1"
   workflow_dispatch:
 
 permissions: {}
@@ -25,7 +21,7 @@ jobs:
       security-events: write
 
   scan-main:
-    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'pull_request'
     uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
     permissions:
       actions: read
