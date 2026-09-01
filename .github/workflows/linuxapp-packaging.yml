@@ -10,9 +10,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: linuxapp-debian-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-deb-linuxapp:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: LinuxApp
@@ -37,14 +42,17 @@ jobs:
         run: |
           set -euo pipefail
           needed=$(LC_ALL=C readelf -d target/release/bastion-linuxapp | sed -n 's/.*Shared library: \[\(.*\)\].*/\1/p')
-          packages=''
-          for lib in $needed; do
+          packages=()
+          while IFS= read -r lib; do
+            [[ -n "$lib" ]] || continue
             case "$lib" in libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libutil.so*|libgcc_s.so*|ld-linux*|linux-vdso*) continue;; esac
             path=$(ldconfig -p | awk -v lib="$lib" '$1 == lib && $0 ~ /x86-64/ { print $NF; exit }')
+            [[ -n "$path" ]] || { echo "::error::Could not locate $lib"; exit 1; }
             pkg=$(dpkg -S "$(readlink -f "$path")" | head -1 | cut -d: -f1 | cut -d, -f1 | xargs)
-            packages="$packages $pkg"
-          done
-          extra=$(printf '%s\n' $packages | sort -u | grep -v '^$' | grep -v '^libc6$' | paste -sd, - | sed 's/,/, /g')
+            [[ -n "$pkg" ]] || { echo "::error::Could not map $lib to a Debian package"; exit 1; }
+            packages+=("$pkg")
+          done <<< "$needed"
+          extra=$(printf '%s\n' "${packages[@]}" | sort -u | grep -v '^$' | grep -v '^libc6$' | paste -sd, - | sed 's/,/, /g')
           echo "depends=libc6${extra:+, $extra}" >> "$GITHUB_OUTPUT"
       - name: Build package
         env:
