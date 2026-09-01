@@ -14,7 +14,7 @@ Organisationens aktiva rulesets är verkställande sanning. Vid senaste live-ver
 - `scope-policy`
 - `scan-pr / osv-scan`
 
-Required status checks är strict mot aktuell `main`. Default-branch-policyn kräver dessutom 1 approval, avfärdar stale approvals efter push, kräver last-push approval från någon annan än senaste pushern, kräver resolved review threads, blockerar deletion/force push och har inga bypass actors.
+Required status checks är strict mot aktuell `main`. Default-branch-policyn kräver 0 approvals, ingen last-push approval, resolved review threads, blockerar deletion/force push och har inga bypass actors.
 
 CodeQL verkställs av Code Scanning merge protection med `medium_or_higher` för security alerts och `errors_and_warnings` för övriga alerts. Copilot Code Review och CodeRabbit är rådgivande; faktiska findings ska utvärderas men tjänsternas tillgänglighet är inte i sig en required status check.
 
@@ -28,7 +28,7 @@ Bastion använder inte längre `.github/scripts/ci-impact.sh`, dess testscript e
 - `CI / windows` — .NET core-tester och WinUI-build.
 - `CI / linux` — Rust/GTK4 workspace build/test samt deklarerad MSRV-build.
 - `CI / swift-linux` — Swift package build/test i Linux-container.
-- `CI / apple` — XcodeGen, iOS/macOS/tvOS build, SwiftPM på macOS och iOS-screenshot smoke path.
+- `CI / apple` — XcodeGen, iOS/macOS/tvOS build samt SwiftPM build/test på macOS.
 
 Det gör required-gates enklare att resonera om och eliminerar en separat routingmotor som kunde ge falska negativa skip-beslut. Kostnaden är att fler plattformsjobb körs på dokumentations- och workflowändringar; det är ett medvetet fail-closed-val.
 

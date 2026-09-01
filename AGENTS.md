@@ -26,7 +26,7 @@ Live organisationsrulesets kräver på senaste PR-HEAD:
 - `scope-policy`
 - `scan-pr / osv-scan`
 
-Statuspolicyn är strict. Org-rulesetet för `main` kräver dessutom en approval, avvisar stale reviews efter push, kräver last-push approval av någon annan, lösta review-trådar och CodeQL merge protection. Copilot och CodeRabbit är rådgivande men faktiska relevanta findings ska utvärderas och åtgärdas.
+Statuspolicyn är strict. Org-rulesetet för `main` kräver 0 approvals, ingen last-push approval, lösta review-trådar och CodeQL merge protection. Copilot och CodeRabbit är rådgivande men faktiska relevanta findings ska utvärderas och åtgärdas.
 
 Efter varje push ska aktuell HEAD, required checks, mergeability och review-state kontrolleras igen.
 

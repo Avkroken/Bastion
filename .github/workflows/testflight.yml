@@ -40,7 +40,10 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "$MATCH_DEPLOY_KEY" > ~/.ssh/match_deploy_key
           chmod 600 ~/.ssh/match_deploy_key
-          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          cat > ~/.ssh/known_hosts <<'EOF'
+          github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+          EOF
+          chmod 600 ~/.ssh/known_hosts
       - name: Upload
         working-directory: App
         env:
