@@ -88,12 +88,13 @@ public sealed class SshSession : IDisposable
     /// Startar död-detektering för den befintliga SSH-sessionen. SSH.NETs
     /// inbyggda <c>KeepAliveInterval</c> skickar bara SSH_MSG_IGNORE och kan
     /// därför hålla NAT/brandväggar varma men inte bevisa att motparten svarar.
-    /// Sonden använder i stället SSH.NETs kanal-request
-    /// <c>keepalive@openssh.com</c>, som kräver success/failure-svar men inte
-    /// startar något fjärrkommando. Endast timeout/transportfel räknas som en
-    /// missad sond. Efter <paramref name="maxMissed"/> missar stängs sessionen
-    /// och <see cref="SessionConnectionLost"/> signalerar UI:t. Normal remote
-    /// shell-close fortsätter signaleras av <see cref="ShellStream.Closed"/>.
+    /// Sonden använder i stället OpenSSH:s svarsbärande globala
+    /// <c>keepalive@openssh.com</c>-request med <c>want-reply=true</c>. Den
+    /// öppnar ingen kanal och startar inget fjärrkommando. Endast timeout/
+    /// transportfel räknas som en missad sond. Efter <paramref name="maxMissed"/>
+    /// missar stängs sessionen och <see cref="SessionConnectionLost"/>
+    /// signalerar UI:t. Normal remote shell-close fortsätter signaleras av
+    /// <see cref="ShellStream.Closed"/>.
     /// </summary>
     public void StartKeepAlive(
         TimeSpan? interval = null,
@@ -107,9 +108,9 @@ public sealed class SshSession : IDisposable
         if (maxMissed <= 0) throw new ArgumentOutOfRangeException(nameof(maxMissed));
 
         // Validera SSH.NET-kontraktet synkront. En framtida biblioteksversion
-        // som flyttar den interna kanalmetoden ska ge ett tydligt fel här, inte
-        // en bakgrundstask som tyst slutar bevaka sessionen.
-        SshNetChannelLivenessProbe.ValidateContract();
+        // som flyttar de interna session-/message-kontrakten ska ge ett tydligt
+        // fel här, inte en bakgrundstask som tyst slutar bevaka sessionen.
+        SshNetGlobalLivenessProbe.ValidateContract();
 
         var monitor = new KeepAliveMonitor();
         KeepAliveMonitor? previous;
@@ -213,22 +214,7 @@ public sealed class SshSession : IDisposable
         try
         {
             if (!_client.IsConnected) return false;
-        }
-        catch (ObjectDisposedException)
-        {
-            return false;
-        }
-
-        var connectionInfo = _client.ConnectionInfo;
-        var previousTimeout = connectionInfo.Timeout;
-        try
-        {
-            // ChannelSession.WaitOnHandle använder ConnectionInfo.Timeout.
-            // WindowsApp använder denna SshClient endast för den interaktiva
-            // shell-kanalen; engångskommandon/SFTP har egna klienter.
-            connectionInfo.Timeout = timeout;
-            SshNetChannelLivenessProbe.SendAndWaitForReply(Shell);
-            return true; // success ELLER failure är ett svar och bevisar liv.
+            return SshNetGlobalLivenessProbe.SendAndWaitForReply(_client, timeout);
         }
         catch (SshException)
         {
@@ -244,12 +230,8 @@ public sealed class SshSession : IDisposable
         }
         catch (InvalidOperationException)
         {
-            // ShellStream kan sakna aktiv kanal efter parallell fjärrstängning.
+            // Sessionen kan ha hunnit stängas parallellt med sonden.
             return false;
-        }
-        finally
-        {
-            connectionInfo.Timeout = previousTimeout;
         }
     }
 
