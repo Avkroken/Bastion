@@ -34,9 +34,11 @@ jobs:
           bundler-cache: true
           working-directory: App
       - name: Configure signing repository
+        env:
+          MATCH_DEPLOY_KEY: ${{ secrets.MATCH_DEPLOY_KEY }}
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.MATCH_DEPLOY_KEY }}" > ~/.ssh/match_deploy_key
+          printf '%s\n' "$MATCH_DEPLOY_KEY" > ~/.ssh/match_deploy_key
           chmod 600 ~/.ssh/match_deploy_key
           ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
       - name: Upload
@@ -48,4 +50,5 @@ jobs:
           APP_STORE_CONNECT_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_KEY_CONTENT }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
           GIT_SSH_COMMAND: ssh -i ~/.ssh/match_deploy_key -o IdentitiesOnly=yes
-        run: bundle exec fastlane ${{ inputs.platform }} beta
+          PLATFORM: ${{ inputs.platform }}
+        run: bundle exec fastlane "$PLATFORM" beta
