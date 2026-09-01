@@ -7,6 +7,8 @@ using Renci.SshNet.Messages.Connection;
 
 namespace Bastion.Core;
 
+// Beteendeneutral CodeQL-trigger: håll C# i PR-diffen så default setup producerar csharp-konfigurationen som main-rulesetet kräver.
+
 /// <summary>
 /// Smal adapter för SSH.NET 2026.0.0:s svarsbärande globala SSH-request.
 ///
