@@ -56,6 +56,8 @@ Den tidigare `.github/workflows/required-ci.yml` är avsiktligt borttagen. Dess 
 
 Paketerings-, release-, security- och deploy-workflows som inte uttryckligen listas som merge-gates ovan är kompletterande verifiering. OSV är däremot obligatoriskt via `scan-pr / osv-scan`, och CodeQL säkras genom rulesetets Code Scanning merge protection i stället för genom en skör lista av dynamiska analysjobb.
 
+Security alerts hanteras native-first av GitHub och därefter centralt av Skvallerbyttan. Repositoryt ska inte ha en separat schemalagd Code Scanning-snapshot/poller eller en egen security-remediation-dispatcher.
+
 ## Pre-PR quality gate
 
 Granska hela diffen mot base branch före ready PR. Kontrollera korrekthet, säkerhet, felhantering, kompatibilitet och relevanta edge cases. Kör tillämpliga tester, lint, typecheck och build. Lägg till eller uppdatera tester när beteende ändras och detta är praktiskt testbart. Om full lokal validering inte är möjlig ska begränsningen beskrivas konkret i PR:n; hitta inte på gröna resultat.
