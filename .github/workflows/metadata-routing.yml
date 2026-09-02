@@ -1,0 +1,30 @@
+name: Central metadata routing
+
+on:
+  issues:
+    types: [opened, reopened, labeled, unlabeled]
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions: {}
+
+jobs:
+  issue:
+    if: github.event_name == 'issues'
+    permissions:
+      issues: write
+      pull-requests: write
+    uses: Avkroken/.github/.github/workflows/metadata-routing.yml@39ee7122b537a44c3f5a3380ee85c096b4a16b4f
+    with:
+      item-kind: issue
+      item-number: ${{ github.event.issue.number }}
+
+  pull-request:
+    if: github.event_name == 'pull_request_target'
+    permissions:
+      issues: write
+      pull-requests: write
+    uses: Avkroken/.github/.github/workflows/metadata-routing.yml@39ee7122b537a44c3f5a3380ee85c096b4a16b4f
+    with:
+      item-kind: pull_request
+      item-number: ${{ github.event.pull_request.number }}
