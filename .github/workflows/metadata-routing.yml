@@ -10,7 +10,7 @@ permissions: {}
 
 jobs:
   issue:
-    if: github.event_name == 'issues'
+    if: github.event_name == 'issues' && (github.event.action == 'opened' || github.event.action == 'reopened' || startsWith(github.event.label.name, 'difficulty:') || startsWith(github.event.label.name, 'security:'))
     permissions:
       issues: write
     uses: Avkroken/.github/.github/workflows/metadata-routing.yml@66f97c6481cc3c005407675d68898c3074f0d7c1
