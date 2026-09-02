@@ -13,8 +13,7 @@ jobs:
     if: github.event_name == 'issues'
     permissions:
       issues: write
-      pull-requests: write
-    uses: Avkroken/.github/.github/workflows/metadata-routing.yml@39ee7122b537a44c3f5a3380ee85c096b4a16b4f
+    uses: Avkroken/.github/.github/workflows/metadata-routing.yml@66f97c6481cc3c005407675d68898c3074f0d7c1
     with:
       item-kind: issue
       item-number: ${{ github.event.issue.number }}
@@ -23,8 +22,7 @@ jobs:
     if: github.event_name == 'pull_request_target'
     permissions:
       issues: write
-      pull-requests: write
-    uses: Avkroken/.github/.github/workflows/metadata-routing.yml@39ee7122b537a44c3f5a3380ee85c096b4a16b4f
+    uses: Avkroken/.github/.github/workflows/metadata-routing.yml@66f97c6481cc3c005407675d68898c3074f0d7c1
     with:
       item-kind: pull_request
       item-number: ${{ github.event.pull_request.number }}
