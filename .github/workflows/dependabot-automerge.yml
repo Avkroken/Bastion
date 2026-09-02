@@ -1,0 +1,51 @@
+name: Dependabot auto-merge
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: dependabot-automerge-${{ github.repository }}
+  cancel-in-progress: true
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Reconcile Dependabot pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -u -o pipefail
+
+          mapfile -t prs < <(
+            gh api --paginate "repos/${GH_REPO}/pulls?state=open&per_page=100" \
+              --jq '.[] | select(.user.login == "dependabot[bot]" and .draft == false) | .number'
+          )
+
+          for pr in "${prs[@]}"; do
+            if [[ "$(gh pr view "$pr" --repo "$GH_REPO" --json autoMergeRequest --jq '.autoMergeRequest != null')" != "true" ]]; then
+              if ! gh pr merge "$pr" --repo "$GH_REPO" --auto --squash; then
+                echo "::warning title=Dependabot auto-merge::Could not arm auto-merge for PR #${pr}; a later reconciliation will retry."
+              fi
+            fi
+
+            merge_state="$(gh pr view "$pr" --repo "$GH_REPO" --json mergeStateStatus --jq '.mergeStateStatus')"
+            if [[ "$merge_state" == "BEHIND" ]]; then
+              if ! gh pr update-branch "$pr" --repo "$GH_REPO"; then
+                echo "::warning title=Dependabot branch update::Could not update PR #${pr}; a later reconciliation will retry."
+              fi
+            fi
+          done
