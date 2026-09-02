@@ -12,7 +12,7 @@ permissions: {}
 jobs:
   queue:
     if: ${{ github.event_name != 'pull_request_target' || github.event.pull_request.user.login == 'dependabot[bot]' }}
-    uses: Avkroken/.github/.github/workflows/dependabot-automerge.yml@main
+    uses: Avkroken/.github/.github/workflows/dependabot-automerge.yml@495b679c076065e7c296d4b84a491dbac61d15e2
     with:
       app-client-id: ${{ vars.GAMNACKEN_CLIENT_ID }}
     secrets:
