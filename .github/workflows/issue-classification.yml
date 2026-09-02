@@ -1,0 +1,15 @@
+name: AI issue classification
+
+on:
+  issues:
+    types: [opened, reopened]
+
+permissions: {}
+
+jobs:
+  classify:
+    permissions:
+      contents: read
+      issues: write
+    uses: Avkroken/.github/.github/workflows/issue-classification.lock.yml@10c8c11ace99be0490191b1a9a0fde714760af11
+    secrets: inherit
