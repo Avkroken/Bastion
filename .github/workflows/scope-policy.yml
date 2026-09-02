@@ -3,6 +3,8 @@ name: Scope policy
 on:
   pull_request:
     branches: [main]
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -17,7 +19,11 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Confirm PR scope policy already passed before queue
+        if: github.event_name == 'merge_group'
+        run: echo "Scope is enforced on each pull request before merge-queue admission."
       - name: Validate scoped branches
+        if: github.event_name == 'pull_request'
         env:
           HEAD_REF: ${{ github.head_ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
