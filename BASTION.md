@@ -2,6 +2,8 @@
 
 Repository-specific instructions for `Avkroken/Bastion`. These instructions supplement the canonical Avkroken policy in `Avkroken/.github/AGENTS.md`.
 
+Live GitHub rules, code-scanning requirements and required checks are intentionally not duplicated here; inspect current repository and organization enforcement when merge eligibility matters.
+
 ## Repository-specific CI contract
 
 Bastion's required platform workflows are direct platform verifications rather than routing layers. Preserve the meaning of each check when changing CI:
