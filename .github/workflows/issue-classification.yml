@@ -9,6 +9,7 @@ permissions: {}
 jobs:
   classify:
     permissions:
+      actions: read
       contents: read
       issues: write
     uses: Avkroken/.github/.github/workflows/issue-classification.lock.yml@aa234f01290aa3e564a93d75f64b437203c47aee
