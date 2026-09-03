@@ -35,9 +35,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t prs < <(
+          pr_numbers="$(
             gh api --paginate "repos/$REPOSITORY/pulls?state=open&per_page=100" --jq '.[].number'
-          )
+          )"
+          if [[ -z "$pr_numbers" ]]; then
+            exit 0
+          fi
+          mapfile -t prs <<<"$pr_numbers"
           for pr in "${prs[@]}"; do
             gh api --method POST "repos/$REPOSITORY/issues/$pr/assignees" \
               -f "assignees[]=$OWNER_ASSIGNEE" >/dev/null
