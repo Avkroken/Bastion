@@ -2,19 +2,23 @@ name: Central metadata routing
 
 on:
   issues:
-    types: [opened, reopened, labeled, unlabeled]
+    types: [labeled, unlabeled]
   schedule:
     - cron: '31 * * * *'
   workflow_dispatch:
+
+concurrency:
+  group: metadata-routing-${{ github.repository }}-${{ github.event.issue.number || github.run_id }}
+  cancel-in-progress: false
 
 permissions: {}
 
 jobs:
   issue:
-    if: github.event_name == 'issues' && (github.event.action == 'opened' || github.event.action == 'reopened' || startsWith(github.event.label.name, 'difficulty:') || startsWith(github.event.label.name, 'security:'))
+    if: github.event_name == 'issues' && (startsWith(github.event.label.name, 'difficulty:') || startsWith(github.event.label.name, 'security:'))
     permissions:
       issues: write
-    uses: Avkroken/.github/.github/workflows/metadata-routing.yml@66f97c6481cc3c005407675d68898c3074f0d7c1
+    uses: Avkroken/.github/.github/workflows/metadata-routing.yml@df48146dd258d8807ace95ff45d4fee3f001c483
     with:
       item-kind: issue
       item-number: ${{ github.event.issue.number }}
@@ -23,6 +27,9 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    concurrency:
+      group: metadata-pr-reconcile-${{ github.repository }}
+      cancel-in-progress: true
     permissions:
       issues: write
       pull-requests: write
@@ -42,7 +49,12 @@ jobs:
             exit 0
           fi
           mapfile -t prs <<<"$pr_numbers"
+          failed=0
           for pr in "${prs[@]}"; do
-            gh api --method POST "repos/$REPOSITORY/issues/$pr/assignees" \
-              -f "assignees[]=$OWNER_ASSIGNEE" >/dev/null
+            if ! gh api --method POST "repos/$REPOSITORY/issues/$pr/assignees" \
+              -f "assignees[]=$OWNER_ASSIGNEE" >/dev/null; then
+              echo "::error::Failed to reconcile owner for pull request #$pr"
+              failed=1
+            fi
           done
+          exit "$failed"
