@@ -4,6 +4,9 @@ title: "bug: "
 labels:
   - bug
 body:
+  - type: markdown
+    attributes:
+      value: Do not report security vulnerabilities here. Use the repository Security tab and Report a vulnerability instead.
   - type: textarea
     id: description
     attributes:
@@ -32,4 +35,4 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: OS, runtime versions, browser, container image, or other relevant context.
+      description: OS, runtime versions, browser, container image, or other relevant context. Remove secrets and personal data.
