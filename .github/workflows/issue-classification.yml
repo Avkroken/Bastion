@@ -1,0 +1,62 @@
+name: AI issue classification
+
+on:
+  issues:
+    types: [opened, reopened]
+
+concurrency:
+  group: metadata-routing-${{ github.repository }}-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  classify:
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    uses: Avkroken/.github/.github/workflows/issue-classification.lock.yml@df48146dd258d8807ace95ff45d4fee3f001c483
+    secrets:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+
+  route:
+    needs: classify
+    permissions:
+      issues: write
+    uses: Avkroken/.github/.github/workflows/metadata-routing.yml@df48146dd258d8807ace95ff45d4fee3f001c483
+    with:
+      item-kind: issue
+      item-number: ${{ github.event.issue.number }}
+
+  validate-classification:
+    needs: route
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+    steps:
+      - name: Verify complete classification metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ITEM_NUMBER: ${{ github.event.issue.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t labels < <(
+            gh api "repos/$REPOSITORY/issues/$ITEM_NUMBER" --jq '.labels[].name'
+          )
+
+          difficulty_count="$(printf '%s\n' "${labels[@]}" | grep -Ec '^difficulty:(low|medium|high)$' || true)"
+          security_count="$(printf '%s\n' "${labels[@]}" | grep -Ec '^security:(critical|high|medium|low|none)$' || true)"
+
+          if printf '%s\n' "${labels[@]}" | grep -Eq '^triage:(pending|invalid)$'; then
+            echo "Classification routing ended in pending or invalid state" >&2
+            exit 1
+          fi
+
+          if [[ "$difficulty_count" != "1" || "$security_count" != "1" ]]; then
+            echo "Expected exactly one canonical difficulty and security label" >&2
+            exit 1
+          fi
