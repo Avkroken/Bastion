@@ -7,47 +7,11 @@ on:
     - cron: '31 * * * *'
   workflow_dispatch:
 
-concurrency:
-  group: metadata-routing-${{ github.repository }}-${{ github.event.issue.number || github.run_id }}
-  queue: max
-  cancel-in-progress: false
-
 permissions: {}
 
 jobs:
-  issue:
-    if: github.event_name == 'issues' && (startsWith(github.event.label.name, 'difficulty:') || startsWith(github.event.label.name, 'security:'))
-    permissions:
-      issues: write
-    uses: Avkroken/.github/.github/workflows/metadata-routing.yml@df48146dd258d8807ace95ff45d4fee3f001c483
-    with:
-      item-kind: issue
-      item-number: ${{ github.event.issue.number }}
-
-  pull-request-reconcile:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+  metadata:
     permissions:
       issues: write
       pull-requests: write
-    steps:
-      - name: Reconcile open pull-request owners
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          OWNER_ASSIGNEE: blixten85
-        shell: bash
-        run: |
-          set -euo pipefail
-          pr_numbers="$(
-            gh api --paginate "repos/$REPOSITORY/pulls?state=open&per_page=100" --jq '.[].number'
-          )"
-          if [[ -z "$pr_numbers" ]]; then
-            exit 0
-          fi
-          mapfile -t prs <<<"$pr_numbers"
-          for pr in "${prs[@]}"; do
-            gh api --method POST "repos/$REPOSITORY/issues/$pr/assignees" \
-              -f "assignees[]=$OWNER_ASSIGNEE" >/dev/null
-          done
+    uses: Avkroken/.github/.github/workflows/metadata-orchestration.yml@980d67fa6e18a4800dd90fdf5cd8f463b236de6c
