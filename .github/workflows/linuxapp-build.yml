@@ -15,7 +15,7 @@ permissions:
 jobs:
   linux:
     name: CI / linux
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, mp100-linux]
     defaults:
       run:
         working-directory: LinuxApp
