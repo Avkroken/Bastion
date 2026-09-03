@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   build-deb-linuxapp:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'mp100-linux' }}
     timeout-minutes: 20
     defaults:
       run:
@@ -31,9 +31,17 @@ jobs:
         run: |
           tag=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
-      - run: |
+      - name: Install system dependencies on hosted fork runner
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev pkg-config binutils
+      - name: Verify pre-provisioned system dependencies on mp100
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          for package in libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev pkg-config binutils; do
+            dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -qx 'install ok installed'
+          done
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           toolchain: stable
