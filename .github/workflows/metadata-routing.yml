@@ -42,7 +42,12 @@ jobs:
             exit 0
           fi
           mapfile -t prs <<<"$pr_numbers"
+          failed=0
           for pr in "${prs[@]}"; do
-            gh api --method POST "repos/$REPOSITORY/issues/$pr/assignees" \
-              -f "assignees[]=$OWNER_ASSIGNEE" >/dev/null
+            if ! gh api --method POST "repos/$REPOSITORY/issues/$pr/assignees" \
+              -f "assignees[]=$OWNER_ASSIGNEE" >/dev/null; then
+              echo "::error::Failed to reconcile owner for pull request #$pr"
+              failed=1
+            fi
           done
+          exit "$failed"
