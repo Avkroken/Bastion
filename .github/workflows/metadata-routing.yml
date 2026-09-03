@@ -9,6 +9,7 @@ on:
 
 concurrency:
   group: metadata-routing-${{ github.repository }}-${{ github.event.issue.number || github.run_id }}
+  queue: max
   cancel-in-progress: false
 
 permissions: {}
