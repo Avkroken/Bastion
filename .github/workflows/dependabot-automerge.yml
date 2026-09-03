@@ -1,0 +1,16 @@
+name: Dependabot queue events
+
+on:
+  schedule:
+    - cron: '53 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  queue:
+    uses: Avkroken/.github/.github/workflows/dependabot-automerge.yml@495b679c076065e7c296d4b84a491dbac61d15e2
+    with:
+      app-client-id: ${{ vars.GAMNACKEN_CLIENT_ID }}
+    secrets:
+      app-private-key: ${{ secrets.GAMNACKEN_PRIVATE_KEY }}
