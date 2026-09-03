@@ -29,7 +29,7 @@ jobs:
     timeout-minutes: 5
     concurrency:
       group: metadata-pr-reconcile-${{ github.repository }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     permissions:
       issues: write
       pull-requests: write
