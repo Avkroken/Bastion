@@ -32,7 +32,10 @@ jobs:
         if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
         run: |
           for package in libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev pkg-config; do
-            dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -qx 'install ok installed'
+            if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -qx 'install ok installed'; then
+              echo "::error::Missing required package on mp100: $package"
+              exit 1
+            fi
           done
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
