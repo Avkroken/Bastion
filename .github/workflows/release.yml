@@ -1,0 +1,14 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  release:
+    uses: Avkroken/.github/.github/workflows/release-please.yml@69097571da198457246b50acf9c42ffa397b96ea
+    secrets:
+      app-private-key: ${{ secrets.GAMNACKEN_PRIVATE_KEY }}
