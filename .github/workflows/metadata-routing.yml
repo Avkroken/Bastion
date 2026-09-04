@@ -14,4 +14,4 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
-    uses: Avkroken/.github/.github/workflows/metadata-orchestration.yml@980d67fa6e18a4800dd90fdf5cd8f463b236de6c
+    uses: Avkroken/.github/.github/workflows/metadata-orchestration.yml@1c5f92d60bfae9151d889e0db1f5e1ecec6a93e2
