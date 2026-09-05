@@ -97,6 +97,61 @@ class BastionSshSessionTest {
     }
 
     @Test
+    fun `closed interactive shell can be reopened on the same authenticated session`() {
+        val secondShellOutput = StringBuilder()
+        val receivedSecondShell = CountDownLatch(1)
+
+        BastionSshSession(
+            host = "127.0.0.1",
+            port = port,
+            user = "tester",
+            knownHostsFile = knownHostsFile,
+        ).use { session ->
+            session.connect(password = "s3cret")
+            session.openShell { }.close()
+
+            session.openShell { chunk ->
+                synchronized(secondShellOutput) {
+                    secondShellOutput.append(chunk)
+                    if (secondShellOutput.contains("shell:reopened\n")) {
+                        receivedSecondShell.countDown()
+                    }
+                }
+            }.use { shell ->
+                shell.sendLine("reopened")
+                assertTrue(
+                    receivedSecondShell.await(5, TimeUnit.SECONDS),
+                    "en stängd shell ska kunna ersättas på samma session",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `remote shell EOF invokes closure callback`() {
+        val closed = CountDownLatch(1)
+
+        BastionSshSession(
+            host = "127.0.0.1",
+            port = port,
+            user = "tester",
+            knownHostsFile = knownHostsFile,
+        ).use { session ->
+            session.connect(password = "s3cret")
+            val shell = session.openShell(
+                onClosed = { closed.countDown() },
+                onOutput = {},
+            )
+            shell.sendLine("exit")
+            assertTrue(
+                closed.await(5, TimeUnit.SECONDS),
+                "fjärr-EOF ska signalera att shellen har stängts",
+            )
+            assertTrue(!shell.isOpen)
+        }
+    }
+
+    @Test
     fun `first seen host key is persisted same key reconnects and changed key is rejected`() {
         BastionSshSession(
             host = "127.0.0.1",
@@ -247,6 +302,7 @@ private class LineShellCommand : org.apache.sshd.server.command.Command {
                     for (line in lines) {
                         out.write("shell:$line\n".toByteArray(Charsets.UTF_8))
                         out.flush()
+                        if (line == "exit") break
                     }
                 }
                 exitCallback.onExit(0)
