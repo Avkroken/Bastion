@@ -3,13 +3,19 @@ package se.denied.bastion.ssh
 // Beteendeneutral CodeQL-trigger: håll Kotlin i PR-diffen så default setup producerar java-kotlin-konfigurationen som main-rulesetet kräver.
 
 import org.apache.sshd.client.SshClient
-import org.apache.sshd.client.session.ClientSession
 import org.apache.sshd.client.channel.ClientChannelEvent
+import org.apache.sshd.client.keyverifier.AcceptAllServerKeyVerifier
+import org.apache.sshd.client.keyverifier.KnownHostsServerKeyVerifier
+import org.apache.sshd.client.session.ClientSession
 import org.apache.sshd.core.CoreModuleProperties
 import java.io.ByteArrayOutputStream
+import java.net.SocketAddress
+import java.nio.file.Path
+import java.security.PublicKey
 import java.time.Duration
 import java.util.EnumSet
 import java.util.concurrent.TimeUnit
+import java.util.function.Supplier
 
 /**
  * Minsta gemensamma SSH-kärna på Android-sidan, motsvarande SSHSession.swift
@@ -17,6 +23,11 @@ import java.util.concurrent.TimeUnit
  * anslutning fungerar: connect/run/close på lösenordsautentisering. Jump
  * hosts, streaming exec och nyckelbaserad auth är UTELÄMNADE tills det finns
  * en verklig UI att koppla dem till, inte gissat i förväg.
+ *
+ * Servernycklar verifieras med persistent TOFU mot [knownHostsFile]. En okänd
+ * värd accepteras första gången och skrivs till filen; en senare ändrad nyckel
+ * för samma värd avvisas. Läs-, parse- och skrivfel i known_hosts avvisar också
+ * anslutningen i stället för att degradera till osäker verifiering.
  *
  * En autentiserad session skickar svarsbärande SSH-heartbeats. Om servern
  * slutar svara stänger Apache MINA SSHD sessionen efter det konfigurerade
@@ -26,11 +37,13 @@ class BastionSshSession(
     private val host: String,
     private val port: Int,
     private val user: String,
+    knownHostsFile: Path,
     heartbeatIntervalSeconds: Long = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
     heartbeatMaxNoReply: Int = DEFAULT_HEARTBEAT_MAX_NO_REPLY,
 ) : AutoCloseable {
 
     private val client: SshClient = SshClient.setUpDefaultClient().also {
+        it.serverKeyVerifier = FailClosedKnownHostsServerKeyVerifier(knownHostsFile)
         configureHeartbeat(it, heartbeatIntervalSeconds, heartbeatMaxNoReply)
     }
     private var session: ClientSession? = null
@@ -90,5 +103,41 @@ class BastionSshSession(
             CoreModuleProperties.HEARTBEAT_INTERVAL.set(client, Duration.ofSeconds(intervalSeconds))
             CoreModuleProperties.HEARTBEAT_NO_REPLY_MAX.set(client, maxNoReply)
         }
+    }
+}
+
+/**
+ * MINA:s standardimplementation accepterar i vissa felvägar en okänd nyckel
+ * även när known_hosts inte kan läsas eller uppdateras. Bastion ska i stället
+ * fail-closed: TOFU är bara giltigt om den observerade nyckeln kan persisteras
+ * och senare läsas tillbaka.
+ */
+private class FailClosedKnownHostsServerKeyVerifier(
+    knownHostsFile: Path,
+) : KnownHostsServerKeyVerifier(AcceptAllServerKeyVerifier.INSTANCE, knownHostsFile) {
+
+    override fun acceptIncompleteHostKeys(
+        clientSession: ClientSession,
+        remoteAddress: SocketAddress,
+        serverKey: PublicKey,
+        reason: Throwable,
+    ): Boolean = false
+
+    override fun getKnownHostSupplier(
+        clientSession: ClientSession?,
+        file: Path,
+    ): Supplier<MutableCollection<HostEntryPair>> = Supplier {
+        reloadKnownHosts(clientSession, file)
+    }
+
+    override fun handleKnownHostsFileUpdateFailure(
+        clientSession: ClientSession,
+        remoteAddress: SocketAddress,
+        serverKey: PublicKey,
+        file: Path,
+        knownHosts: MutableCollection<HostEntryPair>,
+        reason: Throwable,
+    ) {
+        throw IllegalStateException("known_hosts kunde inte uppdateras: $file", reason)
     }
 }

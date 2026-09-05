@@ -11,6 +11,7 @@ import org.junit.Before
 import org.junit.Test
 import java.io.OutputStream
 import java.nio.file.Files
+import java.nio.file.Path
 import java.time.Duration
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -24,22 +25,13 @@ import kotlin.test.assertTrue
 class BastionSshSessionTest {
 
     private lateinit var server: SshServer
+    private lateinit var knownHostsFile: Path
     private var port: Int = 0
 
     @Before
     fun startServer() {
-        server = SshServer.setUpDefaultServer()
-        server.port = 0 // slumpad ledig port
-        server.keyPairProvider = SimpleGeneratorHostKeyProvider(
-            Files.createTempFile("bastion-test-hostkey", ".ser")
-        )
-        server.passwordAuthenticator = PasswordAuthenticator { username, password, _ ->
-            username == "tester" && password == "s3cret"
-        }
-        server.commandFactory = CommandFactory { _, command ->
-            EchoCommand(command)
-        }
-        server.start()
+        knownHostsFile = Files.createTempDirectory("bastion-known-hosts-test").resolve("known_hosts")
+        server = createServer(0)
         port = server.port
     }
 
@@ -50,11 +42,73 @@ class BastionSshSessionTest {
 
     @Test
     fun `connect authenticate run and get real output back`() {
-        BastionSshSession(host = "127.0.0.1", port = port, user = "tester").use { session ->
+        BastionSshSession(
+            host = "127.0.0.1",
+            port = port,
+            user = "tester",
+            knownHostsFile = knownHostsFile,
+        ).use { session ->
             session.connect(password = "s3cret")
             val output = session.run("echo hello-from-bastion")
             assertEquals("hello-from-bastion\n", output)
         }
+    }
+
+    @Test
+    fun `first seen host key is persisted same key reconnects and changed key is rejected`() {
+        BastionSshSession(
+            host = "127.0.0.1",
+            port = port,
+            user = "tester",
+            knownHostsFile = knownHostsFile,
+        ).use { session ->
+            session.connect(password = "s3cret")
+        }
+
+        assertTrue(Files.exists(knownHostsFile))
+        assertTrue(String(Files.readAllBytes(knownHostsFile), Charsets.UTF_8).contains("127.0.0.1"))
+
+        BastionSshSession(
+            host = "127.0.0.1",
+            port = port,
+            user = "tester",
+            knownHostsFile = knownHostsFile,
+        ).use { session ->
+            session.connect(password = "s3cret")
+        }
+
+        server.stop(true)
+        server = createServer(port)
+
+        val changedKeyResult = runCatching {
+            BastionSshSession(
+                host = "127.0.0.1",
+                port = port,
+                user = "tester",
+                knownHostsFile = knownHostsFile,
+            ).use { session ->
+                session.connect(password = "s3cret", timeoutSeconds = 5)
+            }
+        }
+        assertTrue(changedKeyResult.isFailure, "ändrad host key måste avvisas")
+    }
+
+    @Test
+    fun `unusable known hosts path rejects connection`() {
+        val directoryInsteadOfFile = Files.createTempDirectory("bastion-unusable-known-hosts")
+
+        val result = runCatching {
+            BastionSshSession(
+                host = "127.0.0.1",
+                port = port,
+                user = "tester",
+                knownHostsFile = directoryInsteadOfFile,
+            ).use { session ->
+                session.connect(password = "s3cret", timeoutSeconds = 5)
+            }
+        }
+
+        assertTrue(result.isFailure, "known_hosts-fel måste avvisa anslutningen")
     }
 
     @Test
@@ -63,6 +117,7 @@ class BastionSshSessionTest {
             host = "127.0.0.1",
             port = port,
             user = "tester",
+            knownHostsFile = knownHostsFile,
             heartbeatIntervalSeconds = 1,
             heartbeatMaxNoReply = 2,
         ).use { session ->
@@ -84,9 +139,26 @@ class BastionSshSessionTest {
 
     @Test(expected = Exception::class)
     fun `wrong password is rejected, not silently accepted`() {
-        BastionSshSession(host = "127.0.0.1", port = port, user = "tester").use { session ->
+        BastionSshSession(
+            host = "127.0.0.1",
+            port = port,
+            user = "tester",
+            knownHostsFile = knownHostsFile,
+        ).use { session ->
             session.connect(password = "fel-lösenord", timeoutSeconds = 5)
         }
+    }
+
+    private fun createServer(requestedPort: Int): SshServer = SshServer.setUpDefaultServer().also { sshd ->
+        sshd.port = requestedPort
+        sshd.keyPairProvider = SimpleGeneratorHostKeyProvider(
+            Files.createTempFile("bastion-test-hostkey", ".ser")
+        )
+        sshd.passwordAuthenticator = PasswordAuthenticator { username, password, _ ->
+            username == "tester" && password == "s3cret"
+        }
+        sshd.commandFactory = CommandFactory { _, command -> EchoCommand(command) }
+        sshd.start()
     }
 }
 
