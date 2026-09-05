@@ -9,6 +9,6 @@ permissions: {}
 
 jobs:
   release:
-    uses: Avkroken/.github/.github/workflows/release-please.yml@69097571da198457246b50acf9c42ffa397b96ea
+    uses: Avkroken/.github/.github/workflows/release-please.yml@7b01a9c73b2d37388e8b8fe15acbfd3044f425e9
     secrets:
       app-private-key: ${{ secrets.GAMNACKEN_PRIVATE_KEY }}
