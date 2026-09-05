@@ -101,8 +101,8 @@ class BastionSshSession(
      * eller efter shellen så länge den underliggande sessionen är öppen.
      */
     fun openShell(
-        onOutput: (String) -> Unit,
         timeoutSeconds: Long = 10,
+        onOutput: (String) -> Unit,
     ): InteractiveShell {
         val s = checkNotNull(session) { "connect() måste anropas innan openShell()" }
         check(interactiveShell == null) { "En interaktiv shell är redan öppen" }
