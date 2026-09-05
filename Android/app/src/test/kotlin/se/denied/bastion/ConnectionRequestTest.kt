@@ -2,6 +2,7 @@ package se.denied.bastion
 
 import org.junit.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class ConnectionRequestTest {
@@ -35,6 +36,19 @@ class ConnectionRequestTest {
         assertEquals(22, credentials.port)
         assertEquals("shell-user", credentials.user)
         assertEquals(" secret ", credentials.password)
+    }
+
+    @Test
+    fun credentialsToStringRedactsPassword() {
+        val credentials = ConnectionCredentials(
+            host = "terminal.example.com",
+            port = 22,
+            user = "shell-user",
+            password = "top-secret-password",
+        )
+
+        assertFalse(credentials.toString().contains("top-secret-password"))
+        assertTrue(credentials.toString().contains("password=***"))
     }
 
     @Test
