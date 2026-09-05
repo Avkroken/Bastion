@@ -3,10 +3,13 @@ package se.denied.bastion.ssh
 // Beteendeneutral CodeQL-trigger: håll Kotlin i PR-diffen så default setup producerar java-kotlin-konfigurationen som main-rulesetet kräver.
 
 import org.apache.sshd.client.SshClient
-import org.apache.sshd.client.session.ClientSession
 import org.apache.sshd.client.channel.ClientChannelEvent
+import org.apache.sshd.client.keyverifier.AcceptAllServerKeyVerifier
+import org.apache.sshd.client.keyverifier.KnownHostsServerKeyVerifier
+import org.apache.sshd.client.session.ClientSession
 import org.apache.sshd.core.CoreModuleProperties
 import java.io.ByteArrayOutputStream
+import java.nio.file.Path
 import java.time.Duration
 import java.util.EnumSet
 import java.util.concurrent.TimeUnit
@@ -18,6 +21,11 @@ import java.util.concurrent.TimeUnit
  * hosts, streaming exec och nyckelbaserad auth är UTELÄMNADE tills det finns
  * en verklig UI att koppla dem till, inte gissat i förväg.
  *
+ * Servernycklar verifieras med persistent TOFU mot [knownHostsFile]. En okänd
+ * värd accepteras första gången och skrivs till filen; en senare ändrad nyckel
+ * för samma värd avvisas. Det ersätter Apache MINA SSHD:s osäkra default som
+ * accepterar alla servernycklar.
+ *
  * En autentiserad session skickar svarsbärande SSH-heartbeats. Om servern
  * slutar svara stänger Apache MINA SSHD sessionen efter det konfigurerade
  * antalet obesvarade heartbeats i stället för att lämna en tyst död session.
@@ -26,11 +34,16 @@ class BastionSshSession(
     private val host: String,
     private val port: Int,
     private val user: String,
+    knownHostsFile: Path,
     heartbeatIntervalSeconds: Long = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
     heartbeatMaxNoReply: Int = DEFAULT_HEARTBEAT_MAX_NO_REPLY,
 ) : AutoCloseable {
 
     private val client: SshClient = SshClient.setUpDefaultClient().also {
+        it.serverKeyVerifier = KnownHostsServerKeyVerifier(
+            AcceptAllServerKeyVerifier.INSTANCE,
+            knownHostsFile,
+        )
         configureHeartbeat(it, heartbeatIntervalSeconds, heartbeatMaxNoReply)
     }
     private var session: ClientSession? = null
