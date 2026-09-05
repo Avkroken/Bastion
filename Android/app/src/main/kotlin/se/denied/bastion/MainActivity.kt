@@ -25,7 +25,7 @@ class MainActivity : Activity() {
         )
         val command = field("Kommando").apply { setText("uname -a") }
         val status = TextView(this).apply {
-            text = "Fyll i anslutningsuppgifterna. Inga uppgifter sparas."
+            text = "Inloggningsuppgifter sparas inte. Värdens adress och publika host key sparas lokalt i known_hosts."
             setTextIsSelectable(true)
         }
         val connect = Button(this).apply { text = "Anslut och kör" }
