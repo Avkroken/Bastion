@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/Avkroken/Bastion/compare/v0.20.1...v0.21.0) (2026-09-05)
+
+
+### Features
+
+* **android:** detect silent SSH sessions ([#436](https://github.com/Avkroken/Bastion/issues/436)) ([fa75204](https://github.com/Avkroken/Bastion/commit/fa75204323d1827d870bd6b0e0d3c811040f099e))
+
 ## [0.20.1](https://github.com/Avkroken/Bastion/compare/v0.20.0...v0.20.1) (2026-09-05)
 
 
