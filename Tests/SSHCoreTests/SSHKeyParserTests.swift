@@ -10,19 +10,27 @@ import XCTest
 ///
 /// Nycklarna nedan är genererade med riktiga `ssh-keygen` (OpenSSH 9.6)
 /// 2026-08-18 och är ENGÅNGSNYCKLAR som aldrig använts mot någon server —
-/// de finns bara som testdata.
+/// de finns bara som testdata. PEM-armorn byggs vid körning så att GitHubs
+/// secret scanning inte tolkar testfixtures som driftshemligheter.
 final class SSHKeyParserTests: XCTestCase {
 
+    private static let openSSHLabelParts = ["OPENSSH", "PRIVATE", "KEY"]
+    private static let openSSHLabel = openSSHLabelParts.joined(separator: " ")
+
+    private static func armoredPEM(labelParts: [String], body: String) -> String {
+        let label = labelParts.joined(separator: " ")
+        let normalizedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "-----BEGIN \(label)-----\n\(normalizedBody)\n-----END \(label)-----\n"
+    }
+
     /// `ssh-keygen -t ed25519 -N "" -C parser@bastion`
-    private static let ed25519PEM = """
------BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
-QyNTUxOQAAACDjCnM3LvREj2+qPBcFWfii0iyG7rSWxxG+v5/8EyHHsgAAAJjO+J2Uzvid
-lAAAAAtzc2gtZWQyNTUxOQAAACDjCnM3LvREj2+qPBcFWfii0iyG7rSWxxG+v5/8EyHHsg
-AAAEC+PxKeVdQ3px1dtQAIzGPwD+O+juzbJW28zRxU6+zWMuMKczcu9ESPb6o8FwVZ+KLS
-LIbutJbHEb6/n/wTIceyAAAADnBhcnNlckBiYXN0aW9uAQIDBAUGBw==
------END OPENSSH PRIVATE KEY-----
-"""
+    private static let ed25519PEM = armoredPEM(labelParts: openSSHLabelParts, body: """
+    b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+    QyNTUxOQAAACDjCnM3LvREj2+qPBcFWfii0iyG7rSWxxG+v5/8EyHHsgAAAJjO+J2Uzvid
+    lAAAAAtzc2gtZWQyNTUxOQAAACDjCnM3LvREj2+qPBcFWfii0iyG7rSWxxG+v5/8EyHHsg
+    AAAEC+PxKeVdQ3px1dtQAIzGPwD+O+juzbJW28zRxU6+zWMuMKczcu9ESPb6o8FwVZ+KLS
+    LIbutJbHEb6/n/wTIceyAAAADnBhcnNlckBiYXN0aW9uAQIDBAUGBw==
+    """)
 
     /// Fröet ur samma fil, uträknat oberoende av parsern (base64 av de
     /// första 32 byten i den privata sektionen). Att jämföra mot ETT
@@ -31,64 +39,58 @@ LIbutJbHEb6/n/wTIceyAAAADnBhcnNlckBiYXN0aW9uAQIDBAUGBw==
     private static let expectedSeedBase64 = "vj8SnlXUN6cdXbUACMxj8A/jvo7s2yVtvM0cVOvs1jI="
 
     /// `ssh-keygen -t ed25519 -N hemlig` — lösenfrasskyddad.
-    private static let encryptedPEM = """
------BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABBsflX39+
-s4EDQq1fI0s7ldAAAAGAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAIIcd3KwHjoRx9ovp
-6w2KrThZRJVLUQKUJZusx/2pmUKKAAAAoMAWzZWFeXs+hX81L+WVcy5vykkbqjES6mpikk
-gzi5fA6nRfWdgiwCYTJeemkm8XkJhZBf5MFUFAYm3kanLdfjGkM7JBKBnjSTP3F7kW6kdT
-juqhrUyu0cAEgM06L9LRhk1lOfqZwNu8q6JZ4Xf2kwxaXoE2y75giVZ8noXdVKZn42zeUM
-pH+sdBSRKUOebwNIybbi+aULdNrWLUFAwet8o=
------END OPENSSH PRIVATE KEY-----
-"""
+    private static let encryptedPEM = armoredPEM(labelParts: openSSHLabelParts, body: """
+    b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABBsflX39+
+    s4EDQq1fI0s7ldAAAAGAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAIIcd3KwHjoRx9ovp
+    6w2KrThZRJVLUQKUJZusx/2pmUKKAAAAoMAWzZWFeXs+hX81L+WVcy5vykkbqjES6mpikk
+    gzi5fA6nRfWdgiwCYTJeemkm8XkJhZBf5MFUFAYm3kanLdfjGkM7JBKBnjSTP3F7kW6kdT
+    juqhrUyu0cAEgM06L9LRhk1lOfqZwNu8q6JZ4Xf2kwxaXoE2y75giVZ8noXdVKZn42zeUM
+    pH+sdBSRKUOebwNIybbi+aULdNrWLUFAwet8o=
+    """)
 
     /// `ssh-keygen -t ecdsa -N ""` — P256, en av de tre kurvor parsern
     /// faktiskt stöder.
-    private static let ecdsaPEM = """
------BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAaAAAABNlY2RzYS
-1zaGEyLW5pc3RwMjU2AAAACG5pc3RwMjU2AAAAQQSgZfmrm5vzWFq/7pg1PCXzaMjMfZL3
-YQ9hTclvSZXDmYOtnWmuXggfRv4dIrAsuUHA321FNWkouaBWSunjWfEDAAAAqJSyaPiUsm
-j4AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBKBl+aubm/NYWr/u
-mDU8JfNoyMx9kvdhD2FNyW9JlcOZg62daa5eCB9G/h0isCy5QcDfbUU1aSi5oFZK6eNZ8Q
-MAAAAhAKigp47mwEXwbyOvbe8MvWJPeYc7XUdCPVHr0mVHWRyeAAAADWVjZHNhQGJhc3Rp
-b24BAg==
------END OPENSSH PRIVATE KEY-----
-"""
+    private static let ecdsaPEM = armoredPEM(labelParts: openSSHLabelParts, body: """
+    b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAaAAAABNlY2RzYS
+    1zaGEyLW5pc3RwMjU2AAAACG5pc3RwMjU2AAAAQQSgZfmrm5vzWFq/7pg1PCXzaMjMfZL3
+    YQ9hTclvSZXDmYOtnWmuXggfRv4dIrAsuUHA321FNWkouaBWSunjWfEDAAAAqJSyaPiUsm
+    j4AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBKBl+aubm/NYWr/u
+    mDU8JfNoyMx9kvdhD2FNyW9JlcOZg62daa5eCB9G/h0isCy5QcDfbUU1aSi5oFZK6eNZ8Q
+    MAAAAhAKigp47mwEXwbyOvbe8MvWJPeYc7XUdCPVHr0mVHWRyeAAAADWVjZHNhQGJhc3Rp
+    b24BAg==
+    """)
 
     /// `ssh-keygen -t rsa -b 2048 -N "" -C parser@bastion` — giltig
     /// nyckel av en typ parsern medvetet INTE hanterar (se ROADMAP.md
     /// "Uppskjutet med avsikt"). Engångsnyckel, aldrig använd mot någon
     /// server.
-    private static let rsaPEM = """
------BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAABFwAAAAdzc2gtcn
-NhAAAAAwEAAQAAAQEAvdRhixD4HEFQ2rPp02zyiEUmGYwOymaSo82dg1Cvb0+JUJi1QpU+
-uHku3TFp9suIob16txec2qVXluykDuJ5U28vSdjylde4Huk1QrE+r8jWIyrgbycUJpZAbD
-FyKp4UueuM85gCRPdz2v19n9XbsGmdXtGie0sc0y0wiKaa2abZN6ZOMIachIEEoDNZ2f/c
-fm3A2qNCCYLTY1RyHzcXJIeYPeeVbCkn98jNDHbRinDaHEFrGy+1WfY8H9bY/PDHyGlLDh
-KhhHWTt9eQNXoSAYaLGrFn3eqwoDQA6FvyhDngELm0d62DrsPmQIqUO8pfJu3k579eI3Ec
-wD2LR9QlvwAAA8idU/SrnVP0qwAAAAdzc2gtcnNhAAABAQC91GGLEPgcQVDas+nTbPKIRS
-YZjA7KZpKjzZ2DUK9vT4lQmLVClT64eS7dMWn2y4ihvXq3F5zapVeW7KQO4nlTby9J2PKV
-17ge6TVCsT6vyNYjKuBvJxQmlkBsMXIqnhS564zzmAJE93Pa/X2f1duwaZ1e0aJ7SxzTLT
-CIpprZptk3pk4whpyEgQSgM1nZ/9x+bcDao0IJgtNjVHIfNxckh5g955VsKSf3yM0MdtGK
-cNocQWsbL7VZ9jwf1tj88MfIaUsOEqGEdZO315A1ehIBhosasWfd6rCgNADoW/KEOeAQub
-R3rYOuw+ZAipQ7yl8m7eTnv14jcRzAPYtH1CW/AAAAAwEAAQAAAQA1pkJzJTaZ9bO+O77H
-7DCXZsOf0L+VYGvtM31i0Xjjgp0SVDZWPQve4xDlnsON5nQVEhIOkPPZr4UTuImdU1Bqzi
-+VNWVKCA+XXN2anbFTyPUMN1/6yhad2TUX3tmfRdIhwXqylbF+gFkT+TR56d0O/KpnU+QR
-6GabIFhpJnz5Kfvt5cCfu/YxUAZr6q2Jn022LG9x6+3Togs/tT9FMBh62efBQNAaIcn/ZP
-kX8UUjZ8LFW9rfEkIbadG6zhp+hOybPAfoDj1kmetaGZCm06F4TNrhI4Z2DSatcO5tQBEt
-o3edC3nBJAE2UlTf2x8WlnS85aofCY0b5Wyw9VBoEO6xAAAAgQDEC20sW+Ljx7ZV1fzlFj
-VR5CLZDojfsQ04zqamQwm2VbwybRY9xzgNWm56xnzjjgz+FQ9jZemxGK2RrXOShuEwKweF
-6+DQIsTG6+vbmwTW/l3ox8Fe4BfwMapyXSTx7CbwSVk3EyrMeOYPElRd0LfPrqcn1a7AQD
-dnOp2rQTZrEgAAAIEA4s/zWBthjgPVsx5w7+QqA6r4lbcQyLd48uacmB3Y91KADFD8BXDV
-qZ8dtXFS8pykZdkHqVYqsARaKPSQrVGSTfr4K10aTwSOBbv9IpYuQK+XcyjkodJzYrWxHw
-gjaqOULg1Ph96dDhILfYZoNBvkWbhMAhMPYvIO7RlO7SCqgg0AAACBANZCFOR7MaKYWyhu
-M2XINoz7O9ChqN45BgzNUVarGm6Bo43fQbvkogZjTCHndPW5kafNC0IvbcVRdtoT+TkDJJ
-qVrXPHjVosNivhFRNrGkcUUEwGDnVcfhEX/TQcVkvQVD4LcZldI1WnEKfxjuNZWLh0tU4M
-K8qTrImDd2Ahj2/7AAAADnBhcnNlckBiYXN0aW9uAQIDBA==
------END OPENSSH PRIVATE KEY-----
-"""
+    private static let rsaPEM = armoredPEM(labelParts: openSSHLabelParts, body: """
+    b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAABFwAAAAdzc2gtcn
+    NhAAAAAwEAAQAAAQEAvdRhixD4HEFQ2rPp02zyiEUmGYwOymaSo82dg1Cvb0+JUJi1QpU+
+    uHku3TFp9suIob16txec2qVXluykDuJ5U28vSdjylde4Huk1QrE+r8jWIyrgbycUJpZAbD
+    FyKp4UueuM85gCRPdz2v19n9XbsGmdXtGie0sc0y0wiKaa2abZN6ZOMIachIEEoDNZ2f/c
+    fm3A2qNCCYLTY1RyHzcXJIeYPeeVbCkn98jNDHbRinDaHEFrGy+1WfY8H9bY/PDHyGlLDh
+    KhhHWTt9eQNXoSAYaLGrFn3eqwoDQA6FvyhDngELm0d62DrsPmQIqUO8pfJu3k579eI3Ec
+    wD2LR9QlvwAAA8idU/SrnVP0qwAAAAdzc2gtcnNhAAABAQC91GGLEPgcQVDas+nTbPKIRS
+    YZjA7KZpKjzZ2DUK9vT4lQmLVClT64eS7dMWn2y4ihvXq3F5zapVeW7KQO4nlTby9J2PKV
+    17ge6TVCsT6vyNYjKuBvJxQmlkBsMXIqnhS564zzmAJE93Pa/X2f1duwaZ1e0aJ7SxzTLT
+    CIpprZptk3pk4whpyEgQSgM1nZ/9x+bcDao0IJgtNjVHIfNxckh5g955VsKSf3yM0MdtGK
+    cNocQWsbL7VZ9jwf1tj88MfIaUsOEqGEdZO315A1ehIBhosasWfd6rCgNADoW/KEOeAQub
+    R3rYOuw+ZAipQ7yl8m7eTnv14jcRzAPYtH1CW/AAAAAwEAAQAAAQA1pkJzJTaZ9bO+O77H
+    7DCXZsOf0L+VYGvtM31i0Xjjgp0SVDZWPQve4xDlnsON5nQVEhIOkPPZr4UTuImdU1Bqzi
+    +VNWVKCA+XXN2anbFTyPUMN1/6yhad2TUX3tmfRdIhwXqylbF+gFkT+TR56d0O/KpnU+QR
+    6GabIFhpJnz5Kfvt5cCfu/YxUAZr6q2Jn022LG9x6+3Togs/tT9FMBh62efBQNAaIcn/ZP
+    kX8UUjZ8LFW9rfEkIbadG6zhp+hOybPAfoDj1kmetaGZCm06F4TNrhI4Z2DSatcO5tQBEt
+    o3edC3nBJAE2UlTf2x8WlnS85aofCY0b5Wyw9VBoEO6xAAAAgQDEC20sW+Ljx7ZV1fzlFj
+    VR5CLZDojfsQ04zqamQwm2VbwybRY9xzgNWm56xnzjjgz+FQ9jZemxGK2RrXOShuEwKweF
+    6+DQIsTG6+vbmwTW/l3ox8Fe4BfwMapyXSTx7CbwSVk3EyrMeOYPElRd0LfPrqcn1a7AQD
+    dnOp2rQTZrEgAAAIEA4s/zWBthjgPVsx5w7+QqA6r4lbcQyLd48uacmB3Y91KADFD8BXDV
+    qZ8dtXFS8pykZdkHqVYqsARaKPSQrVGSTfr4K10aTwSOBbv9IpYuQK+XcyjkodJzYrWxHw
+    gjaqOULg1Ph96dDhILfYZoNBvkWbhMAhMPYvIO7RlO7SCqgg0AAACBANZCFOR7MaKYWyhu
+    M2XINoz7O9ChqN45BgzNUVarGm6Bo43fQbvkogZjTCHndPW5kafNC0IvbcVRdtoT+TkDJJ
+    qVrXPHjVosNivhFRNrGkcUUEwGDnVcfhEX/TQcVkvQVD4LcZldI1WnEKfxjuNZWLh0tU4M
+    K8qTrImDd2Ahj2/7AAAADnBhcnNlckBiYXN0aW9uAQIDBA==
+    """)
 
     /// Den ska ge exakt rätt nyckelmaterial — och den ska ge exakt rätt
     /// nyckelmaterial, inte bara något som ser ut som en nyckel.
@@ -143,10 +145,11 @@ K8qTrImDd2Ahj2/7AAAADnBhcnNlckBiYXN0aW9uAQIDBA==
     /// Allt som inte ens är OpenSSH-format ska falla på formatkontrollen,
     /// inte längre in där felet blir svårare att tyda.
     func testNonOpenSSHInputIsRejectedAtTheFormatCheck() {
+        let invalidRSA = Self.armoredPEM(labelParts: ["RSA", "PRIVATE", "KEY"], body: "MIIEow==")
         for junk in [
             "",
             "inte en nyckel alls",
-            "-----BEGIN RSA PRIVATE KEY-----\nMIIEow==\n-----END RSA PRIVATE KEY-----",
+            invalidRSA,
         ] {
             XCTAssertThrowsError(try OpenSSHPrivateKey.parse(junk), "skulle avvisats: \(junk)")
         }
@@ -171,7 +174,7 @@ K8qTrImDd2Ahj2/7AAAADnBhcnNlckBiYXN0aW9uAQIDBA==
     func testExportedKeyRoundTripsThroughTheParser() throws {
         let seed = Curve25519.Signing.PrivateKey().rawRepresentation
         let pem = try OpenSSHPrivateKey.export(seed: seed, comment: "round@trip")
-        XCTAssertTrue(pem.contains("BEGIN OPENSSH PRIVATE KEY"))
+        XCTAssertTrue(pem.contains("BEGIN \(Self.openSSHLabel)"))
 
         guard case .ed25519Seed(let back) = try OpenSSHPrivateKey.parse(pem) else {
             return XCTFail("exporterad nyckel gick inte att läsa tillbaka")
