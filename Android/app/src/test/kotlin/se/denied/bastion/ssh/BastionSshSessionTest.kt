@@ -6,13 +6,17 @@ import org.apache.sshd.server.SshServer
 import org.apache.sshd.server.auth.password.PasswordAuthenticator
 import org.apache.sshd.server.command.CommandFactory
 import org.apache.sshd.server.keyprovider.SimpleGeneratorHostKeyProvider
+import org.apache.sshd.server.shell.ShellFactory
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
+import java.io.InputStream
 import java.io.OutputStream
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -51,6 +55,44 @@ class BastionSshSessionTest {
             session.connect(password = "s3cret")
             val output = session.run("echo hello-from-bastion")
             assertEquals("hello-from-bastion\n", output)
+        }
+    }
+
+    @Test
+    fun `interactive shell stays open across multiple input lines and streams output`() {
+        val output = StringBuilder()
+        val receivedBothLines = CountDownLatch(1)
+
+        BastionSshSession(
+            host = "127.0.0.1",
+            port = port,
+            user = "tester",
+            knownHostsFile = knownHostsFile,
+        ).use { session ->
+            session.connect(password = "s3cret")
+            session.openShell { chunk ->
+                synchronized(output) {
+                    output.append(chunk)
+                    if (
+                        output.contains("shell:first-line\n") &&
+                        output.contains("shell:second-line\n")
+                    ) {
+                        receivedBothLines.countDown()
+                    }
+                }
+            }.use { shell ->
+                shell.sendLine("first-line")
+                shell.sendLine("second-line")
+                assertTrue(
+                    receivedBothLines.await(5, TimeUnit.SECONDS),
+                    "den bestående shell-kanalen ska leverera output för båda inmatningarna",
+                )
+            }
+        }
+
+        synchronized(output) {
+            assertTrue(output.contains("shell:first-line\n"))
+            assertTrue(output.contains("shell:second-line\n"))
         }
     }
 
@@ -158,6 +200,7 @@ class BastionSshSessionTest {
             username == "tester" && password == "s3cret"
         }
         sshd.commandFactory = CommandFactory { _, command -> EchoCommand(command) }
+        sshd.shellFactory = ShellFactory { LineShellCommand() }
         sshd.start()
     }
 }
@@ -167,7 +210,7 @@ private class EchoCommand(private val commandLine: String) : org.apache.sshd.ser
     private lateinit var out: OutputStream
     private lateinit var exitCallback: org.apache.sshd.server.ExitCallback
 
-    override fun setInputStream(input: java.io.InputStream) {}
+    override fun setInputStream(input: InputStream) {}
     override fun setOutputStream(out: OutputStream) { this.out = out }
     override fun setErrorStream(err: OutputStream) {}
     override fun setExitCallback(callback: org.apache.sshd.server.ExitCallback) { this.exitCallback = callback }
@@ -180,4 +223,44 @@ private class EchoCommand(private val commandLine: String) : org.apache.sshd.ser
     }
 
     override fun destroy(channel: org.apache.sshd.server.channel.ChannelSession) {}
+}
+
+/**
+ * In-process interaktiv testshell. Varje rad ekas med ett stabilt prefix så
+ * testet kan bevisa att samma öppna SSH-shell behandlar flera inmatningar.
+ */
+private class LineShellCommand : org.apache.sshd.server.command.Command {
+    private lateinit var input: InputStream
+    private lateinit var out: OutputStream
+    private lateinit var exitCallback: org.apache.sshd.server.ExitCallback
+    private var worker: Thread? = null
+
+    override fun setInputStream(input: InputStream) { this.input = input }
+    override fun setOutputStream(out: OutputStream) { this.out = out }
+    override fun setErrorStream(err: OutputStream) {}
+    override fun setExitCallback(callback: org.apache.sshd.server.ExitCallback) { this.exitCallback = callback }
+
+    override fun start(channel: org.apache.sshd.server.channel.ChannelSession, env: org.apache.sshd.server.Environment) {
+        worker = Thread {
+            try {
+                input.bufferedReader(Charsets.UTF_8).useLines { lines ->
+                    for (line in lines) {
+                        out.write("shell:$line\n".toByteArray(Charsets.UTF_8))
+                        out.flush()
+                    }
+                }
+                exitCallback.onExit(0)
+            } catch (_: Exception) {
+                exitCallback.onExit(1)
+            }
+        }.apply {
+            name = "bastion-android-test-shell"
+            isDaemon = true
+            start()
+        }
+    }
+
+    override fun destroy(channel: org.apache.sshd.server.channel.ChannelSession) {
+        worker?.interrupt()
+    }
 }
