@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.1](https://github.com/Avkroken/Bastion/compare/v0.20.0...v0.20.1) (2026-09-05)
+
+
+### Documentation
+
+* add cross-platform feature conformance matrix ([#434](https://github.com/Avkroken/Bastion/issues/434)) ([312399e](https://github.com/Avkroken/Bastion/commit/312399eb45674dc62120124a0cf9c615eef6439c))
+
 ## [0.20.0](https://github.com/Avkroken/Bastion/compare/v0.19.2...v0.20.0) (2026-09-05)
 
 
