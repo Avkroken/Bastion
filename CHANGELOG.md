@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.1](https://github.com/Avkroken/Bastion/compare/v0.22.0...v0.22.1) (2026-09-05)
+
+
+### Documentation
+
+* rename governance file to REPO.md ([#443](https://github.com/Avkroken/Bastion/issues/443)) ([385a63c](https://github.com/Avkroken/Bastion/commit/385a63ce7fd42eb017e4a25919c26a199ad425a1))
+
 ## [0.22.0](https://github.com/Avkroken/Bastion/compare/v0.21.0...v0.22.0) (2026-09-05)
 
 
