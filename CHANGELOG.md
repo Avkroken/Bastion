@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.2](https://github.com/Avkroken/Bastion/compare/v0.22.1...v0.22.2) (2026-09-05)
+
+
+### Documentation
+
+* clarify repository-specific governance ([#445](https://github.com/Avkroken/Bastion/issues/445)) ([c049e5c](https://github.com/Avkroken/Bastion/commit/c049e5ce19f354d3423662a976d3babdc02b90e5))
+
 ## [0.22.1](https://github.com/Avkroken/Bastion/compare/v0.22.0...v0.22.1) (2026-09-05)
 
 
