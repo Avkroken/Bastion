@@ -16,13 +16,13 @@ A screen or code path alone is not enough for **Yes**. When evidence is incomple
 
 | Capability | Apple (iPhone/iPad/macOS) | Android | Linux | Windows | Evidence / intentional difference |
 |---|---|---|---|---|---|
-| Native client and SSH session | Yes | Yes | Yes | Yes | Native platform stacks are maintained separately; repository CI has platform-specific gates. |
+| Native client and SSH session | Yes | Partial | Yes | Yes | Android now has a launchable native connect/exec surface backed by `BastionSshSession`, but it is not yet a production-complete client. Other platform stacks are maintained separately; repository CI has platform-specific gates. |
 | Password authentication | Yes | Yes | Yes | Yes | Core SSH authentication is implemented across the maintained clients. |
 | SSH key authentication | Partial | Partial | Partial | Yes | Swift and Linux currently have material encrypted-key/RSA limitations; key formats and secure-storage integration are platform-specific, and Android parity remains incomplete. |
 | Host-key verification / known hosts | Yes | Yes | Yes | Yes | Host-key verification is a security boundary and must not be weakened for parity. |
 | Host organization, tags and search | Yes | Partial | Yes | Yes | Linux and Windows have explicit grouping/search implementations; keep Android conservative until its complete normal workflow is verified. |
 | SSH config import | Yes | Partial | Yes | Partial | Shared semantics include `Include`, `Match`, `ForwardAgent`, `RemoteCommand` and `ProxyJump`; platform import UX differs. |
-| Interactive terminal | Yes | Yes | Yes | Yes | Terminal engines are intentionally native/platform-specific rather than one shared UI/runtime. |
+| Interactive terminal | Yes | Gap | Yes | Yes | Android currently exposes connect/exec only; it does not yet provide an interactive terminal workflow. Terminal engines are intentionally native/platform-specific rather than one shared UI/runtime. |
 | Connection liveness / silent-death detection | Yes | Yes | Yes | Yes | Android uses Apache MINA SSHD response-bearing heartbeats with a finite no-reply cutoff; Swift, Linux and Windows have their own tested mechanisms. |
 | System/server dashboard | Yes | Partial | Yes | Yes | Dashboard field sets are maintained per native client; Android parity remains to verify. |
 | Docker workflows | Yes | Partial | Yes | Yes | Normal list/action/log/shell workflows exist on the principal desktop/Apple implementations. |
