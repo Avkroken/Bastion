@@ -19,6 +19,7 @@ import java.security.PublicKey
 import java.time.Duration
 import java.util.EnumSet
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.function.Supplier
 
 /**
@@ -51,6 +52,7 @@ class BastionSshSession(
         configureHeartbeat(it, heartbeatIntervalSeconds, heartbeatMaxNoReply)
     }
     private var session: ClientSession? = null
+    @Volatile
     private var interactiveShell: InteractiveShell? = null
 
     fun connect(password: String, timeoutSeconds: Long = 10) {
@@ -96,12 +98,14 @@ class BastionSshSession(
     /**
      * Öppnar en bestående interaktiv shell-kanal med MINA:s standard-PTY.
      * [onOutput] anropas från en bakgrundstråd och får dekodad UTF-8 i den
-     * ordning SSH-kanalen levererar den. Bara en interaktiv shell-kanal per
-     * [BastionSshSession] stöds; one-shot [run] kan fortfarande användas före
-     * eller efter shellen så länge den underliggande sessionen är öppen.
+     * ordning SSH-kanalen levererar den. [onClosed] anropas exakt en gång när
+     * shellen stängs lokalt, når fjärr-EOF eller avbryts av ett läs-/transportfel.
+     * Bara en interaktiv shell-kanal per [BastionSshSession] stöds åt gången;
+     * efter close kan en ny shell öppnas på samma autentiserade session.
      */
     fun openShell(
         timeoutSeconds: Long = 10,
+        onClosed: (Throwable?) -> Unit = {},
         onOutput: (String) -> Unit,
     ): InteractiveShell {
         val s = checkNotNull(session) { "connect() måste anropas innan openShell()" }
@@ -125,33 +129,21 @@ class BastionSshSession(
             channel.close(false)
             error("SSH-shell saknar utdataström")
         }
-        val readerThread = Thread {
-            try {
-                InputStreamReader(output, Charsets.UTF_8).use { reader ->
-                    val buffer = CharArray(1024)
-                    while (true) {
-                        val count = reader.read(buffer)
-                        if (count < 0) break
-                        if (count > 0) onOutput(String(buffer, 0, count))
-                    }
-                }
-            } catch (_: Exception) {
-                // Kanalens close bryter en blockerad read. Ett sådant lokalt
-                // close-fel är inte terminaloutput och ska inte visas som text
-                // från fjärrvärden.
-            }
-        }.apply {
-            name = "bastion-android-ssh-shell-output"
-            isDaemon = true
-            start()
-        }
 
-        return InteractiveShell(
+        val shell = InteractiveShell(
             channel = channel,
             input = input,
             output = output,
-            readerThread = readerThread,
-        ).also { interactiveShell = it }
+            onClosed = { closedShell, failure ->
+                if (interactiveShell === closedShell) {
+                    interactiveShell = null
+                }
+                onClosed(failure)
+            },
+        )
+        interactiveShell = shell
+        shell.start(onOutput)
+        return shell
     }
 
     override fun close() {
@@ -166,10 +158,41 @@ class BastionSshSession(
         private val channel: ChannelShell,
         private val input: OutputStream,
         private val output: InputStream,
-        private val readerThread: Thread,
+        private val onClosed: (InteractiveShell, Throwable?) -> Unit,
     ) : AutoCloseable {
+        private val callbackSent = AtomicBoolean(false)
+
         @Volatile
         private var closed = false
+        private lateinit var readerThread: Thread
+
+        val isOpen: Boolean
+            get() = !closed && channel.isOpen
+
+        internal fun start(onOutput: (String) -> Unit) {
+            readerThread = Thread {
+                var failure: Throwable? = null
+                try {
+                    InputStreamReader(output, Charsets.UTF_8).use { reader ->
+                        val buffer = CharArray(1024)
+                        while (true) {
+                            val count = reader.read(buffer)
+                            if (count < 0) break
+                            if (count > 0) onOutput(String(buffer, 0, count))
+                        }
+                    }
+                } catch (error: Exception) {
+                    if (!closed) failure = error
+                } finally {
+                    closeResources(waitForReader = false)
+                    notifyClosed(failure)
+                }
+            }.apply {
+                name = "bastion-android-ssh-shell-output"
+                isDaemon = true
+            }
+            readerThread.start()
+        }
 
         @Synchronized
         fun send(text: String) {
@@ -183,13 +206,35 @@ class BastionSshSession(
         }
 
         override fun close() {
-            if (closed) return
-            closed = true
-            runCatching { input.close() }
-            runCatching { channel.close(false) }
-            runCatching { output.close() }
-            if (Thread.currentThread() !== readerThread) {
-                runCatching { readerThread.join(500) }
+            closeResources(waitForReader = true)
+            notifyClosed(null)
+        }
+
+        private fun closeResources(waitForReader: Boolean) {
+            var threadToJoin: Thread? = null
+            synchronized(this) {
+                if (!closed) {
+                    closed = true
+                    runCatching { input.close() }
+                    runCatching { channel.close(false) }
+                    runCatching { output.close() }
+                }
+                if (
+                    waitForReader &&
+                    this::readerThread.isInitialized &&
+                    Thread.currentThread() !== readerThread
+                ) {
+                    threadToJoin = readerThread
+                }
+            }
+            threadToJoin?.let { thread ->
+                runCatching { thread.join(500) }
+            }
+        }
+
+        private fun notifyClosed(failure: Throwable?) {
+            if (callbackSent.compareAndSet(false, true)) {
+                runCatching { onClosed(this, failure) }
             }
         }
     }
