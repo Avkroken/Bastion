@@ -1,16 +1,27 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 
-# Behåll organisationens CodeRabbit-inställningar men gör review-signalen explicit
-# och användbar som best-effort-review. CodeRabbit är inte en required mergegate.
 inheritance: true
 
+# CodeRabbit reviews are dispatched by Avkroken's label-driven review router.
+# Keep local overrides limited to the router contract and repository-specific
+# review guidance; organization settings own shared review/status behavior.
 reviews:
-  # Legacy commit-status ska inte tolkas som mergebevis; faktiska findings
-  # hanteras via review och thread resolution.
-  review_progress: true
-  fail_commit_status: true
   auto_review:
-    enabled: true
-    auto_incremental_review: true
+    enabled: false
+    auto_incremental_review: false
     auto_pause_after_reviewed_commits: 0
-    drafts: false
+    drafts: true
+    labels:
+      - review:coderabbit
+  path_instructions:
+    - path: "Sources/SSHCore/**"
+      instructions: |
+        Treat SSH key, credential and connection handling as security-sensitive.
+        Review filesystem permissions, key lifecycle, command construction,
+        escaping, failure handling and regressions that could expose credentials.
+    - path: "LinuxApp/src/**"
+      instructions: |
+        Treat SSH, WireGuard, key deployment and credential handling as
+        security-sensitive. Review filesystem permissions, subprocess and command
+        construction, escaping, privilege boundaries, secret handling and failure
+        behavior.
