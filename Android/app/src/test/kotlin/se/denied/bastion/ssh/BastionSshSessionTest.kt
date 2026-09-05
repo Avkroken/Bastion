@@ -55,7 +55,7 @@ class BastionSshSessionTest {
     }
 
     @Test
-    fun `first seen host key is persisted and changed key is rejected`() {
+    fun `first seen host key is persisted same key reconnects and changed key is rejected`() {
         BastionSshSession(
             host = "127.0.0.1",
             port = port,
@@ -67,6 +67,15 @@ class BastionSshSessionTest {
 
         assertTrue(Files.exists(knownHostsFile))
         assertTrue(String(Files.readAllBytes(knownHostsFile), Charsets.UTF_8).contains("127.0.0.1"))
+
+        BastionSshSession(
+            host = "127.0.0.1",
+            port = port,
+            user = "tester",
+            knownHostsFile = knownHostsFile,
+        ).use { session ->
+            session.connect(password = "s3cret")
+        }
 
         server.stop(true)
         server = createServer(port)
@@ -82,6 +91,24 @@ class BastionSshSessionTest {
             }
         }
         assertTrue(changedKeyResult.isFailure, "ändrad host key måste avvisas")
+    }
+
+    @Test
+    fun `unusable known hosts path rejects connection`() {
+        val directoryInsteadOfFile = Files.createTempDirectory("bastion-unusable-known-hosts")
+
+        val result = runCatching {
+            BastionSshSession(
+                host = "127.0.0.1",
+                port = port,
+                user = "tester",
+                knownHostsFile = directoryInsteadOfFile,
+            ).use { session ->
+                session.connect(password = "s3cret", timeoutSeconds = 5)
+            }
+        }
+
+        assertTrue(result.isFailure, "known_hosts-fel måste avvisa anslutningen")
     }
 
     @Test
