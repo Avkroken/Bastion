@@ -34,7 +34,7 @@ A screen or code path alone is not enough for **Yes**. When evidence is incomple
 | Native secure storage / biometrics | Yes | Partial | Partial | Partial | Use each platform's native secure facility; do not manufacture parity by sharing secret storage through a cross-platform abstraction. |
 | Keyboard shortcuts / command palette | Yes | Partial | Yes | Partial | Desktop power-user workflows are platform-specific; Android touch UX is intentionally different where appropriate. |
 | Accessibility and adaptive native layout | Partial | Partial | Partial | Partial | This remains a continuous conformance requirement rather than a one-time implementation checkbox. |
-| Packaging / release validation | Yes | Yes | Yes | Yes | Separate platform CI/release paths are expected; passing one platform does not imply another platform is validated. |
+| Packaging / release validation | Verify | Verify | Verify | Verify | Apple has `.github/workflows/testflight.yml`; Linux has dedicated packaging workflows; Android and Windows have platform build CI. Keep all four at **Verify** until successful release-path validation is documented rather than inferring it from workflow presence. |
 
 ## Known verification gates
 
