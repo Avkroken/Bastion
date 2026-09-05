@@ -6,6 +6,9 @@ data class ConnectionCredentials(
     val user: String,
     val password: String,
 ) {
+    override fun toString(): String =
+        "ConnectionCredentials(host=$host, port=$port, user=$user, password=***)"
+
     companion object {
         fun parse(
             host: String,
