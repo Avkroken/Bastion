@@ -38,7 +38,7 @@ A screen or code path alone is not enough for **Yes**. When evidence is incomple
 
 ## Known verification gates
 
-1. Apple OAuth account/provider integration still requires the real Xcode/provider-client-ID verification described in `ROADMAP.md`.
+1. OAuth account/provider integration on Apple still requires the real Xcode/provider-client-ID verification described in `ROADMAP.md`.
 2. Secret material and credentials must never be added merely to make a matrix row pass; native secure-storage and external-provider verification remain real gates.
 3. A platform row moves to **Yes** only when its normal user workflow is usable, tested at the appropriate layer, and documented.
 4. Intentional platform differences should be described in the evidence column rather than hidden as apparent parity.
