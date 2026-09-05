@@ -13,7 +13,6 @@ import java.net.SocketAddress
 import java.nio.file.Path
 import java.security.PublicKey
 import java.time.Duration
-import java.util.Collection
 import java.util.EnumSet
 import java.util.concurrent.TimeUnit
 import java.util.function.Supplier
@@ -127,7 +126,7 @@ private class FailClosedKnownHostsServerKeyVerifier(
     override fun getKnownHostSupplier(
         clientSession: ClientSession?,
         file: Path,
-    ): Supplier<Collection<HostEntryPair>> = Supplier {
+    ): Supplier<MutableCollection<HostEntryPair>> = Supplier {
         reloadKnownHosts(clientSession, file)
     }
 
@@ -136,7 +135,7 @@ private class FailClosedKnownHostsServerKeyVerifier(
         remoteAddress: SocketAddress,
         serverKey: PublicKey,
         file: Path,
-        knownHosts: Collection<HostEntryPair>,
+        knownHosts: MutableCollection<HostEntryPair>,
         reason: Throwable,
     ) {
         throw IllegalStateException("known_hosts kunde inte uppdateras: $file", reason)
