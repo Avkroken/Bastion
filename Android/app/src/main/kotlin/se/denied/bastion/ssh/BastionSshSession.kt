@@ -10,9 +10,9 @@ import org.apache.sshd.client.keyverifier.KnownHostsServerKeyVerifier
 import org.apache.sshd.client.session.ClientSession
 import org.apache.sshd.core.CoreModuleProperties
 import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.io.InputStreamReader
-import java.io.PipedInputStream
-import java.io.PipedOutputStream
+import java.io.OutputStream
 import java.net.SocketAddress
 import java.nio.file.Path
 import java.security.PublicKey
@@ -108,18 +108,14 @@ class BastionSshSession(
         check(interactiveShell == null) { "En interaktiv shell är redan öppen" }
 
         val channel = s.createShellChannel()
-        val shellInput = PipedOutputStream()
-        val channelInput = PipedInputStream(shellInput, SHELL_PIPE_BUFFER_BYTES)
-        val outputInput = PipedInputStream(SHELL_PIPE_BUFFER_BYTES)
-        val channelOutput = PipedOutputStream(outputInput)
-
-        channel.setIn(channelInput)
-        channel.setOut(channelOutput)
         channel.setRedirectErrorStream(true)
+        channel.open().verify(timeoutSeconds, TimeUnit.SECONDS)
 
+        val input = checkNotNull(channel.invertedIn) { "SSH-shell saknar inmatningsström" }
+        val output = checkNotNull(channel.invertedOut) { "SSH-shell saknar utdataström" }
         val readerThread = Thread {
             try {
-                InputStreamReader(outputInput, Charsets.UTF_8).use { reader ->
+                InputStreamReader(output, Charsets.UTF_8).use { reader ->
                     val buffer = CharArray(1024)
                     while (true) {
                         val count = reader.read(buffer)
@@ -128,9 +124,9 @@ class BastionSshSession(
                     }
                 }
             } catch (_: Exception) {
-                // Kanalens close stänger pipe:n och bryter en blockerad read.
-                // Ett sådant lokalt close-fel är inte terminaloutput och ska
-                // inte visas som text från fjärrvärden.
+                // Kanalens close bryter en blockerad read. Ett sådant lokalt
+                // close-fel är inte terminaloutput och ska inte visas som text
+                // från fjärrvärden.
             }
         }.apply {
             name = "bastion-android-ssh-shell-output"
@@ -138,23 +134,10 @@ class BastionSshSession(
             start()
         }
 
-        try {
-            channel.open().verify(timeoutSeconds, TimeUnit.SECONDS)
-        } catch (error: Exception) {
-            runCatching { channel.close(false) }
-            runCatching { shellInput.close() }
-            runCatching { channelInput.close() }
-            runCatching { channelOutput.close() }
-            runCatching { outputInput.close() }
-            throw error
-        }
-
         return InteractiveShell(
             channel = channel,
-            input = shellInput,
-            channelInput = channelInput,
-            channelOutput = channelOutput,
-            outputInput = outputInput,
+            input = input,
+            output = output,
             readerThread = readerThread,
         ).also { interactiveShell = it }
     }
@@ -169,10 +152,8 @@ class BastionSshSession(
 
     class InteractiveShell internal constructor(
         private val channel: ChannelShell,
-        private val input: PipedOutputStream,
-        private val channelInput: PipedInputStream,
-        private val channelOutput: PipedOutputStream,
-        private val outputInput: PipedInputStream,
+        private val input: OutputStream,
+        private val output: InputStream,
         private val readerThread: Thread,
     ) : AutoCloseable {
         @Volatile
@@ -194,9 +175,7 @@ class BastionSshSession(
             closed = true
             runCatching { input.close() }
             runCatching { channel.close(false) }
-            runCatching { channelInput.close() }
-            runCatching { channelOutput.close() }
-            runCatching { outputInput.close() }
+            runCatching { output.close() }
             if (Thread.currentThread() !== readerThread) {
                 runCatching { readerThread.join(500) }
             }
@@ -206,7 +185,6 @@ class BastionSshSession(
     internal companion object {
         const val DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 15L
         const val DEFAULT_HEARTBEAT_MAX_NO_REPLY = 3
-        private const val SHELL_PIPE_BUFFER_BYTES = 32 * 1024
 
         fun configureHeartbeat(client: SshClient, intervalSeconds: Long, maxNoReply: Int) {
             require(intervalSeconds > 0) { "heartbeatIntervalSeconds måste vara > 0" }
