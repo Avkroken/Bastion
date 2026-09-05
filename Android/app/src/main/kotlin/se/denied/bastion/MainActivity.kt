@@ -10,6 +10,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import se.denied.bastion.ssh.BastionSshSession
+import java.io.File
 
 class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -60,7 +61,12 @@ class MainActivity : Activity() {
 
             Thread {
                 val result = runCatching {
-                    BastionSshSession(request.host, request.port, request.user).use { session ->
+                    BastionSshSession(
+                        host = request.host,
+                        port = request.port,
+                        user = request.user,
+                        knownHostsFile = File(filesDir, "known_hosts").toPath(),
+                    ).use { session ->
                         session.connect(request.password)
                         session.run(request.command)
                     }
