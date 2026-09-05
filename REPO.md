@@ -1,6 +1,6 @@
 # REPO.md
 
-This is the repository governance document for `Avkroken/Bastion`. Binding AI coding-agent policy is defined only in `Avkroken/.github/AGENTS.md`. This document records Bastion-specific technical contracts, invariants, validation requirements, and operational context required by that policy; it must not define, supplement, narrow, or override agent policy.
+This is the repository governance document for `Avkroken/Bastion`. `Avkroken/.github/AGENTS.md` defines the shared organization-wide agent policy and defaults. This `REPO.md` defines the repository-specific requirements, technical contracts, invariants, validation rules, constraints, and operating instructions for this repository. Read both documents together. For matters specific to this repository, this document is authoritative unless live GitHub enforcement requires otherwise; the central defaults continue to apply where this document does not specialize them.
 
 Live GitHub rules, code-scanning requirements and required checks are intentionally not duplicated here; inspect current repository and organization enforcement when merge eligibility matters.
 
