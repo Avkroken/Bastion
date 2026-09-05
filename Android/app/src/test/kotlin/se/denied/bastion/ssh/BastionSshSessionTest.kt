@@ -66,7 +66,7 @@ class BastionSshSessionTest {
         }
 
         assertTrue(Files.exists(knownHostsFile))
-        assertTrue(Files.readString(knownHostsFile).contains("127.0.0.1"))
+        assertTrue(String(Files.readAllBytes(knownHostsFile), Charsets.UTF_8).contains("127.0.0.1"))
 
         server.stop(true)
         server = createServer(port)
