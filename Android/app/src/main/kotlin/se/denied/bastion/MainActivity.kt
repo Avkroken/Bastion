@@ -15,6 +15,9 @@ import java.io.File
 class MainActivity : Activity() {
     private var terminalSession: BastionSshSession? = null
     private var terminalShell: BastionSshSession.InteractiveShell? = null
+    private val terminalOutputLock = Any()
+    private val pendingTerminalOutput = StringBuilder()
+    private var terminalOutputDrainScheduled = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -49,6 +52,21 @@ class MainActivity : Activity() {
         val disconnectTerminal = Button(this).apply {
             text = "Koppla från terminal"
             isEnabled = false
+        }
+
+        fun handleTerminalClosed(session: BastionSshSession, error: Throwable?) {
+            runOnUiThread {
+                if (terminalSession !== session) return@runOnUiThread
+                terminalSession = null
+                terminalShell = null
+                terminalInput.isEnabled = false
+                sendTerminal.isEnabled = false
+                disconnectTerminal.isEnabled = false
+                openTerminal.isEnabled = true
+                val reason = error?.message?.let { ": $it" }.orEmpty()
+                enqueueTerminalOutput(terminalOutput, "\nTerminalanslutningen stängdes$reason\n")
+                closeTerminalResourcesAsync(null, session)
+            }
         }
 
         val content = LinearLayout(this).apply {
@@ -133,19 +151,22 @@ class MainActivity : Activity() {
                 )
                 val result = runCatching {
                     session.connect(credentials.password)
-                    session.openShell { chunk ->
-                        runOnUiThread {
-                            if (!isDestroyed) terminalOutput.append(chunk)
-                        }
-                    }
+                    session.openShell(
+                        onClosed = { error -> handleTerminalClosed(session, error) },
+                        onOutput = { chunk -> enqueueTerminalOutput(terminalOutput, chunk) },
+                    )
                 }
+                if (result.isFailure) session.close()
 
                 runOnUiThread {
                     result.fold(
                         onSuccess = { shell ->
-                            if (isDestroyed) {
-                                shell.close()
-                                session.close()
+                            if (isDestroyed || !shell.isOpen) {
+                                closeTerminalResourcesAsync(shell, session)
+                                if (!isDestroyed) {
+                                    openTerminal.isEnabled = true
+                                    terminalOutput.text = "Terminalanslutningen stängdes innan den blev klar."
+                                }
                                 return@runOnUiThread
                             }
                             terminalSession = session
@@ -156,7 +177,6 @@ class MainActivity : Activity() {
                             disconnectTerminal.isEnabled = true
                         },
                         onFailure = { error ->
-                            session.close()
                             openTerminal.isEnabled = true
                             terminalOutput.text =
                                 "Terminalanslutningen misslyckades: ${error.message ?: error.javaClass.simpleName}"
@@ -176,7 +196,8 @@ class MainActivity : Activity() {
                 val result = runCatching { shell.sendLine(line) }
                 runOnUiThread {
                     if (result.isFailure) {
-                        terminalOutput.append(
+                        enqueueTerminalOutput(
+                            terminalOutput,
                             "\nInmatningen misslyckades: ${result.exceptionOrNull()?.message ?: "okänt fel"}\n",
                         )
                     }
@@ -194,21 +215,70 @@ class MainActivity : Activity() {
             sendTerminal.isEnabled = false
             disconnectTerminal.isEnabled = false
             openTerminal.isEnabled = true
-            terminalOutput.append("\nFrånkopplad.\n")
-
-            Thread {
-                shell?.close()
-                session?.close()
-            }.start()
+            enqueueTerminalOutput(terminalOutput, "\nFrånkopplad.\n")
+            closeTerminalResourcesAsync(shell, session)
         }
     }
 
     override fun onDestroy() {
-        terminalShell?.close()
+        val shell = terminalShell
+        val session = terminalSession
         terminalShell = null
-        terminalSession?.close()
         terminalSession = null
+        closeTerminalResourcesAsync(shell, session)
         super.onDestroy()
+    }
+
+    private fun enqueueTerminalOutput(view: TextView, chunk: String) {
+        if (chunk.isEmpty()) return
+        val shouldScheduleDrain = synchronized(terminalOutputLock) {
+            pendingTerminalOutput.append(chunk)
+            if (pendingTerminalOutput.length > MAX_TERMINAL_CHARS) {
+                pendingTerminalOutput.delete(0, pendingTerminalOutput.length - MAX_TERMINAL_CHARS)
+            }
+            if (terminalOutputDrainScheduled) {
+                false
+            } else {
+                terminalOutputDrainScheduled = true
+                true
+            }
+        }
+        if (!shouldScheduleDrain) return
+
+        view.post {
+            val pending = synchronized(terminalOutputLock) {
+                val value = pendingTerminalOutput.toString()
+                pendingTerminalOutput.setLength(0)
+                terminalOutputDrainScheduled = false
+                value
+            }
+            if (!isDestroyed && pending.isNotEmpty()) {
+                appendTerminalOutput(view, pending)
+            }
+        }
+    }
+
+    private fun appendTerminalOutput(view: TextView, chunk: String) {
+        if (chunk.length >= MAX_TERMINAL_CHARS) {
+            view.text = chunk.takeLast(MAX_TERMINAL_CHARS)
+            return
+        }
+        view.append(chunk)
+        val overflow = view.text.length - MAX_TERMINAL_CHARS
+        if (overflow > 0) {
+            view.text = view.text.subSequence(overflow, view.text.length).toString()
+        }
+    }
+
+    private fun closeTerminalResourcesAsync(
+        shell: BastionSshSession.InteractiveShell?,
+        session: BastionSshSession?,
+    ) {
+        if (shell == null && session == null) return
+        Thread {
+            shell?.close()
+            session?.close()
+        }.start()
     }
 
     private fun field(hint: String, inputType: Int = InputType.TYPE_CLASS_TEXT): EditText =
@@ -222,4 +292,8 @@ class MainActivity : Activity() {
         }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    private companion object {
+        const val MAX_TERMINAL_CHARS = 200_000
+    }
 }
