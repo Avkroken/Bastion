@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.0](https://github.com/Avkroken/Bastion/compare/v0.21.0...v0.22.0) (2026-09-05)
+
+
+### Features
+
+* **android:** add launchable native SSH client ([#440](https://github.com/Avkroken/Bastion/issues/440)) ([252dbd6](https://github.com/Avkroken/Bastion/commit/252dbd6fee1f40a8c8a74290c0c5229120a54ed5))
+
 ## [0.21.0](https://github.com/Avkroken/Bastion/compare/v0.20.1...v0.21.0) (2026-09-05)
 
 
