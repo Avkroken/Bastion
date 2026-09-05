@@ -5,7 +5,9 @@ package se.denied.bastion.ssh
 import org.apache.sshd.client.SshClient
 import org.apache.sshd.client.session.ClientSession
 import org.apache.sshd.client.channel.ClientChannelEvent
+import org.apache.sshd.core.CoreModuleProperties
 import java.io.ByteArrayOutputStream
+import java.time.Duration
 import java.util.EnumSet
 import java.util.concurrent.TimeUnit
 
@@ -15,14 +17,22 @@ import java.util.concurrent.TimeUnit
  * anslutning fungerar: connect/run/close på lösenordsautentisering. Jump
  * hosts, streaming exec och nyckelbaserad auth är UTELÄMNADE tills det finns
  * en verklig UI att koppla dem till, inte gissat i förväg.
+ *
+ * En autentiserad session skickar svarsbärande SSH-heartbeats. Om servern
+ * slutar svara stänger Apache MINA SSHD sessionen efter det konfigurerade
+ * antalet obesvarade heartbeats i stället för att lämna en tyst död session.
  */
 class BastionSshSession(
     private val host: String,
     private val port: Int,
     private val user: String,
+    heartbeatIntervalSeconds: Long = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+    heartbeatMaxNoReply: Int = DEFAULT_HEARTBEAT_MAX_NO_REPLY,
 ) : AutoCloseable {
 
-    private val client: SshClient = SshClient.setUpDefaultClient()
+    private val client: SshClient = SshClient.setUpDefaultClient().also {
+        configureHeartbeat(it, heartbeatIntervalSeconds, heartbeatMaxNoReply)
+    }
     private var session: ClientSession? = null
 
     fun connect(password: String, timeoutSeconds: Long = 10) {
@@ -68,5 +78,17 @@ class BastionSshSession(
     override fun close() {
         session?.close(false)
         client.stop()
+    }
+
+    internal companion object {
+        const val DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 15L
+        const val DEFAULT_HEARTBEAT_MAX_NO_REPLY = 3
+
+        fun configureHeartbeat(client: SshClient, intervalSeconds: Long, maxNoReply: Int) {
+            require(intervalSeconds > 0) { "heartbeatIntervalSeconds måste vara > 0" }
+            require(maxNoReply > 0) { "heartbeatMaxNoReply måste vara > 0" }
+            CoreModuleProperties.HEARTBEAT_INTERVAL.set(client, Duration.ofSeconds(intervalSeconds))
+            CoreModuleProperties.HEARTBEAT_NO_REPLY_MAX.set(client, maxNoReply)
+        }
     }
 }

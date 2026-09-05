@@ -23,7 +23,7 @@ A screen or code path alone is not enough for **Yes**. When evidence is incomple
 | Host organization, tags and search | Yes | Partial | Yes | Yes | Linux and Windows have explicit grouping/search implementations; keep Android conservative until its complete normal workflow is verified. |
 | SSH config import | Yes | Partial | Yes | Partial | Shared semantics include `Include`, `Match`, `ForwardAgent`, `RemoteCommand` and `ProxyJump`; platform import UX differs. |
 | Interactive terminal | Yes | Yes | Yes | Yes | Terminal engines are intentionally native/platform-specific rather than one shared UI/runtime. |
-| Connection liveness / silent-death detection | Yes | Partial | Yes | Yes | Windows uses response-bearing `keepalive@openssh.com` probes; Swift and Linux have their own tested mechanisms. Android requires separate parity verification. |
+| Connection liveness / silent-death detection | Yes | Yes | Yes | Yes | Android uses Apache MINA SSHD response-bearing heartbeats with a finite no-reply cutoff; Swift, Linux and Windows have their own tested mechanisms. |
 | System/server dashboard | Yes | Partial | Yes | Yes | Dashboard field sets are maintained per native client; Android parity remains to verify. |
 | Docker workflows | Yes | Partial | Yes | Yes | Normal list/action/log/shell workflows exist on the principal desktop/Apple implementations. |
 | Port forwarding | Yes | Partial | Yes | Partial | Local/remote/dynamic forwarding is implemented in established stacks; verify remaining native UX parity before promoting all platforms to Yes. |

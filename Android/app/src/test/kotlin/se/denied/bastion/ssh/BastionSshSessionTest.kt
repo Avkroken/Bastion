@@ -1,16 +1,19 @@
 package se.denied.bastion.ssh
 
+import org.apache.sshd.client.SshClient
+import org.apache.sshd.core.CoreModuleProperties
 import org.apache.sshd.server.SshServer
 import org.apache.sshd.server.auth.password.PasswordAuthenticator
 import org.apache.sshd.server.command.CommandFactory
 import org.apache.sshd.server.keyprovider.SimpleGeneratorHostKeyProvider
-import org.apache.sshd.server.session.ServerSession
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import java.io.OutputStream
 import java.nio.file.Files
+import java.time.Duration
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * Riktig anslutning mot en riktig SSH-server, inte en mockad kanal — samma
@@ -52,6 +55,31 @@ class BastionSshSessionTest {
             val output = session.run("echo hello-from-bastion")
             assertEquals("hello-from-bastion\n", output)
         }
+    }
+
+    @Test
+    fun `response-bearing heartbeat keeps an idle authenticated session usable`() {
+        BastionSshSession(
+            host = "127.0.0.1",
+            port = port,
+            user = "tester",
+            heartbeatIntervalSeconds = 1,
+            heartbeatMaxNoReply = 2,
+        ).use { session ->
+            session.connect(password = "s3cret")
+            Thread.sleep(1_200)
+            assertEquals("still-alive\n", session.run("echo still-alive"))
+        }
+    }
+
+    @Test
+    fun `heartbeat configuration requires replies and has a finite failure threshold`() {
+        val client = SshClient.setUpDefaultClient()
+        BastionSshSession.configureHeartbeat(client, intervalSeconds = 1, maxNoReply = 2)
+
+        assertEquals(Duration.ofSeconds(1), CoreModuleProperties.HEARTBEAT_INTERVAL.getRequired(client))
+        assertEquals(2, CoreModuleProperties.HEARTBEAT_NO_REPLY_MAX.getRequired(client))
+        assertTrue(CoreModuleProperties.HEARTBEAT_REQUEST.getRequired(client).isNotBlank())
     }
 
     @Test(expected = Exception::class)
