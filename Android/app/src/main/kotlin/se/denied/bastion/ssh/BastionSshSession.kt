@@ -109,10 +109,22 @@ class BastionSshSession(
 
         val channel = s.createShellChannel()
         channel.setRedirectErrorStream(true)
-        channel.open().verify(timeoutSeconds, TimeUnit.SECONDS)
+        try {
+            channel.open().verify(timeoutSeconds, TimeUnit.SECONDS)
+        } catch (error: Exception) {
+            runCatching { channel.close(false) }
+            throw error
+        }
 
-        val input = checkNotNull(channel.invertedIn) { "SSH-shell saknar inmatningsström" }
-        val output = checkNotNull(channel.invertedOut) { "SSH-shell saknar utdataström" }
+        val input = channel.invertedIn ?: run {
+            channel.close(false)
+            error("SSH-shell saknar inmatningsström")
+        }
+        val output = channel.invertedOut ?: run {
+            input.close()
+            channel.close(false)
+            error("SSH-shell saknar utdataström")
+        }
         val readerThread = Thread {
             try {
                 InputStreamReader(output, Charsets.UTF_8).use { reader ->
