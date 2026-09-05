@@ -9,6 +9,6 @@ permissions: {}
 
 jobs:
   queue:
-    uses: Avkroken/.github/.github/workflows/dependabot-automerge.yml@4c42428e6e4faf52983b398aa028ca1589380bb6
+    uses: Avkroken/.github/.github/workflows/dependabot-automerge.yml@abfaf7aae8a69f1dfa6bc7e01440496edb59def6
     secrets:
       app-private-key: ${{ secrets.GAMNACKEN_PRIVATE_KEY }}
