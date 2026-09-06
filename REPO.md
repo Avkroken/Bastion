@@ -13,7 +13,7 @@ Preserve the meaning of the live required checks when changing CI:
 - `CI / apple`: iOS/macOS/tvOS builds plus Swift package build/test.
 - `scope-policy`: repository scope/branch validation where required by the live ruleset.
 
-Packaging/TestFlight are release verification, not substitutes for merge-gate CI.
+Packaging and TestFlight GitHub Actions workflows are release verification, not substitutes for merge-gate CI.
 
 ## Validation
 
