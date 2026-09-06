@@ -3,6 +3,8 @@ name: CLI Debian package
 on:
   pull_request:
     branches: [main]
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
   workflow_dispatch:
@@ -16,7 +18,7 @@ concurrency:
 
 jobs:
   build-deb:
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && fromJSON('["ubuntu-latest"]') || fromJSON('["self-hosted","linux"]') }}
+    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && fromJSON('["ubuntu-latest"]') || fromJSON('["self-hosted","linux"]') }}
     container: swift:6.1-noble
     timeout-minutes: 20
     defaults:
