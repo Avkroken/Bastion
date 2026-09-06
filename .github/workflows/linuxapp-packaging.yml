@@ -3,6 +3,8 @@ name: Linux app Debian package
 on:
   pull_request:
     branches: [main]
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
   workflow_dispatch:
@@ -16,7 +18,7 @@ concurrency:
 
 jobs:
   build-deb-linuxapp:
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && fromJSON('["ubuntu-24.04"]') || fromJSON('["self-hosted","linux"]') }}
+    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && fromJSON('["ubuntu-24.04"]') || fromJSON('["self-hosted","linux"]') }}
     timeout-minutes: 20
     defaults:
       run:
@@ -31,13 +33,13 @@ jobs:
         run: |
           tag=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
-      - name: Install system dependencies on hosted fork runner
-        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+      - name: Install system dependencies on hosted runner
+        if: ${{ github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) }}
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev pkg-config binutils
       - name: Verify pre-provisioned system dependencies on self-hosted runner
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
         run: |
           for package in libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev pkg-config binutils; do
             if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -qx 'install ok installed'; then
