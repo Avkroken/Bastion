@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   build-deb-linuxapp:
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || 'self-hosted' }}
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && fromJSON('["ubuntu-24.04"]') || fromJSON('["self-hosted","linux"]') }}
     timeout-minutes: 20
     defaults:
       run:
