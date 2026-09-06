@@ -62,9 +62,9 @@ object SystemProbe {
         }
 
         return SystemSnapshot(
-            hostname = sections["HOST"]?.firstOrNull()?.trim()?.takeIf(String::isNotEmpty),
+            hostname = sections["HOST"]?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() },
             os = parseOs(sections["OS"].orEmpty()),
-            kernel = sections["KERNEL"]?.firstOrNull()?.trim()?.takeIf(String::isNotEmpty),
+            kernel = sections["KERNEL"]?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() },
             cpuCount = sections["NPROC"]?.firstOrNull()?.trim()?.toIntOrNull(),
             uptimeSeconds = sections["UPTIME"]?.firstOrNull()?.trim()?.substringBefore(' ')?.toDoubleOrNull(),
             load = parseLoad(sections["LOADAVG"]?.firstOrNull()),
@@ -75,7 +75,7 @@ object SystemProbe {
     }
 
     private fun parseLoad(line: String?): LoadAverage? {
-        val values = line?.trim()?.split(Regex("\\s+"))?.mapNotNull(String::toDoubleOrNull).orEmpty()
+        val values = line?.trim()?.split(Regex("\\s+"))?.mapNotNull { it.toDoubleOrNull() }.orEmpty()
         if (values.size < 3) return null
         return LoadAverage(values[0], values[1], values[2])
     }
@@ -111,7 +111,7 @@ object SystemProbe {
         .firstOrNull { it.startsWith("PRETTY_NAME=") }
         ?.substringAfter('=')
         ?.removeSurrounding("\"")
-        ?.takeIf(String::isNotEmpty)
+        ?.takeIf { it.isNotEmpty() }
 
     private fun parseDocker(lines: List<String>): List<DockerContainer> = lines.mapNotNull { line ->
         val fields = line.split('|')
