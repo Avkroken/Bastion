@@ -17,7 +17,7 @@ jobs:
       contents: read
       issues: write
       copilot-requests: write
-    uses: Avkroken/.github/.github/workflows/issue-classification.lock.yml@a5e758629298a189ed183d08852c1b65f32f3c4e
+    uses: Avkroken/.github/.github/workflows/issue-classification.lock.yml@42722302dbb510d4f3152ef9ddf57ab1bfb6f3eb
 
   route:
     needs: classify
