@@ -16,7 +16,7 @@ jobs:
       actions: read
       contents: read
       issues: write
-    uses: Avkroken/.github/.github/workflows/issue-classification.lock.yml@325f7dd521c55fd6d3d8709e49ddef10fbb6bb48
+    uses: Avkroken/.github/.github/workflows/issue-classification.lock.yml@a5e758629298a189ed183d08852c1b65f32f3c4e
     secrets:
       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
 
