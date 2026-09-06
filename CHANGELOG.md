@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.0](https://github.com/Avkroken/Bastion/compare/v0.23.0...v0.24.0) (2026-09-06)
+
+
+### Features
+
+* **android:** add native server overview ([#449](https://github.com/Avkroken/Bastion/issues/449)) ([281d0f5](https://github.com/Avkroken/Bastion/commit/281d0f540df2fc76bb16bce7a0872ea2896c6cf4))
+
 ## [0.23.0](https://github.com/Avkroken/Bastion/compare/v0.22.2...v0.23.0) (2026-09-06)
 
 
