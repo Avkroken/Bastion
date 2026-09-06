@@ -1,6 +1,6 @@
 package se.denied.bastion.ssh
 
-import kotlin.test.Test
+import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 
