@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.24.1](https://github.com/Avkroken/Bastion/compare/v0.24.0...v0.24.1) (2026-09-06)
+
+
+### Documentation
+
+* förenkla och översätt REPO ([9008023](https://github.com/Avkroken/Bastion/commit/900802316cb690dc564a445418dc7e5b1507a5b4))
+* förenkla REPO.md på svenska ([#457](https://github.com/Avkroken/Bastion/issues/457)) ([9008023](https://github.com/Avkroken/Bastion/commit/900802316cb690dc564a445418dc7e5b1507a5b4))
+
 ## [0.24.0](https://github.com/Avkroken/Bastion/compare/v0.23.0...v0.24.0) (2026-09-06)
 
 
