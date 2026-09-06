@@ -29,7 +29,7 @@ import Darwin
 /// deklarerade i den FULLA Darwin-modulen (saknas i vissa Linux Glibc-
 /// overlays, t.ex. den dev-snapshot-toolchain som används lokalt på mp100,
 /// se [[reference-mp100-swift-toolchain-linuxapp]]). De plattformsoberoende
-/// SSHCore-testerna körs även på Linux; just Darwin/PT​​Y-vägen nedan täcks
+/// SSHCore-testerna körs även på Linux; just Darwin/PTY-vägen nedan täcks
 /// på riktig macOS-hårdvara (`.github/workflows/xcode.yml`, `runs-on: macOS`),
 /// så `canImport(Darwin)` här tappar ingen Darwin-specifik CI-täckning.
 final class SerialPTYTests: XCTestCase {
