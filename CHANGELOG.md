@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.0](https://github.com/Avkroken/Bastion/compare/v0.22.2...v0.23.0) (2026-09-06)
+
+
+### Features
+
+* **android:** add interactive SSH shell ([#447](https://github.com/Avkroken/Bastion/issues/447)) ([2c95c45](https://github.com/Avkroken/Bastion/commit/2c95c45a45caee060d08b9f1eca6bf54732ab6af))
+
 ## [0.22.2](https://github.com/Avkroken/Bastion/compare/v0.22.1...v0.22.2) (2026-09-05)
 
 
