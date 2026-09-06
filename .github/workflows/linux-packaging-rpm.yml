@@ -3,6 +3,8 @@ name: CLI RPM package
 on:
   pull_request:
     branches: [main]
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
   workflow_dispatch:
@@ -16,7 +18,7 @@ concurrency:
 
 jobs:
   build-rpm:
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && fromJSON('["ubuntu-latest"]') || fromJSON('["self-hosted","linux"]') }}
+    runs-on: ${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && fromJSON('["ubuntu-latest"]') || fromJSON('["self-hosted","linux"]') }}
     container: swift:6.1-rhel-ubi9
     timeout-minutes: 20
     defaults:
