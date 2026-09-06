@@ -24,7 +24,7 @@ A screen or code path alone is not enough for **Yes**. When evidence is incomple
 | SSH config import | Yes | Partial | Yes | Partial | Shared semantics include `Include`, `Match`, `ForwardAgent`, `RemoteCommand` and `ProxyJump`; platform import UX differs. |
 | Interactive terminal | Yes | Partial | Yes | Yes | Android now opens a persistent PTY shell from the native app, accepts multiple input lines and streams UTF-8 output over the existing SSH session. It remains Partial until terminal emulation/control-sequence handling and a production-grade terminal interaction surface are implemented and verified. |
 | Connection liveness / silent-death detection | Yes | Yes | Yes | Yes | Android uses Apache MINA SSHD response-bearing heartbeats with a finite no-reply cutoff; Swift, Linux and Windows have their own tested mechanisms. |
-| System/server dashboard | Yes | Partial | Yes | Yes | Dashboard field sets are maintained per native client; Android parity remains to verify. |
+| System/server dashboard | Yes | Yes | Yes | Yes | Android now exposes the read-only one-round-trip system probe in its native connection screen and parser tests cover host, OS, kernel, CPU, uptime, load, memory, root disk and Docker container data. |
 | Docker workflows | Yes | Partial | Yes | Yes | Normal list/action/log/shell workflows exist on the principal desktop/Apple implementations. |
 | Port forwarding | Yes | Partial | Yes | Partial | Local/remote/dynamic forwarding is implemented in established stacks; verify remaining native UX parity before promoting all platforms to Yes. |
 | ProxyJump | Yes | Partial | Yes | Partial | Shared product behavior exists, but platform UI and integration coverage differ. |
