@@ -1,29 +1,22 @@
 # REPO.md
 
-This is the repository governance document for `Avkroken/Bastion`. `Avkroken/.github/AGENTS.md` defines the shared organization-wide agent policy and defaults. This `REPO.md` defines the repository-specific requirements, technical contracts, invariants, validation rules, constraints, and operating instructions for this repository. Read both documents together. For matters specific to this repository, this document is authoritative unless live GitHub enforcement requires otherwise; the central defaults continue to apply where this document does not specialize them.
+`Bastion` is a multi-platform SSH client with platform-specific build/test requirements.
 
-Live GitHub rules, code-scanning requirements and required checks are intentionally not duplicated here; inspect current repository and organization enforcement when merge eligibility matters.
+## CI contract
 
-## Repository-specific CI contract
+Preserve the meaning of the live required checks when changing CI:
 
-Bastion's required platform workflows are direct platform verifications rather than routing layers. Preserve the meaning of each check when changing CI:
+- `CI / android`: Gradle build/test.
+- `CI / windows`: .NET tests and WinUI build.
+- `CI / linux`: Rust/GTK build, tests and MSRV build.
+- `CI / swift-linux`: Swift build/test in Linux.
+- `CI / apple`: iOS/macOS/tvOS builds plus Swift package build/test.
+- `scope-policy`: repository scope/branch validation where required by the live ruleset.
 
-- Android: Gradle build/test.
-- Windows: .NET core tests and WinUI build.
-- Linux: Rust/GTK build, tests and MSRV build.
-- Swift Linux: Swift build/test in the Linux container.
-- Apple: iOS/macOS/tvOS builds plus Swift package build/test.
-- `scope-policy`: limits only the explicitly named `platform/*` and `core/swift` branches.
-- OSV: dependency scanning according to the repository's current workflow/ruleset configuration.
+Packaging/TestFlight are release verification, not substitutes for merge-gate CI.
 
-Packaging and TestFlight workflows are product/release verification and are separate from merge-gate CI.
+## Validation
 
-GitHub Actions references must remain pinned to full commit SHAs.
+Run the relevant platform build/tests for changed code. For CI changes, verify emitted check contexts against the live rulesets after pushing.
 
-## Local validation
-
-For platform changes, run the relevant platform build/test commands defined by the repository. For CI changes, verify the emitted GitHub check contexts against the live rulesets after pushing.
-
-## Response format
-
-Read and follow `SKILLS.md` when working in this repository.
+Pin third-party GitHub Actions to full commit SHAs. Do not rename/remove required checks without updating and verifying the live ruleset in the same migration.
