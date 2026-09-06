@@ -30,7 +30,7 @@ import Darwin
 /// overlays, t.ex. den dev-snapshot-toolchain som används lokalt på mp100,
 /// se [[reference-mp100-swift-toolchain-linuxapp]]) — CI:s `swift test` för
 /// SSHCore körs ändå bara på riktig macOS-hårdvara
-/// (`.github/workflows/xcode.yml`, `runs-on: macos-26`), så `canImport(Darwin)`
+/// (`.github/workflows/xcode.yml`, `runs-on: macOS`), så `canImport(Darwin)`
 /// här tappar ingen CI-täckning.
 final class SerialPTYTests: XCTestCase {
     private func openPTYPair() throws -> (masterFD: Int32, slavePath: String) {
