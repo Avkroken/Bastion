@@ -28,10 +28,10 @@ import Darwin
 /// `posix_openpt`/`grantpt`/`unlockpt`/`ptsname` är bara pålitligt
 /// deklarerade i den FULLA Darwin-modulen (saknas i vissa Linux Glibc-
 /// overlays, t.ex. den dev-snapshot-toolchain som används lokalt på mp100,
-/// se [[reference-mp100-swift-toolchain-linuxapp]]). De plattformsoberoende
-/// SSHCore-testerna körs även på Linux; just Darwin/PTY-vägen nedan täcks
-/// på riktig macOS-hårdvara (`.github/workflows/xcode.yml`, `runs-on: macOS`),
-/// så `canImport(Darwin)` här tappar ingen Darwin-specifik CI-täckning.
+/// se [[reference-mp100-swift-toolchain-linuxapp]]) — CI:s `swift test` för
+/// SSHCore körs ändå bara på riktig macOS-hårdvara
+/// (`.github/workflows/xcode.yml`, `runs-on: macos-26`), så `canImport(Darwin)`
+/// här tappar ingen CI-täckning.
 final class SerialPTYTests: XCTestCase {
     private func openPTYPair() throws -> (masterFD: Int32, slavePath: String) {
         let masterFD = posix_openpt(O_RDWR)
