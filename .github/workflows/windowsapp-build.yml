@@ -30,7 +30,7 @@ jobs:
       - run: dotnet test WindowsApp/Bastion.Core.Tests/Bastion.Core.Tests.csproj -c Release
 
   build:
-    runs-on: windows-2025
+    runs-on: windows-latest-l
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
