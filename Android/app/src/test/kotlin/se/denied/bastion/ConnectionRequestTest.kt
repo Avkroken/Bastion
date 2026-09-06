@@ -2,6 +2,7 @@ package se.denied.bastion
 
 import org.junit.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class ConnectionRequestTest {
@@ -23,6 +24,34 @@ class ConnectionRequestTest {
     }
 
     @Test
+    fun parsesCredentialsWithoutRequiringAnExecCommand() {
+        val credentials = ConnectionCredentials.parse(
+            host = " terminal.example.com ",
+            port = " 22 ",
+            user = " shell-user ",
+            password = " secret ",
+        ).getOrThrow()
+
+        assertEquals("terminal.example.com", credentials.host)
+        assertEquals(22, credentials.port)
+        assertEquals("shell-user", credentials.user)
+        assertEquals(" secret ", credentials.password)
+    }
+
+    @Test
+    fun credentialsToStringRedactsPassword() {
+        val credentials = ConnectionCredentials(
+            host = "terminal.example.com",
+            port = 22,
+            user = "shell-user",
+            password = "top-secret-password",
+        )
+
+        assertFalse(credentials.toString().contains("top-secret-password"))
+        assertTrue(credentials.toString().contains("password=***"))
+    }
+
+    @Test
     fun rejectsMissingRequiredFieldsAndInvalidPorts() {
         assertTrue(ConnectionRequest.parse("", "22", "admin", "secret", "uptime").isFailure)
         assertTrue(ConnectionRequest.parse("host", "0", "admin", "secret", "uptime").isFailure)
@@ -30,5 +59,10 @@ class ConnectionRequestTest {
         assertTrue(ConnectionRequest.parse("host", "22", "", "secret", "uptime").isFailure)
         assertTrue(ConnectionRequest.parse("host", "22", "admin", "", "uptime").isFailure)
         assertTrue(ConnectionRequest.parse("host", "22", "admin", "secret", " ").isFailure)
+
+        assertTrue(ConnectionCredentials.parse("", "22", "admin", "secret").isFailure)
+        assertTrue(ConnectionCredentials.parse("host", "0", "admin", "secret").isFailure)
+        assertTrue(ConnectionCredentials.parse("host", "22", "", "secret").isFailure)
+        assertTrue(ConnectionCredentials.parse("host", "22", "admin", "").isFailure)
     }
 }

@@ -3,26 +3,31 @@ package se.denied.bastion.ssh
 // Beteendeneutral CodeQL-trigger: håll Kotlin i PR-diffen så default setup producerar java-kotlin-konfigurationen som main-rulesetet kräver.
 
 import org.apache.sshd.client.SshClient
+import org.apache.sshd.client.channel.ChannelShell
 import org.apache.sshd.client.channel.ClientChannelEvent
 import org.apache.sshd.client.keyverifier.AcceptAllServerKeyVerifier
 import org.apache.sshd.client.keyverifier.KnownHostsServerKeyVerifier
 import org.apache.sshd.client.session.ClientSession
 import org.apache.sshd.core.CoreModuleProperties
 import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.io.InputStreamReader
+import java.io.OutputStream
 import java.net.SocketAddress
 import java.nio.file.Path
 import java.security.PublicKey
 import java.time.Duration
 import java.util.EnumSet
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.function.Supplier
 
 /**
- * Minsta gemensamma SSH-kärna på Android-sidan, motsvarande SSHSession.swift
- * (SSHCore) — men bara det som verkligen behövs för att bevisa att en
- * anslutning fungerar: connect/run/close på lösenordsautentisering. Jump
- * hosts, streaming exec och nyckelbaserad auth är UTELÄMNADE tills det finns
- * en verklig UI att koppla dem till, inte gissat i förväg.
+ * Androids SSH-kärna, motsvarande SSHSession.swift (SSHCore), byggd på
+ * Apache MINA SSHD. Den stöder lösenordsautentisering, one-shot exec och en
+ * bestående interaktiv shell-kanal med PTY. Jump hosts och nyckelbaserad auth
+ * är fortfarande utelämnade tills respektive normala Android-arbetsflöde
+ * implementeras och kan verifieras.
  *
  * Servernycklar verifieras med persistent TOFU mot [knownHostsFile]. En okänd
  * värd accepteras första gången och skrivs till filen; en senare ändrad nyckel
@@ -47,6 +52,8 @@ class BastionSshSession(
         configureHeartbeat(it, heartbeatIntervalSeconds, heartbeatMaxNoReply)
     }
     private var session: ClientSession? = null
+    @Volatile
+    private var interactiveShell: InteractiveShell? = null
 
     fun connect(password: String, timeoutSeconds: Long = 10) {
         client.start()
@@ -88,9 +95,148 @@ class BastionSshSession(
         return String(out.toByteArray(), Charsets.UTF_8)
     }
 
+    /**
+     * Öppnar en bestående interaktiv shell-kanal med MINA:s standard-PTY.
+     * [onOutput] anropas från en bakgrundstråd och får dekodad UTF-8 i den
+     * ordning SSH-kanalen levererar den. [onClosed] anropas exakt en gång när
+     * shellen stängs lokalt, når fjärr-EOF eller avbryts av ett läs-/transportfel.
+     * Bara en interaktiv shell-kanal per [BastionSshSession] stöds åt gången;
+     * efter close kan en ny shell öppnas på samma autentiserade session.
+     */
+    fun openShell(
+        timeoutSeconds: Long = 10,
+        onClosed: (Throwable?) -> Unit = {},
+        onOutput: (String) -> Unit,
+    ): InteractiveShell {
+        val s = checkNotNull(session) { "connect() måste anropas innan openShell()" }
+        check(interactiveShell == null) { "En interaktiv shell är redan öppen" }
+
+        val channel = s.createShellChannel()
+        channel.setRedirectErrorStream(true)
+        try {
+            channel.open().verify(timeoutSeconds, TimeUnit.SECONDS)
+        } catch (error: Exception) {
+            runCatching { channel.close(false) }
+            throw error
+        }
+
+        val input = channel.invertedIn ?: run {
+            channel.close(false)
+            error("SSH-shell saknar inmatningsström")
+        }
+        val output = channel.invertedOut ?: run {
+            input.close()
+            channel.close(false)
+            error("SSH-shell saknar utdataström")
+        }
+
+        val shell = InteractiveShell(
+            channel = channel,
+            input = input,
+            output = output,
+            onClosed = { closedShell, failure ->
+                if (interactiveShell === closedShell) {
+                    interactiveShell = null
+                }
+                onClosed(failure)
+            },
+        )
+        interactiveShell = shell
+        shell.start(onOutput)
+        return shell
+    }
+
     override fun close() {
+        interactiveShell?.close()
+        interactiveShell = null
         session?.close(false)
+        session = null
         client.stop()
+    }
+
+    class InteractiveShell internal constructor(
+        private val channel: ChannelShell,
+        private val input: OutputStream,
+        private val output: InputStream,
+        private val onClosed: (InteractiveShell, Throwable?) -> Unit,
+    ) : AutoCloseable {
+        private val callbackSent = AtomicBoolean(false)
+
+        @Volatile
+        private var closed = false
+        private lateinit var readerThread: Thread
+
+        val isOpen: Boolean
+            get() = !closed && channel.isOpen
+
+        internal fun start(onOutput: (String) -> Unit) {
+            readerThread = Thread {
+                var failure: Throwable? = null
+                try {
+                    InputStreamReader(output, Charsets.UTF_8).use { reader ->
+                        val buffer = CharArray(1024)
+                        while (true) {
+                            val count = reader.read(buffer)
+                            if (count < 0) break
+                            if (count > 0) onOutput(String(buffer, 0, count))
+                        }
+                    }
+                } catch (error: Exception) {
+                    if (!closed) failure = error
+                } finally {
+                    closeResources(waitForReader = false)
+                    notifyClosed(failure)
+                }
+            }.apply {
+                name = "bastion-android-ssh-shell-output"
+                isDaemon = true
+            }
+            readerThread.start()
+        }
+
+        @Synchronized
+        fun send(text: String) {
+            check(!closed && channel.isOpen) { "Den interaktiva shellen är stängd" }
+            input.write(text.toByteArray(Charsets.UTF_8))
+            input.flush()
+        }
+
+        fun sendLine(line: String) {
+            send("$line\n")
+        }
+
+        override fun close() {
+            closeResources(waitForReader = true)
+            notifyClosed(null)
+        }
+
+        private fun closeResources(waitForReader: Boolean) {
+            var threadToJoin: Thread? = null
+            synchronized(this) {
+                if (!closed) {
+                    closed = true
+                    runCatching { input.close() }
+                    runCatching { channel.close(false) }
+                    runCatching { output.close() }
+                }
+                if (
+                    waitForReader &&
+                    this::readerThread.isInitialized &&
+                    Thread.currentThread() !== readerThread
+                ) {
+                    threadToJoin = readerThread
+                }
+            }
+            threadToJoin?.let { thread ->
+                runCatching { thread.join(500) }
+            }
+        }
+
+        private fun notifyClosed(failure: Throwable?) {
+            if (callbackSent.compareAndSet(false, true)) {
+                runCatching { onClosed(this, failure) }
+            }
+        }
     }
 
     internal companion object {
