@@ -1,3 +1,4 @@
 self-hosted-runner:
   labels:
-    - mp100-linux
+    - macOS
+    - windows-latest-l
