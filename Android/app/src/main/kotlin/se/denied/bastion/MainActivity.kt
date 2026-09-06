@@ -10,7 +10,10 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import se.denied.bastion.ssh.BastionSshSession
+import se.denied.bastion.ssh.SystemProbe
+import se.denied.bastion.ssh.SystemSnapshot
 import java.io.File
+import java.util.Locale
 
 class MainActivity : Activity() {
     private var terminalSession: BastionSshSession? = null
@@ -35,6 +38,11 @@ class MainActivity : Activity() {
             setTextIsSelectable(true)
         }
         val runCommand = Button(this).apply { text = "Anslut och kör" }
+        val loadDashboard = Button(this).apply { text = "Hämta serveröversikt" }
+        val dashboard = TextView(this).apply {
+            text = "Serveröversikten är inte hämtad."
+            setTextIsSelectable(true)
+        }
 
         val terminalOutput = TextView(this).apply {
             text = "Terminalen är frånkopplad."
@@ -79,6 +87,8 @@ class MainActivity : Activity() {
             addView(command)
             addView(runCommand)
             addView(status)
+            addView(loadDashboard)
+            addView(dashboard)
             addView(openTerminal)
             addView(terminalOutput)
             addView(terminalInput)
@@ -122,6 +132,45 @@ class MainActivity : Activity() {
                         onSuccess = { output -> output.ifBlank { "Kommandot slutfördes utan output." } },
                         onFailure = { error ->
                             "Anslutningen misslyckades: ${error.message ?: error.javaClass.simpleName}"
+                        },
+                    )
+                }
+            }.start()
+        }
+
+        loadDashboard.setOnClickListener {
+            val credentials = ConnectionCredentials.parse(
+                host = host.text.toString(),
+                port = port.text.toString(),
+                user = user.text.toString(),
+                password = password.text.toString(),
+            ).getOrElse { error ->
+                dashboard.text = error.message ?: "Ogiltiga anslutningsuppgifter"
+                return@setOnClickListener
+            }
+
+            loadDashboard.isEnabled = false
+            dashboard.text = "Hämtar serveröversikt…"
+
+            Thread {
+                val result = runCatching {
+                    BastionSshSession(
+                        host = credentials.host,
+                        port = credentials.port,
+                        user = credentials.user,
+                        knownHostsFile = File(filesDir, "known_hosts").toPath(),
+                    ).use { session ->
+                        session.connect(credentials.password)
+                        SystemProbe.snapshot(session)
+                    }
+                }
+
+                runOnUiThread {
+                    loadDashboard.isEnabled = true
+                    dashboard.text = result.fold(
+                        onSuccess = ::renderSnapshot,
+                        onFailure = { error ->
+                            "Serveröversikten kunde inte hämtas: ${error.message ?: error.javaClass.simpleName}"
                         },
                     )
                 }
@@ -228,6 +277,45 @@ class MainActivity : Activity() {
         closeTerminalResourcesAsync(shell, session)
         super.onDestroy()
     }
+
+    private fun renderSnapshot(snapshot: SystemSnapshot): String {
+        val lines = mutableListOf<String>()
+        lines += "Värd: ${snapshot.hostname ?: "okänd"}"
+        lines += "OS: ${snapshot.os ?: "okänt"}"
+        lines += "Kernel: ${snapshot.kernel ?: "okänd"}"
+        lines += "CPU: ${snapshot.cpuCount?.toString() ?: "okänt"} kärnor"
+        snapshot.uptimeSeconds?.let { lines += "Drifttid: ${formatUptime(it)}" }
+        snapshot.load?.let {
+            lines += "Last 1/5/15 min: ${formatNumber(it.one)} / ${formatNumber(it.five)} / ${formatNumber(it.fifteen)}"
+        }
+        snapshot.memory?.let {
+            lines += "Minne: ${formatBytes(it.usedBytes)} / ${formatBytes(it.totalBytes)}"
+        }
+        snapshot.rootDisk?.let {
+            lines += "Disk /: ${formatBytes(it.usedBytes)} / ${formatBytes(it.sizeBytes)} (${it.capacityPercent} %)"
+        }
+        lines += "Docker: ${snapshot.containers.size} aktiva containrar"
+        return lines.joinToString("\n")
+    }
+
+    private fun formatUptime(seconds: Double): String {
+        val totalMinutes = (seconds / 60).toLong().coerceAtLeast(0)
+        val days = totalMinutes / (24 * 60)
+        val hours = (totalMinutes % (24 * 60)) / 60
+        val minutes = totalMinutes % 60
+        return when {
+            days > 0 -> "$days d $hours h"
+            hours > 0 -> "$hours h $minutes min"
+            else -> "$minutes min"
+        }
+    }
+
+    private fun formatBytes(bytes: Long): String {
+        val gib = bytes.toDouble() / (1024.0 * 1024.0 * 1024.0)
+        return String.format(Locale.ROOT, "%.1f GiB", gib)
+    }
+
+    private fun formatNumber(value: Double): String = String.format(Locale.ROOT, "%.2f", value)
 
     private fun enqueueTerminalOutput(view: TextView, chunk: String) {
         if (chunk.isEmpty()) return
