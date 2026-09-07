@@ -1,0 +1,31 @@
+name: Dev admission
+
+on:
+  pull_request:
+    branches:
+      - dev
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+permissions:
+  contents: read
+
+jobs:
+  admission:
+    if: ${{ github.event.pull_request.draft == false }}
+    name: CI / admission
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Run central admission validation
+        uses: Avkroken/.github/.github/actions/dev-admission@03ee119f29d4c7da8772cc5a8006d819d31dddd2
+        with:
+          base-sha: ${{ github.event.pull_request.base.sha }}
