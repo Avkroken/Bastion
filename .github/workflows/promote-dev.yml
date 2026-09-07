@@ -1,0 +1,20 @@
+name: Promote dev to main
+
+on:
+  push:
+    branches:
+      - dev
+  pull_request:
+    branches:
+      - main
+    types:
+      - closed
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    uses: Avkroken/.github/.github/workflows/promote-dev-reusable.yml@03ee119f29d4c7da8772cc5a8006d819d31dddd2
+    secrets: inherit
