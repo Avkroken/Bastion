@@ -28,6 +28,13 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Require x64 packaging runner
+        run: |
+          arch="$(uname -m)"
+          if [[ "$arch" != "x86_64" ]]; then
+            echo "::error::Packaging requires x64; got $arch"
+            exit 1
+          fi
       - id: version
         working-directory: .
         run: |
