@@ -16,5 +16,8 @@ permissions:
 
 jobs:
   promote:
-    uses: Avkroken/.github/.github/workflows/promote-dev-reusable.yml@03ee119f29d4c7da8772cc5a8006d819d31dddd2
-    secrets: inherit
+    uses: Avkroken/.github/.github/workflows/promote-dev-reusable.yml@2b8fe1fb46df1113dc07375e387aa2a8c97e4bc3
+    with:
+      gamnacken-client-id: ${{ vars.GAMNACKEN_CLIENT_ID }}
+    secrets:
+      GAMNACKEN_PRIVATE_KEY: ${{ secrets.GAMNACKEN_PRIVATE_KEY }}
