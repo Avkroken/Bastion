@@ -29,7 +29,7 @@ let package = Package(
         // #3647 är löst (Renovate-bump i PR #153 återinförde exakt den bugg
         // PR #149 fixade). Kontrollerat 2026-08-11: #3647 fortfarande öppen.
         // Byt tillbaka till `from:` när uppströms löser #3647 på riktigt.
-        .package(url: "https://github.com/apple/swift-nio.git", exact: "2.101.3"),
+        .package(url: "https://github.com/apple/swift-nio.git", exact: "2.102.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.5.0"),
     ],
     targets: [
