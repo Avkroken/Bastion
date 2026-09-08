@@ -1,90 +1,36 @@
+# To get started with Dependabot version updates, you'll need to specify which
+# package ecosystems to update and where the package manifests are located.
+# Please see the documentation for all configuration options:
+# https://docs.github.com/github/administering-a-repository/configuration-options-for-dependency-updates
+
 version: 2
 updates:
   - package-ecosystem: "swift"
-    assignees: ["blixten85"]
-    directories:
-      - "/"
-      - "/LinuxApp"
-      - "/WindowsApp"
-    schedule:
-      interval: "daily"
-      time: "00:00"
-      timezone: "Europe/Stockholm"
-    groups:
-      swift-patch-minor:
-        update-types: ["minor", "patch"]
-    ignore:
-      # Exakt pinnad i Package.swift (just nu 2.101.3, dvs. senaste releasen —
-      # pinningen håller alltså inte tillbaka versionen) för att kringgå
-      # apple/swift-nio#3647 (Windows Sendable/IPPROTO-kompileringsfel).
-      # Renovates automatiska bump av pinnen (PR #153) återinförde exakt den
-      # bugg PR #149 fixade. Ta inte bort förrän uppströms löst #3647; se
-      # kommentaren i Package.swift. Kontrollerat 2026-08-11: #3647 öppen.
-      # Endast exakt paketnamn (ingen wildcard) så swift-nio-ssh inte fryses.
-      # review-by: 2027-02-11
-      - dependency-name: "swift-nio"
-
-  # App/Gemfile.lock (fastlane) saknade tidigare ekosystem här, så gems
-  # uppdaterades aldrig — därav den kvarliggande json-alerten.
-  - package-ecosystem: "bundler"
-    assignees: ["blixten85"]
-    directory: "/App"
-    schedule:
-      interval: "daily"
-      time: "00:30"
-      timezone: "Europe/Stockholm"
-    groups:
-      bundler-patch-minor:
-        update-types: ["minor", "patch"]
-
-  # LinuxApp/Cargo.toml — Rust-appens beroendeträd var helt obevakat.
-  - package-ecosystem: "cargo"
-    assignees: ["blixten85"]
-    directory: "/LinuxApp"
-    schedule:
-      interval: "daily"
-      time: "00:40"
-      timezone: "Europe/Stockholm"
-    groups:
-      cargo-patch-minor:
-        update-types: ["minor", "patch"]
-
-  # Android/*.gradle.kts — helt obevakat.
-  - package-ecosystem: "gradle"
-    assignees: ["blixten85"]
-    directories:
-      - "/Android"
-      - "/Android/app"
-    schedule:
-      interval: "daily"
-      time: "00:50"
-      timezone: "Europe/Stockholm"
-    groups:
-      gradle-patch-minor:
-        update-types: ["minor", "patch"]
-
-  # WindowsApp/*.csproj — helt obevakat.
-  - package-ecosystem: "nuget"
-    assignees: ["blixten85"]
-    directories:
-      - "/WindowsApp"
-      - "/WindowsApp/Bastion.Core"
-      - "/WindowsApp/Bastion.Core.Tests"
-    schedule:
-      interval: "daily"
-      time: "00:55"
-      timezone: "Europe/Stockholm"
-    groups:
-      nuget-patch-minor:
-        update-types: ["minor", "patch"]
-
-  - package-ecosystem: "github-actions"
-    assignees: ["blixten85"]
     directory: "/"
     schedule:
-      interval: "daily"
-      time: "01:00"
-      timezone: "Europe/Stockholm"
-    groups:
-      actions-patch-minor:
-        update-types: ["minor", "patch"]
+      interval: "weekly"
+
+  - package-ecosystem: "bundler"
+    directory: "/App"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "cargo"
+    directory: "/LinuxApp"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "gradle"
+    directory: "/Android"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "nuget"
+    directory: "/WindowsApp"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
