@@ -24,4 +24,9 @@ The previous Windows build, for example, required a Windows runner and `dotnet b
 
 ## Ruleset evidence
 
-Do not create the replacement repository required-check file until the selected starter workflows have produced their exact check names successfully on this branch. No inferred check name should be required merely because it appears in a template definition.
+The selected starter workflows have now completed successfully on the reset branch and produced these exact job/check names:
+
+- `Swift` -> `build`
+- `Dependency review` -> `dependency-review`
+
+The repository-specific ruleset file therefore requires only `build` and `dependency-review`. No former repository-specific check names are carried forward and no check name is inferred from a template without an observed successful run.
