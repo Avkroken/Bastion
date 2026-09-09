@@ -98,9 +98,18 @@ final class ExternalBinaryFetcherTests: XCTestCase {
         let destination = cacheDir.appendingPathComponent("sample")
         try Data("korrupt-skräp, inte den riktiga filen".utf8).write(to: destination)
 
-        let path = try await ExternalBinaryFetcher.fetch(
-            url: sampleURL, expectedSHA256: sampleSHA256,
-            cacheDir: cacheDir, binaryName: "sample")
+        let path: URL
+        do {
+            path = try await ExternalBinaryFetcher.fetch(
+                url: sampleURL, expectedSHA256: sampleSHA256,
+                cacheDir: cacheDir, binaryName: "sample")
+        } catch ExternalBinaryError.downloadFailed(let message) where message.contains("HTTP 429") {
+            // GitHubs anonyma rate limit för raw.githubusercontent.com kan
+            // slå till mitt i en testkörning (delad IP-pool på CI-runners) —
+            // det är miljöflakighet, inte ett fel i fetcher-koden, så hoppa
+            // över precis som setUp() redan gör vid utebliven nätverksåtkomst.
+            throw XCTSkip("Nätverket svarade med HTTP 429 (rate limit): \(message)")
+        }
 
         let data = try Data(contentsOf: path)
         XCTAssertEqual(ExternalBinaryFetcher.sha256Hex(data), sampleSHA256)
