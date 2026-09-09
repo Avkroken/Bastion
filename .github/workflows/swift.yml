@@ -1,7 +1,7 @@
 # This workflow will build a Swift project
 # For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-swift
 
-name: Swift — Linux/macOS package and Apple apps
+name: Swift
 
 on:
   push:
@@ -19,7 +19,7 @@ jobs:
       contents: read
     strategy:
       matrix:
-        os: [ubuntu-24.04, macos-latest]
+        os: [ubuntu-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,7 +31,7 @@ jobs:
         run: swift test -v
 
   applications:
-    name: Apple applications (macOS)
+    name: Apple applications
     runs-on: macos-26
     permissions:
       contents: read
@@ -39,6 +39,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: "26.4.1"
       - name: Generate Xcode project
         run: brew install xcodegen && cd App && xcodegen generate
       - name: Ensure tvOS runtime
