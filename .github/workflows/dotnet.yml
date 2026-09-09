@@ -1,7 +1,7 @@
 # This workflow will build a .NET project
 # For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-net
 
-name: .NET
+name: .NET — Linux core tests and Windows app
 
 on:
   push:
@@ -12,7 +12,8 @@ on:
     types: [ checks_requested ]
 
 jobs:
-  build:
+  core-tests:
+    name: Core tests (Ubuntu)
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -40,6 +41,7 @@ jobs:
         run: dotnet test --no-build --verbosity normal
 
   application:
+    name: Windows application (Windows)
     runs-on: windows-2025
     permissions:
       contents: read
