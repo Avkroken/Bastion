@@ -22,6 +22,20 @@ final class ExternalBinaryFetcherTests: XCTestCase {
             .appendingPathComponent("bastion-binfetch-test-\(UUID().uuidString)")
     }
 
+    /// Fetches the shared sample while treating GitHub's anonymous rate limit
+    /// as an unavailable-network condition rather than a product failure.
+    private func fetchSample(cacheDir: URL, expectedSHA256: String? = nil) async throws -> URL {
+        do {
+            return try await ExternalBinaryFetcher.fetch(
+                url: sampleURL,
+                expectedSHA256: expectedSHA256 ?? sampleSHA256,
+                cacheDir: cacheDir,
+                binaryName: "sample")
+        } catch ExternalBinaryError.downloadFailed(let message) where message.contains("HTTP 429") {
+            throw XCTSkip("Nätverket svarade med HTTP 429 (rate limit): \(message)")
+        }
+    }
+
     override func setUp() async throws {
         // Nätverksberoende — hoppa tydligt över istället för att låta ett
         // sandboxat/offline CI-läge misslyckas förvirrande.
@@ -39,9 +53,7 @@ final class ExternalBinaryFetcherTests: XCTestCase {
         let cacheDir = freshCacheDir()
         defer { try? FileManager.default.removeItem(at: cacheDir) }
 
-        let path = try await ExternalBinaryFetcher.fetch(
-            url: sampleURL, expectedSHA256: sampleSHA256,
-            cacheDir: cacheDir, binaryName: "sample")
+        let path = try await fetchSample(cacheDir: cacheDir)
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: path.path))
         let data = try Data(contentsOf: path)
@@ -56,9 +68,7 @@ final class ExternalBinaryFetcherTests: XCTestCase {
         let cacheDir = freshCacheDir()
         defer { try? FileManager.default.removeItem(at: cacheDir) }
 
-        let first = try await ExternalBinaryFetcher.fetch(
-            url: sampleURL, expectedSHA256: sampleSHA256,
-            cacheDir: cacheDir, binaryName: "sample")
+        let first = try await fetchSample(cacheDir: cacheDir)
 
         // En URL som INTE går att nå — om detta andra anrop av misstag
         // gjorde ett nätverksanrop skulle det kasta/hänga, inte returnera
@@ -78,9 +88,7 @@ final class ExternalBinaryFetcherTests: XCTestCase {
 
         let wrongChecksum = String(repeating: "0", count: 64)
         do {
-            _ = try await ExternalBinaryFetcher.fetch(
-                url: sampleURL, expectedSHA256: wrongChecksum,
-                cacheDir: cacheDir, binaryName: "sample")
+            _ = try await fetchSample(cacheDir: cacheDir, expectedSHA256: wrongChecksum)
             XCTFail("förväntade checksumMismatch")
         } catch ExternalBinaryError.checksumMismatch(let expected, let actual) {
             XCTAssertEqual(expected, wrongChecksum)
@@ -98,18 +106,7 @@ final class ExternalBinaryFetcherTests: XCTestCase {
         let destination = cacheDir.appendingPathComponent("sample")
         try Data("korrupt-skräp, inte den riktiga filen".utf8).write(to: destination)
 
-        let path: URL
-        do {
-            path = try await ExternalBinaryFetcher.fetch(
-                url: sampleURL, expectedSHA256: sampleSHA256,
-                cacheDir: cacheDir, binaryName: "sample")
-        } catch ExternalBinaryError.downloadFailed(let message) where message.contains("HTTP 429") {
-            // GitHubs anonyma rate limit för raw.githubusercontent.com kan
-            // slå till mitt i en testkörning (delad IP-pool på CI-runners) —
-            // det är miljöflakighet, inte ett fel i fetcher-koden, så hoppa
-            // över precis som setUp() redan gör vid utebliven nätverksåtkomst.
-            throw XCTSkip("Nätverket svarade med HTTP 429 (rate limit): \(message)")
-        }
+        let path = try await fetchSample(cacheDir: cacheDir)
 
         let data = try Data(contentsOf: path)
         XCTAssertEqual(ExternalBinaryFetcher.sha256Hex(data), sampleSHA256)
