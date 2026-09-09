@@ -8,6 +8,9 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    ignore:
+      # Keep the exact Package.swift pin until apple/swift-nio#3647 is fixed.
+      - dependency-name: "swift-nio"
 
   - package-ecosystem: "bundler"
     directory: "/App"
@@ -20,7 +23,9 @@ updates:
       interval: "weekly"
 
   - package-ecosystem: "gradle"
-    directory: "/Android"
+    directories:
+      - "/Android"
+      - "/Android/app"
     schedule:
       interval: "weekly"
 
