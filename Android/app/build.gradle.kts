@@ -34,14 +34,14 @@ android {
     }
 }
 
-// kotlinOptions{jvmTarget} (KGP:s gamla android-plugin-DSL) är inte
-// registrerad utan det separata org.jetbrains.kotlin.android-pluginet,
-// trots att Googles egen migreringsguide (kotl.in/gradle/agp-built-in-kotlin)
-// säger att den ska vara bakåtkompatibel — verifierat fel empiriskt
-// (CI: "Unresolved reference 'kotlinOptions'"), inte antaget. jvmToolchain
-// är AGP 9:s inbyggda Kotlin-stöds egen, rekommenderade ersättning.
+// Ange bytecode-målet utan att kräva att Gradle kör på exakt JDK 17.
+// CodeQL default setup kör på repots self-hosted runner och tillhandahåller
+// en nyare JDK; ett låst jvmToolchain(17) gör då att autobuild avbryts innan
+// Kotlin-extraktorn ser någon källkod. Java/Kotlin-outputen är fortfarande 17.
 kotlin {
-    jvmToolchain(17)
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+    }
 }
 
 dependencies {
