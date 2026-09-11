@@ -10,10 +10,10 @@ edition = "2024"
 # gammal toolchain ett kryptiskt syntaxfel i stället för ett tydligt
 # "requires rustc 1.92".
 #
-# CI kör `dtolnay/rust-toolchain@stable`, alltså alltid SENASTE stabila —
-# det här är golvet, inte vad vi bygger med till vardags. Höj det när ett
-# beroende kräver mer (bygget säger då själv vilken version), och kör om
-# testsviten på den nya siffran så den förblir verifierad.
+# CI väljer `stable` via rustup på GitHub-hosted runner; det här är golvet,
+# inte vad vi bygger med till vardags. Höj det när ett beroende kräver mer
+# (bygget säger då själv vilken version), och kör om testsviten på den nya
+# siffran så den förblir verifierad.
 rust-version = "1.92"
 
 # Integrationerna (Docker/Kubernetes/Proxmox) ligger i ett EGET paket,
