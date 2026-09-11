@@ -936,7 +936,7 @@ mod tests {
     #[test]
     fn sigv4_differs_with_different_payload() {
         let test_secret = std::env::var("TEST_S3_SECRET_ACCESS_KEY")
-            .unwrap_or_else(|_| "test-secret-not-for-production".to_string());
+            .expect("TEST_S3_SECRET_ACCESS_KEY must be set for this test");
         let credentials = S3Credentials {
             access_key_id: "AKID".to_string(),
             secret_access_key: test_secret,
