@@ -1151,10 +1151,16 @@ mod tests {
             let _ = socket.shutdown().await;
         });
 
+        let test_secret_access_key =
+            std::env::var("S3_TEST_SECRET_ACCESS_KEY").unwrap_or_else(|_| "test-secret".to_string());
+
         let client = S3Client::new(
             &format!("http://127.0.0.1:{port}"),
             "us-east-1".to_string(),
-            S3Credentials { access_key_id: "AKID".to_string(), secret_access_key: "secret".to_string() },
+            S3Credentials {
+                access_key_id: "AKID".to_string(),
+                secret_access_key: test_secret_access_key,
+            },
         )
         .unwrap();
 
