@@ -906,9 +906,11 @@ mod tests {
     /// korrekt, inte bara "ser rimlig ut".
     #[test]
     fn sigv4_matches_verified_reference_vector() {
+        let test_secret_access_key = std::env::var("S3_TEST_SECRET_ACCESS_KEY")
+            .unwrap_or_else(|_| "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string());
         let credentials = S3Credentials {
             access_key_id: "AKIDEXAMPLE".to_string(),
-            secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string(),
+            secret_access_key: test_secret_access_key,
         };
         let signed = sign(
             "GET",
