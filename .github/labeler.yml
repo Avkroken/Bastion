@@ -1,0 +1,58 @@
+swift:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.swift"
+          - "Package.swift"
+
+rust:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "LinuxApp/**/*.rs"
+          - "LinuxApp/**/Cargo.toml"
+          - "LinuxApp/Cargo.lock"
+
+dotnet:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "WindowsApp/**/*.cs"
+          - "WindowsApp/**/*.csproj"
+          - "WindowsApp/**/*.xaml"
+
+kotlin:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "Android/**/*.kt"
+          - "Android/**/*.kts"
+          - "Android/gradle.properties"
+          - "Android/gradle/**"
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "Tests/**"
+          - "Android/app/src/test/**"
+          - "WindowsApp/Bastion.Core.Tests/**"
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "Package.swift"
+          - "LinuxApp/Cargo.toml"
+          - "LinuxApp/integrations/Cargo.toml"
+          - "LinuxApp/Cargo.lock"
+          - "WindowsApp/**/*.csproj"
+          - "Android/**/*.gradle.kts"
+          - "Android/gradle.properties"
+          - "Android/gradle/wrapper/gradle-wrapper.properties"
+          - "App/Gemfile"
+          - "App/Gemfile.lock"
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "**/*.md"
+
+github_actions:
+  - changed-files:
+      - any-glob-to-any-file: ".github/**"
