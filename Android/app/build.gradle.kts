@@ -35,9 +35,9 @@ android {
 }
 
 // Ange bytecode-målet utan att kräva att Gradle kör på exakt JDK 17.
-// CodeQL default setup kör på repots self-hosted runner och tillhandahåller
-// en nyare JDK; ett låst jvmToolchain(17) gör då att autobuild avbryts innan
-// Kotlin-extraktorn ser någon källkod. Java/Kotlin-outputen är fortfarande 17.
+// CodeQL och CI kan köras på en nyare JDK; ett låst jvmToolchain(17)
+// kan då avbryta autobuild innan Kotlin-extraktorn ser någon källkod.
+// Java/Kotlin-outputen är fortfarande 17.
 kotlin {
     compilerOptions {
         jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
