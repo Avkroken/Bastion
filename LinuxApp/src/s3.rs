@@ -907,7 +907,7 @@ mod tests {
     #[test]
     fn sigv4_matches_verified_reference_vector() {
         let test_secret_access_key = std::env::var("S3_TEST_SECRET_ACCESS_KEY")
-            .unwrap_or_else(|_| "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string());
+            .expect("S3_TEST_SECRET_ACCESS_KEY must be set for SigV4 reference test");
         let credentials = S3Credentials {
             access_key_id: "AKIDEXAMPLE".to_string(),
             secret_access_key: test_secret_access_key,
