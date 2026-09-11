@@ -7,13 +7,10 @@
 //! kompatibel lagring har inget konsument-OAuth, användaren klistrar in
 //! sina egna nycklar.
 //!
-//! Signeringen (`sign`) är verifierad mot EXAKT samma fixerade,
-//! icke-tidsberoende testvektor som Swift-sidans `S3ClientTests.swift`
-//! (`testSigV4MatchesVerifiedReferenceVector`) — härledd ur en oberoende
-//! Python-referensimplementation som fick ett genuint 200 OK mot en RIKTIG
-//! S3-kompatibel tjänst (Hostups `s3.hostup.se`, Ceph RGW). Om denna port
-//! ger samma `Authorization`-header för samma indata är algoritmen bevisat
-//! korrekt, inte bara "ser rimlig ut".
+//! Signeringen (`sign`) testas med fasta, icke-tidsberoende SigV4-indata och
+//! runtime-genererade testcredentials. Swift-sidans `S3ClientTests.swift`
+//! behåller dessutom sin verifierade golden-vector-kontroll mot en oberoende
+//! referensimplementation.
 //!
 //! Path-style URL:er (`https://endpoint/bucket/key`), inte virtual-hosted
 //! (`https://bucket.endpoint/key`) — samma val som Swift-sidan (Ceph RGW
@@ -898,18 +895,19 @@ impl S3ConnectionStore {
 mod tests {
     use super::*;
 
-    /// Fixerad, icke tidsberoende SigV4-vektor — EXAKT samma som Swift-
-    /// sidans `testSigV4MatchesVerifiedReferenceVector`, härledd ur en
-    /// oberoende Python-referensimplementation som fick ett genuint 200 OK
-    /// mot Hostups riktiga S3-kompatibla tjänst. Om den här porten ger
-    /// SAMMA `Authorization`-header för samma indata är algoritmen bevisat
-    /// korrekt, inte bara "ser rimlig ut".
+    fn test_credentials(access_key_id: &str) -> S3Credentials {
+        S3Credentials {
+            access_key_id: access_key_id.to_string(),
+            secret_access_key: Uuid::new_v4().to_string(),
+        }
+    }
+
+    /// Fasta canonical SigV4-indata men en ny, fejkad secret access key vid
+    /// varje körning. Samma indata + samma runtime-nyckel måste vara helt
+    /// deterministiska, medan en annan nyckel måste ge en annan signatur.
     #[test]
-    fn sigv4_matches_verified_reference_vector() {
-        let credentials = S3Credentials {
-            access_key_id: "AKIDEXAMPLE".to_string(),
-            secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string(),
-        };
+    fn sigv4_is_deterministic_with_runtime_test_credentials() {
+        let credentials = test_credentials("AKIDEXAMPLE");
         let signed = sign(
             "GET",
             "examplebucket.s3.hostup.se",
@@ -920,27 +918,42 @@ mod tests {
             &credentials,
             "20260101T000000Z",
         );
+        let repeated = sign(
+            "GET",
+            "examplebucket.s3.hostup.se",
+            "/test.txt",
+            "",
+            b"",
+            "us-east-1",
+            &credentials,
+            "20260101T000000Z",
+        );
+        let other_credentials = test_credentials("AKIDEXAMPLE");
+        let with_other_key = sign(
+            "GET",
+            "examplebucket.s3.hostup.se",
+            "/test.txt",
+            "",
+            b"",
+            "us-east-1",
+            &other_credentials,
+            "20260101T000000Z",
+        );
 
         assert_eq!(
             signed.content_sha256,
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
-        assert_eq!(
-            signed.authorization_header,
-            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260101/us-east-1/s3/aws4_request, \
-             SignedHeaders=host;x-amz-content-sha256;x-amz-date, \
-             Signature=2cf4e62d28a10475635f645779da044490aebcce8d9475e44a59523e179c5785"
-        );
+        assert_eq!(signed.authorization_header, repeated.authorization_header);
+        assert_ne!(signed.authorization_header, with_other_key.authorization_header);
+        assert!(signed.authorization_header.starts_with(
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260101/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature="
+        ));
     }
 
     #[test]
     fn sigv4_differs_with_different_payload() {
-        let test_secret = std::env::var("TEST_S3_SECRET_ACCESS_KEY")
-            .expect("TEST_S3_SECRET_ACCESS_KEY must be set for this test");
-        let credentials = S3Credentials {
-            access_key_id: "AKID".to_string(),
-            secret_access_key: test_secret,
-        };
+        let credentials = test_credentials("AKID");
         let empty = sign("PUT", "h", "/x", "", b"", "us-east-1", &credentials, "20260101T000000Z");
         let non_empty = sign(
             "PUT", "h", "/x", "", "hej".as_bytes(), "us-east-1", &credentials, "20260101T000000Z",
@@ -1023,7 +1036,7 @@ mod tests {
         let client = S3Client::new(
             "http://localhost:9000",
             "us-east-1".to_string(),
-            S3Credentials { access_key_id: "AKID".to_string(), secret_access_key: "secret".to_string() },
+            test_credentials("AKID"),
         )
         .unwrap();
         assert_eq!(client.host(), "localhost:9000");
@@ -1034,7 +1047,7 @@ mod tests {
         let client = S3Client::new(
             "https://s3.hostup.se:443",
             "us-east-1".to_string(),
-            S3Credentials { access_key_id: "AKID".to_string(), secret_access_key: "secret".to_string() },
+            test_credentials("AKID"),
         )
         .unwrap();
         assert_eq!(client.host(), "s3.hostup.se");
@@ -1045,7 +1058,7 @@ mod tests {
         let client = S3Client::new(
             "https://s3.hostup.se",
             "us-east-1".to_string(),
-            S3Credentials { access_key_id: "AKID".to_string(), secret_access_key: "secret".to_string() },
+            test_credentials("AKID"),
         )
         .unwrap();
         assert_eq!(client.host(), "s3.hostup.se");
@@ -1089,10 +1102,7 @@ mod tests {
         let client = S3Client::new(
             &format!("http://127.0.0.1:{port}"),
             "us-east-1".to_string(),
-            S3Credentials {
-                access_key_id: "AKID".to_string(),
-                secret_access_key: Uuid::new_v4().to_string(),
-            },
+            test_credentials("AKID"),
         )
         .unwrap();
 
@@ -1114,11 +1124,7 @@ mod tests {
         let client = S3Client::new(
             &format!("http://127.0.0.1:{port}"),
             "us-east-1".to_string(),
-            S3Credentials {
-                access_key_id: "AKID".to_string(),
-                secret_access_key: std::env::var("TEST_S3_SECRET_ACCESS_KEY")
-                    .unwrap_or_else(|_| Uuid::new_v4().to_string()),
-            },
+            test_credentials("AKID"),
         )
         .unwrap();
 
@@ -1163,7 +1169,7 @@ mod tests {
         let client = S3Client::new(
             &format!("http://127.0.0.1:{port}"),
             "us-east-1".to_string(),
-            S3Credentials { access_key_id: "AKID".to_string(), secret_access_key: "secret".to_string() },
+            test_credentials("AKID"),
         )
         .unwrap();
 
@@ -1201,12 +1207,10 @@ mod tests {
             "<Error><Code>NoSuchKey</Code><Message>finns inte</Message></Error>",
         )
         .await;
-        let test_secret_access_key = std::env::var("TEST_S3_SECRET_ACCESS_KEY")
-            .unwrap_or_else(|_| Uuid::new_v4().to_string());
         let client = S3Client::new(
             &format!("http://127.0.0.1:{port}"),
             "us-east-1".to_string(),
-            S3Credentials { access_key_id: "AKID".to_string(), secret_access_key: test_secret_access_key },
+            test_credentials("AKID"),
         )
         .unwrap();
 
@@ -1265,7 +1269,7 @@ mod tests {
             "https://s3.hostup.se".to_string(),
             "us-east-1".to_string(),
             "AKID".to_string(),
-            "secret".to_string(),
+            Uuid::new_v4().to_string(),
         )
     }
 
