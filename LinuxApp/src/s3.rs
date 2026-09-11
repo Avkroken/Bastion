@@ -1087,7 +1087,10 @@ mod tests {
         let client = S3Client::new(
             &format!("http://127.0.0.1:{port}"),
             "us-east-1".to_string(),
-            S3Credentials { access_key_id: "AKID".to_string(), secret_access_key: "secret".to_string() },
+            S3Credentials {
+                access_key_id: "AKID".to_string(),
+                secret_access_key: Uuid::new_v4().to_string(),
+            },
         )
         .unwrap();
 
