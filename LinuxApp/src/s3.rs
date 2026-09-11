@@ -1196,10 +1196,12 @@ mod tests {
             "<Error><Code>NoSuchKey</Code><Message>finns inte</Message></Error>",
         )
         .await;
+        let test_secret_access_key = std::env::var("TEST_S3_SECRET_ACCESS_KEY")
+            .unwrap_or_else(|_| Uuid::new_v4().to_string());
         let client = S3Client::new(
             &format!("http://127.0.0.1:{port}"),
             "us-east-1".to_string(),
-            S3Credentials { access_key_id: "AKID".to_string(), secret_access_key: "secret".to_string() },
+            S3Credentials { access_key_id: "AKID".to_string(), secret_access_key: test_secret_access_key },
         )
         .unwrap();
 
