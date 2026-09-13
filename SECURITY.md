@@ -1,21 +1,21 @@
-# Security Policy
+# Säkerhetspolicy
 
-## Supported Versions
+## Rapportera en sårbarhet
 
-Use this section to tell people about which versions of your project are
-currently being supported with security updates.
+Rapportera **inte** säkerhetsbrister, hemligheter, tokens, privata nycklar eller andra känsliga uppgifter i publika issues, pull requests eller discussions.
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 5.1.x   | :white_check_mark: |
-| 5.0.x   | :x:                |
-| 4.0.x   | :white_check_mark: |
-| < 4.0   | :x:                |
+För repositoryt där problemet finns:
 
-## Reporting a Vulnerability
+1. Öppna fliken **Security**.
+2. Välj **Report a vulnerability** om privat sårbarhetsrapportering är aktiverad.
+3. Beskriv påverkan, berörd komponent, reproduktionssteg och eventuell föreslagen åtgärd utan att publicera informationen någon annanstans.
 
-Use this section to tell people how to report a vulnerability.
+Om **Report a vulnerability** inte finns: skapa endast ett kort publikt issue som ber maintainern ange en privat kontaktväg. Ta inte med tekniska detaljer om sårbarheten i det publika issuet.
 
-Tell them where to go, how often they can expect to get an update on a
-reported vulnerability, what to expect if the vulnerability is accepted or
-declined, etc.
+## Vad som stöds
+
+Säkerhetsfixar prioriteras för den aktuella standardgrenen och, när projektet använder releaser, den senaste stödda releasen. Äldre grenar och versioner kan sakna säkerhetsuppdateringar.
+
+## Förväntad hantering
+
+En rapport ska innehålla tillräckligt med information för att problemet ska kunna verifieras. Maintainers avgör allvarlighetsgrad, omfattning, åtgärd och eventuell publicering genom GitHubs säkerhetsfunktioner.

@@ -1,0 +1,53 @@
+name: Felrapport
+description: Rapportera ett reproducerbart problem.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Tack för att du hjälper till att förbättra projektet.
+        Rapportera inte säkerhetsbrister här och lägg aldrig in lösenord, tokens, privata nycklar eller andra känsliga uppgifter i ett publikt issue.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Kontroll före rapportering
+      options:
+        - label: Jag har sökt efter ett befintligt issue med samma problem.
+          required: true
+        - label: Rapporten innehåller inga hemligheter eller andra känsliga uppgifter.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Vad hände?
+      description: Beskriv felet så konkret som möjligt.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steg för att återskapa
+      description: Ange den minsta tillförlitliga sekvens som återskapar problemet.
+      placeholder: |
+        1. Öppna ...
+        2. Välj ...
+        3. Observera ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Förväntat beteende
+      description: Beskriv vad du förväntade dig skulle hända.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Miljö
+      description: Exempelvis operativsystem, webbläsare, runtime eller versionsnummer.
+  - type: textarea
+    id: details
+    attributes:
+      label: Loggar, skärmbilder eller annan information
+      description: Ta bort personuppgifter och känslig information innan du bifogar något.
