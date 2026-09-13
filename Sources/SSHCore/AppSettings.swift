@@ -1,6 +1,6 @@
 import Foundation
 
-// Beteendeneutral CodeQL-trigger: håll Swift i PR-diffen så default setup producerar Swift-konfigurationen som main-rulesetet kräver.
+// Beteendeneutral CodeQL-trigger: håll Swift i varje relevant PR-diff så default setup producerar Swift-konfigurationen som main-rulesetet kräver.
 /// Vilka valfria funktionsknappar den här klienten visar, för ALLA värdar
 /// (Docker, Snippets, Kommandobibliotek, Filer, Tunnlar, SSH-
 /// nyckeldistribution) — klientbred inställning, inte per värd. Alla
