@@ -1,0 +1,38 @@
+name: Förslag
+description: Föreslå en förbättring eller ny funktion.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: Beskriv behovet först och lösningen därefter. Undvik känsliga eller privata uppgifter.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Kontroll före förslaget
+      options:
+        - label: Jag har sökt efter ett befintligt issue med samma eller liknande förslag.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem eller behov
+      description: Vilket problem försöker du lösa, eller vilket behov finns?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Föreslagen lösning
+      description: Beskriv önskat beteende eller resultat.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternativ
+      description: Beskriv andra lösningar eller arbetssätt som du har övervägt.
+  - type: textarea
+    id: context
+    attributes:
+      label: Övrig kontext
+      description: Lägg till relevanta exempel eller skärmbilder utan känslig information.
