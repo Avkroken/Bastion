@@ -1,0 +1,10 @@
+# Generated-project dependency overrides.
+#
+# SWIFTTERM_VERSION is exported by generate-project.sh from Package.swift,
+# making Package.swift the single Dependabot-managed source of truth.
+packages:REPLACE:
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    exactVersion: "${SWIFTTERM_VERSION}"
+  Bastion:
+    path: ..
