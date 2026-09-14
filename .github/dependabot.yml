@@ -12,6 +12,11 @@ updates:
       # Keep the exact Package.swift pin until apple/swift-nio#3647 is fixed.
       - dependency-name: "swift-nio"
 
+  - package-ecosystem: "swift"
+    directory: "/App"
+    schedule:
+      interval: "weekly"
+
   - package-ecosystem: "bundler"
     directory: "/App"
     schedule:
