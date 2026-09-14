@@ -1,7 +1,11 @@
-# Generated-project dependency overrides.
+# Root spec for generated-project dependency overrides.
 #
+# project.yml is included first; this spec then replaces only the package map.
 # SWIFTTERM_VERSION is exported by generate-project.sh from Package.swift,
 # making Package.swift the single Dependabot-managed source of truth.
+include:
+  - project.yml
+
 packages:REPLACE:
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
