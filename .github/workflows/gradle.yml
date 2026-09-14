@@ -53,7 +53,9 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-      - name: Generate and submit dependency graph
+      - name: Generate and submit Android runtime dependency graph
         uses: gradle/actions/dependency-submission@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
           build-root-directory: Android
+          dependency-graph-include-projects: ':app'
+          dependency-graph-include-configurations: '.*[Rr]untimeClasspath'
