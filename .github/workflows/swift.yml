@@ -39,8 +39,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Validate Apple app SwiftPM manifest
+        run: swift package dump-package --package-path App > /dev/null
       - name: Generate Xcode project
-        run: brew install xcodegen && cd App && xcodegen generate
+        run: brew install xcodegen && sh App/generate-project.sh
       - name: Ensure tvOS runtime
         run: xcrun simctl list runtimes available | grep -q tvOS || xcodebuild -downloadPlatform tvOS
       - name: Build application schemes
