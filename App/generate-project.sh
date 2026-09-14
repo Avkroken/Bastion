@@ -13,4 +13,4 @@ fi
 
 export SWIFTTERM_VERSION
 cd "$SCRIPT_DIR"
-exec xcodegen generate --spec project.yml,project.dependencies.yml "$@"
+exec xcodegen generate --spec project.dependencies.yml "$@"
