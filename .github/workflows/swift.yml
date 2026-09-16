@@ -5,7 +5,9 @@ name: Swift
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
+      - chatgpt/apple-ci/2026-09-16/15-23-498
   pull_request:
     branches: [ main ]
   merge_group:
