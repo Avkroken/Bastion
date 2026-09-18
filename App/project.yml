@@ -28,6 +28,7 @@ targets:
       - path: .
         excludes:
           - "project.yml"
+          - "Package.swift"
           - "*.md"
           - "*.entitlements"
           # Egen tv-target (Bastion-tvOS, sources: TVApp/) — utan denna
@@ -165,6 +166,7 @@ targets:
       - path: .
         excludes:
           - "project.yml"
+          - "Package.swift"
           - "*.md"
           - "Info.plist"
           - "*.entitlements"
