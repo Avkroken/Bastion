@@ -2,6 +2,10 @@
 
 Repositoryt underhålls av Avkroken.
 
+## Projektkontext
+
+[`docs/project-context.md`](docs/project-context.md) är Bastions levande, versionsstyrda current-state för plattformar, CI, rulesets och viktiga bygginvarianter. Uppdatera den när motsvarande implementation eller GitHub-konfiguration ändras.
+
 ## Issues
 
 Använd GitHub Issues för reproducerbara fel eller förbättringsförslag. Mallarna i `.github/ISSUE_TEMPLATE/` används för nya ärenden.
