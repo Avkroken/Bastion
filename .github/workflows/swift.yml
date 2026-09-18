@@ -45,8 +45,9 @@ jobs:
         run: brew install xcodegen && sh App/generate-project.sh
       - name: Ensure tvOS runtime
         run: xcrun simctl list runtimes available | grep -q tvOS || xcodebuild -downloadPlatform tvOS
-      - name: Build application schemes
-        run: |
-          xcodebuild build -skipPackagePluginValidation -project App/Bastion.xcodeproj -scheme Bastion -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
-          xcodebuild build -skipPackagePluginValidation -project App/Bastion.xcodeproj -scheme Bastion-macOS -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
-          xcodebuild build -skipPackagePluginValidation -project App/Bastion.xcodeproj -scheme Bastion-tvOS -destination 'generic/platform=tvOS Simulator' CODE_SIGNING_ALLOWED=NO
+      - name: Build iOS application scheme
+        run: xcodebuild build -skipPackagePluginValidation -project App/Bastion.xcodeproj -scheme Bastion -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO
+      - name: Build macOS application scheme
+        run: xcodebuild build -skipPackagePluginValidation -project App/Bastion.xcodeproj -scheme Bastion-macOS -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO
+      - name: Build tvOS application scheme
+        run: xcodebuild build -skipPackagePluginValidation -project App/Bastion.xcodeproj -scheme Bastion-tvOS -destination 'generic/platform=tvOS Simulator' CODE_SIGNING_ALLOWED=NO
