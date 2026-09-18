@@ -1,0 +1,48 @@
+name: Platform CI validation
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ios:
+    name: iOS validation
+    uses: Avkroken/.github/.github/workflows/xcode.yml@4f8151e44a1a85e6f086a352ca78e1a7d27caf0d
+    with:
+      platform: ios
+      runner: macos-26
+      package_path: App
+      xcodegen_spec: App/project.yml
+      generation_script: App/generate-project.sh
+      project_path: App/Bastion.xcodeproj
+      scheme: Bastion
+      destination: generic/platform=iOS Simulator
+
+  macos:
+    name: macOS validation
+    uses: Avkroken/.github/.github/workflows/xcode.yml@4f8151e44a1a85e6f086a352ca78e1a7d27caf0d
+    with:
+      platform: macos
+      runner: macos-26
+      package_path: App
+      xcodegen_spec: App/project.yml
+      generation_script: App/generate-project.sh
+      project_path: App/Bastion.xcodeproj
+      scheme: Bastion-macOS
+      destination: platform=macOS
+
+  tvos:
+    name: tvOS validation
+    uses: Avkroken/.github/.github/workflows/xcode.yml@4f8151e44a1a85e6f086a352ca78e1a7d27caf0d
+    with:
+      platform: tvos
+      runner: macos-26
+      package_path: App
+      xcodegen_spec: App/project.yml
+      generation_script: App/generate-project.sh
+      project_path: App/Bastion.xcodeproj
+      scheme: Bastion-tvOS
+      destination: generic/platform=tvOS Simulator
