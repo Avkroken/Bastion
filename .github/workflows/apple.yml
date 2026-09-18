@@ -1,0 +1,24 @@
+name: Apple
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  merge_group:
+    types: [ checks_requested ]
+
+permissions:
+  contents: read
+
+jobs:
+  apple:
+    uses: Avkroken/.github/.github/workflows/apple.yml@5f094ef8cf6348784f5b68f3fb3ffc4cda7f5929
+    with:
+      runner: macos-26
+      package_path: App
+      xcodegen_spec: App/project.yml
+      project_path: App/Bastion.xcodeproj
+      ios_scheme: Bastion
+      macos_scheme: Bastion-macOS
+      tvos_scheme: Bastion-tvOS
