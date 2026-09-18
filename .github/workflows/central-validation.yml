@@ -1,0 +1,37 @@
+name: Central reusable workflow validation
+
+on:
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+jobs:
+  swift:
+    uses: Avkroken/.github/.github/workflows/swift.yml@5f094ef8cf6348784f5b68f3fb3ffc4cda7f5929
+    with:
+      package_path: .
+
+  dotnet:
+    uses: Avkroken/.github/.github/workflows/dotnet.yml@5f094ef8cf6348784f5b68f3fb3ffc4cda7f5929
+    with:
+      dotnet_version: 10.0.x
+      test_working_directory: WindowsApp/Bastion.Core.Tests
+      application_project: WindowsApp/WindowsApp.csproj
+      install_openssh: true
+
+  gradle:
+    uses: Avkroken/.github/.github/workflows/gradle.yml@5f094ef8cf6348784f5b68f3fb3ffc4cda7f5929
+    with:
+      working_directory: Android
+      java_version: '17'
+      dependency_submission: false
+      dependency_projects: ':app'
+      dependency_configurations: '.*[Rr]untimeClasspath'
+
+  rust:
+    uses: Avkroken/.github/.github/workflows/rust.yml@5f094ef8cf6348784f5b68f3fb3ffc4cda7f5929
+    with:
+      working_directory: LinuxApp
+      system_packages: libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev pkg-config
