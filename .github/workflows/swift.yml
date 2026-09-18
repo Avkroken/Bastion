@@ -42,7 +42,7 @@ jobs:
       - name: Validate Apple app SwiftPM manifest
         run: swift package dump-package --package-path App > /dev/null
       - name: Generate Xcode project
-        run: brew install xcodegen && cd App && xcodegen generate
+        run: brew install xcodegen && sh App/generate-project.sh
       - name: Ensure tvOS runtime
         run: xcrun simctl list runtimes available | grep -q tvOS || xcodebuild -downloadPlatform tvOS
       - name: Build iOS application scheme
