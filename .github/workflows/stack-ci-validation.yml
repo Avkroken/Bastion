@@ -1,0 +1,42 @@
+name: Central stack CI validation
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  swift:
+    name: Swift validation
+    uses: Avkroken/.github/.github/workflows/swift.yml@504f25321cb95e39662e01e0d4aca340f6240169
+    with:
+      package_path: .
+      os_matrix: '["ubuntu-latest","macos-latest"]'
+
+  rust:
+    name: Rust validation
+    uses: Avkroken/.github/.github/workflows/rust.yml@504f25321cb95e39662e01e0d4aca340f6240169
+    with:
+      working_directory: LinuxApp
+      system_packages: libgtk-4-dev libadwaita-1-dev libvte-2.91-gtk4-dev libgtksourceview-5-dev pkg-config
+
+  dotnet:
+    name: .NET validation
+    uses: Avkroken/.github/.github/workflows/dotnet.yml@504f25321cb95e39662e01e0d4aca340f6240169
+    with:
+      dotnet_version: 10.0.x
+      test_working_directory: WindowsApp/Bastion.Core.Tests
+      application_project: WindowsApp/WindowsApp.csproj
+      install_openssh: true
+
+  gradle:
+    name: Gradle validation
+    uses: Avkroken/.github/.github/workflows/gradle.yml@504f25321cb95e39662e01e0d4aca340f6240169
+    with:
+      working_directory: Android
+      java_version: '17'
+      dependency_submission: false
+      dependency_projects: ':app'
+      dependency_configurations: '.*[Rr]untimeClasspath'
