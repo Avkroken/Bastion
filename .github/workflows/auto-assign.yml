@@ -1,0 +1,17 @@
+name: Auto assign issues and pull requests
+
+on:
+  issues:
+    types: [opened, reopened]
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions: {}
+
+jobs:
+  assign:
+    permissions:
+      issues: write
+    uses: Avkroken/.github/.github/workflows/reusable-auto-assign.yml@main
+    with:
+      number: ${{ github.event.issue.number || github.event.pull_request.number }}
