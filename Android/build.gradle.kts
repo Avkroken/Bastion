@@ -1,5 +1,5 @@
 plugins {
-    id("com.android.application") version "9.4.0" apply false
+    id("com.android.application") version "9.4.1" apply false
 }
 
 // CodeQL Default Setup uses Gradle autobuild for Kotlin and invokes the generic
