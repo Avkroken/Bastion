@@ -38,10 +38,10 @@ targets:
           # Exkluderingen behövs alltså oavsett vilka paket projektet drar
           # in. Historik: symptomet visade sig ursprungligen som en trasig
           # paketupplösning ("Unable to resolve module dependency:
-          # 'Sentry'", PR #191) — verifierat genom att isolera orsaken
+          # den tidigare telemetrymodulen", PR #191) — verifierat genom att isolera orsaken
           # lokalt: felet kvarstod även med Bastion-tvOS-targeten helt
           # borttagen, men försvann inte förrän TVApp/ exkluderades från de
-          # andra targetens sources. Sentry är sedermera borttaget; den
+          # andra targetens sources. den tidigare telemetrymodulen är sedermera borttagen; den
           # dubbla @main-strukten var alltid den faktiska orsaken.
           - "TVApp/*"
           # macOS-målets Info.plist saknades här (macOS-målet exkluderar
@@ -94,8 +94,8 @@ targets:
         # fanns redan i RÅA Info.plist, men Build 5 (2026-07-22) kraschade
         # ändå direkt vid uppstart med SIGABRT — "This app has crashed
         # because it attempted to access privacy-sensitive data without a
-        # usage description" (verifierat via Sentry-krasch-rapport,
-        # symboliserad via sentry_debug_files_upload). Måste alltså även
+        # usage description" (verifierat via tidigare kraschrapport,
+        # symboliserad via tidigare symboluppladdning). Måste alltså även
         # sättas HÄR, exakt samma mönster som orienteringarna/export-
         # compliance ovan.
         NSFaceIDUsageDescription: "Lås upp Bastion med Face ID i stället för att skriva ett lösenord varje gång."
