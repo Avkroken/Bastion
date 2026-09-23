@@ -37,7 +37,7 @@ final class ChainConnector<Client: AnyObject> {
     // att avgöra om en generisk fallback skulle visas, men det gjorde att
     // BARA den ursprungliga anroparens `onFailure` kördes — en samtidig
     // anropare som kom in via den delade vägen såg `raisedError == true`
-    // och hoppade tyst över sin egen felrapportering (sentry MEDIUM).
+    // och hoppade tyst över sin egen felrapportering (tidigare telemetryfynd MEDIUM).
     private var connectingTask: Task<Result<Client, PlainMessageError>, Never>?
     private var isTornDown = false
 
