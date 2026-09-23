@@ -47,7 +47,7 @@ private final class TimeoutRace<T>: @unchecked Sendable {
 /// Kör `operation` men ger upp (kastar `TestTimeoutError`) om den inte
 /// hunnit klart inom `seconds`.
 ///
-/// **VIKTIGT, lärt av ett sentry/cubic-fynd (PR #178):** en `withThrowingTaskGroup`-
+/// **VIKTIGT, lärt av ett tidigare telemetry/cubic-fynd (PR #178):** en `withThrowingTaskGroup`-
 /// baserad implementation (den ursprungliga versionen här) FUNGERAR INTE som
 /// en riktig backstop mot en `operation` som blockerar synkront (t.ex. en
 /// tråd i `DispatchSemaphore.wait()`, som `TailscaleStatus.fetchLocal`s
@@ -177,7 +177,7 @@ final class TerminalTeardownRaceTests: XCTestCase {
     // TerminalView.swift: stop() reagerar på en hel knapptryck-till-Task-
     // schemaläggning, storleksordningar långsammare). Bedömd som teoretisk,
     // inte praktiskt nåbar - se PR #169-diskussionen för resonemanget i sin
-    // helhet. Om framtida telemetri (Sentry) visar motsatsen, återuppta med
+    // helhet. Om framtida telemetri (extern telemetry) visar motsatsen, återuppta med
     // en riktig lösning (t.ex. att synkronisera close() mot ett aktivt
     // event loop-jobb istället för att bara vänta in det).
     func testConcurrentOpenShellAndCloseNeverCrashes() async throws {
