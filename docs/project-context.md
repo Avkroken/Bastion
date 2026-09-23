@@ -164,11 +164,16 @@ Rätt fix är **inte** att ta bort manifestet. Rätt fix är att hålla manifest
 
 ### Dependency review och Android build-tool graph
 
-Bastions Android-build använder Android Gradle Plugin 9.4.1. AGP begär Bouncy Castle 1.80.2 transitivt på buildscript-classpathen, medan `Android/build.gradle.kts` tvingar `bcprov-jdk18on`, `bcpkix-jdk18on` och `bcutil-jdk18on` till 1.86.
+Bastions Android-build använder Android Gradle Plugin 9.4.1. AGP begär äldre build-tool-beroenden transitivt, bland annat Bouncy Castle 1.80.2 och jose4j 0.9.5. `Android/build.gradle.kts` tvingar därför buildscript-classpathen till Bouncy Castle 1.86 och jose4j 0.9.6. Dessa overrides lägger inte till biblioteken i appens runtime.
 
-GitHubs dependency snapshot-diff kan ändå exponera de ursprungligt begärda 1.80.2-noderna när base/head har olika snapshot-set. Avkrokens centrala Dependency Review-policy retry:ar snapshot warnings och har en Bastion-specifik exception för exakt tre GHSA-ID:n som är knutna till denna falskpositiva requested-version. Ingen package-, severity- eller repository-wide bypass används; övriga advisories fortsätter blockera.
+Dependency Review behöver samtidigt jämföra samma dependency-snapshotmodell på PR-head som på `main`. Bastions Gradle-workflow använder därför två steg för PR och merge queue:
 
-Undantaget ska tas bort när AGP/dependency-snapshoten inte längre rapporterar den begärda 1.80.2-grafen.
+1. `Java CI with Gradle` genererar dependency-grafen med `contents: read` och laddar upp snapshoten som ett kortlivat workflow-artifact.
+2. `Submit Gradle dependency graph` triggas via `workflow_run`, kör ingen PR-kod och har endast `actions: read` + `contents: write` för att ladda ned och submit:a den redan genererade grafen.
+
+På `push` till `main` kan den betrodda default-branch-koden fortsatt generera och submit:a grafen direkt.
+
+Denna separation gör att Dependency Review kan förbli en strikt blocking gate utan att PR-kontrollerad Gradle-kod får write-permission.
 
 ## CI måste använda dependency-wrappern
 
