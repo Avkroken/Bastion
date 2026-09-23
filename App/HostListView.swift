@@ -263,7 +263,7 @@ struct HostListView: View {
                 // Samma mönster som Tailscale-upptäckten ovan: sätt målet FÖRST
                 // efter att TelnetConnectView-sheeten faktiskt stängt — annars
                 // krockar det med SwiftUIs single-sheet-hantering (samma
-                // sentry/cubic-fynd som Quick Connect råkade ut för, PR #173).
+                // tidigare telemetry/cubic-fynd som Quick Connect råkade ut för, PR #173).
                 if let pending = pendingTelnetTarget {
                     pendingTelnetTarget = nil
                     telnetTarget = pending
