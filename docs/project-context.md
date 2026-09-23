@@ -162,7 +162,15 @@ unable to resolve module dependency: 'PackageDescription'
 
 Rätt fix är **inte** att ta bort manifestet. Rätt fix är att hålla manifestet utanför application target sources.
 
-### CI måste använda dependency-wrappern
+### Dependency review och Android build-tool graph
+
+Bastions Android-build använder Android Gradle Plugin 9.4.1. AGP begär Bouncy Castle 1.80.2 transitivt på buildscript-classpathen, medan `Android/build.gradle.kts` tvingar `bcprov-jdk18on`, `bcpkix-jdk18on` och `bcutil-jdk18on` till 1.86.
+
+GitHubs dependency snapshot-diff kan ändå exponera de ursprungligt begärda 1.80.2-noderna när base/head har olika snapshot-set. Avkrokens centrala Dependency Review-policy retry:ar snapshot warnings och har en Bastion-specifik exception för exakt tre GHSA-ID:n som är knutna till denna falskpositiva requested-version. Ingen package-, severity- eller repository-wide bypass används; övriga advisories fortsätter blockera.
+
+Undantaget ska tas bort när AGP/dependency-snapshoten inte längre rapporterar den begärda 1.80.2-grafen.
+
+## CI måste använda dependency-wrappern
 
 När Apple-projektet genereras i CI ska dependency-versionen fortfarande matas från `App/Package.swift`.
 
