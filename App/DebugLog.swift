@@ -5,7 +5,7 @@ import os
 /// Enkel, synlig debug-logg — TestFlight-testare kan inte skicka
 /// Console.app-loggar utan en Mac uppkopplad, så det här ger samma data
 /// direkt i appen (och speglas ändå till os.Logger/Console för den som HAR
-/// en Mac). Ingen fjärrrapportering (Sentry togs bort 2026-07-27) — bara
+/// en Mac). Ingen fjärrrapportering (fjärrrapportering avvecklades 2026-07-27) — bara
 /// synligt lokalt, delbart som text via standard-dela-arket.
 ///
 /// Ringbuffer i minnet (senaste 500 raderna) — medvetet INTE
