@@ -162,7 +162,7 @@ struct TVDashboardView: View {
         // `DispatchSemaphore`, se den filen). `Task.detached` räcker INTE
         // för det — det kör fortfarande på Swifts kooperativa tråd-pool,
         // och en blockerad tråd där kan svälta ut andra samtidiga tasks
-        // (sentry+cubic, flera oberoende fynd om samma sak).
+        // (telemetry+cubic, flera oberoende fynd om samma sak).
         //
         // `Self.syncQueue` är en SERIELL kö, inte `.global()` (som är
         // konkurrent) — annars kan den automatiska synken vid appstart och

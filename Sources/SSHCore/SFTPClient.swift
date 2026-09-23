@@ -181,7 +181,7 @@ public actor SFTPClient {
         }
 
         // Från och med HÄR äger vi `child` — varje fel nedan MÅSTE stänga
-        // den innan det kastas, annars läcker den öppna barnkanalen (sentry
+        // den innan det kastas, annars läcker den öppna barnkanalen (telemetry
         // MEDIUM på PR #186: `SFTPClient`s instans skulle annars bara
         // deallokeras utan att någon stänger dess `channel`).
         do {
