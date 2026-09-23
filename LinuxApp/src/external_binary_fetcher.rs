@@ -183,42 +183,48 @@ pub fn extract_file_from_tar_gz(
 mod tests {
     use super::*;
 
-    // Riktiga nätverksanrop mot en pinnad, oföränderlig GitHub-tagg (inte
-    // ett mockat svar) — samma rigör som repots övriga "verifierat mot
-    // RIKTIGT X"-tester, och samma URL/checksumma som Swift-sidans
-    // `ExternalBinaryFetcherTests`. Checksumman verifierades separat
-    // (`curl` + `sha256sum`) innan testet skrevs — testet bevisar alltså
-    // att fetcher-koden känner igen en korrekt checksumma, inte bara att
-    // den accepterar vad den själv laddade ner.
-    const SAMPLE_URL: &str = "https://raw.githubusercontent.com/torvalds/linux/v6.6/COPYING";
-    const SAMPLE_SHA256: &str = "fb5a425bd3b3cd6071a3a9aff9909a859e7c1158d54d32e07658398cd67eb6a0";
+    // Vanliga enhetstester får inte bero på extern nätåtkomst eller en
+    // tredje parts rate limits. Fixturen serveras därför från en lokal
+    // engångs-HTTP-server. SHA256-värdet är beräknat separat från
+    // produktionsfunktionen så checksumtestet inte bara jämför funktionen
+    // med sig själv.
+    const SAMPLE_BODY: &[u8] = b"bastion deterministic fixture\n";
+    const SAMPLE_SHA256: &str = "bde270889079ab7eb80b6c9fb23fcd4e5a353a9d1c750b75cf48202b870540ea";
 
     fn fresh_cache_dir() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("bastion-binfetch-test-{}", uuid::Uuid::new_v4()))
     }
 
-    /// Nätverksberoende — hoppa tydligt över (som `TestSshd`/övriga
-    /// miljöberoende tester i den här kodbasen) istället för att låta ett
-    /// sandboxat/offline testläge misslyckas förvirrande.
-    async fn network_available(client: &reqwest::Client) -> bool {
-        client
-            .head(SAMPLE_URL)
-            .timeout(std::time::Duration::from_secs(5))
-            .send()
-            .await
-            .is_ok()
+    fn serve_once(body: &'static [u8]) -> String {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("kunde inte starta lokal testserver");
+        let addr = listener.local_addr().expect("kunde inte läsa testserverns adress");
+
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("testservern fick ingen anslutning");
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .expect("kunde inte skriva testsvarshuvud");
+            stream.write_all(body).expect("kunde inte skriva testsvar");
+        });
+
+        format!("http://{addr}/fixture")
     }
 
     #[tokio::test]
     async fn downloads_and_verifies_a_real_file() {
         let client = reqwest::Client::new();
-        if !network_available(&client).await {
-            eprintln!("hoppar: ingen nätverksåtkomst i den här miljön");
-            return;
-        }
+        let url = serve_once(SAMPLE_BODY);
         let cache_dir = fresh_cache_dir();
 
-        let path = fetch(&client, SAMPLE_URL, SAMPLE_SHA256, &cache_dir, "sample").await.expect("fetch misslyckades");
+        let path = fetch(&client, &url, SAMPLE_SHA256, &cache_dir, "sample").await.expect("fetch misslyckades");
 
         assert!(path.exists());
         let data = std::fs::read(&path).unwrap();
@@ -236,13 +242,10 @@ mod tests {
     #[tokio::test]
     async fn second_fetch_is_a_cache_hit_and_skips_the_network() {
         let client = reqwest::Client::new();
-        if !network_available(&client).await {
-            eprintln!("hoppar: ingen nätverksåtkomst i den här miljön");
-            return;
-        }
+        let url = serve_once(SAMPLE_BODY);
         let cache_dir = fresh_cache_dir();
 
-        let first = fetch(&client, SAMPLE_URL, SAMPLE_SHA256, &cache_dir, "sample").await.expect("fetch misslyckades");
+        let first = fetch(&client, &url, SAMPLE_SHA256, &cache_dir, "sample").await.expect("fetch misslyckades");
 
         // En URL som INTE går att nå — om detta andra anrop av misstag
         // gjorde ett nätverksanrop skulle det faila, inte returnera tyst.
@@ -258,14 +261,11 @@ mod tests {
     #[tokio::test]
     async fn wrong_checksum_is_rejected_and_never_cached() {
         let client = reqwest::Client::new();
-        if !network_available(&client).await {
-            eprintln!("hoppar: ingen nätverksåtkomst i den här miljön");
-            return;
-        }
+        let url = serve_once(SAMPLE_BODY);
         let cache_dir = fresh_cache_dir();
         let wrong_checksum = "0".repeat(64);
 
-        let err = fetch(&client, SAMPLE_URL, &wrong_checksum, &cache_dir, "sample").await.expect_err("förväntade ChecksumMismatch");
+        let err = fetch(&client, &url, &wrong_checksum, &cache_dir, "sample").await.expect_err("förväntade ChecksumMismatch");
         match err {
             ExternalBinaryError::ChecksumMismatch { expected, actual } => {
                 assert_eq!(expected, wrong_checksum);
@@ -282,15 +282,12 @@ mod tests {
     #[tokio::test]
     async fn a_corrupted_cache_entry_is_redownloaded() {
         let client = reqwest::Client::new();
-        if !network_available(&client).await {
-            eprintln!("hoppar: ingen nätverksåtkomst i den här miljön");
-            return;
-        }
+        let url = serve_once(SAMPLE_BODY);
         let cache_dir = fresh_cache_dir();
         std::fs::create_dir_all(&cache_dir).unwrap();
         std::fs::write(cache_dir.join("sample"), "korrupt-skräp, inte den riktiga filen").unwrap();
 
-        let path = fetch(&client, SAMPLE_URL, SAMPLE_SHA256, &cache_dir, "sample").await.expect("fetch misslyckades");
+        let path = fetch(&client, &url, SAMPLE_SHA256, &cache_dir, "sample").await.expect("fetch misslyckades");
 
         let data = std::fs::read(&path).unwrap();
         assert_eq!(sha256_hex(&data), SAMPLE_SHA256);
