@@ -38,6 +38,31 @@ jobs:
       - name: Build with Gradle Wrapper
         run: ./gradlew build
 
+  dependency-graph:
+    name: Generate dependency graph
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up JDK 17
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - name: Generate and upload Android runtime dependency graph
+        uses: gradle/actions/dependency-submission@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          build-root-directory: Android
+          dependency-graph: generate-and-upload
+          dependency-graph-continue-on-failure: false
+          artifact-retention-days: 1
+          dependency-graph-include-projects: ':app'
+          dependency-graph-include-configurations: '.*[Rr]untimeClasspath'
+
   dependency-submission:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
