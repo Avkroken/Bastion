@@ -2,7 +2,7 @@
 
 Det här dokumentet är Bastions levande, versionsstyrda projektkontext. Det ska bära sådant som annars lätt blir fel i chattar eller agentminne: plattformsindelning, CI-domäner, ruleset-kopplingar och viktiga bygginvarianter.
 
-**Senast verifierad:** 2026-09-18
+**Senast verifierad:** 2026-09-23
 
 Organisationsgemensam styrning finns i:
 
