@@ -41,6 +41,20 @@ När en lokal CI-domän flyttas till central org-CI:
 4. bekräfta att rätt required check kommer från rätt source/path/ref,
 5. ta först därefter bort redundant lokal implementation.
 
+## Dependency graph och Dependency Review
+
+För PR och merge queue ska Gradle dependency graph genereras i den read-only `Java CI with Gradle`-körningen och submit:as av den separata `workflow_run`-workflowen `Submit Gradle dependency graph`.
+
+Verifiera vid ändringar:
+
+- generatorjobbet har endast `contents: read`,
+- submitter-workflowen checkar inte ut eller exekverar PR-kod,
+- submittern har endast `actions: read` och `contents: write`,
+- dependency-artifact retention hålls kort,
+- central Dependency Review får ett head-snapshot och förblir blocking.
+
+Aktivera inte direkt dependency submission med write-token i ett `pull_request`-jobb.
+
 ## Plattformsspecifik drift
 
 Android, Linux och Windows ska verifieras med respektive etablerade buildsystem och repositoryts befintliga workflows. Introducera inte en ny parallell toolchain enbart för dokumentations- eller CI-bekvämlighet.
