@@ -2,68 +2,84 @@
 
 ## Grundprincip
 
-Bastion har flera oberoende build-/testdomäner. Verifiera endast de domäner som ändringen berör under utveckling, men kör repositoryts required checks före merge.
+Bastion består av flera builddomäner. Kör verifiering för den kod som ändras och för delad kärna när gränssnitt eller dependency påverkas.
 
-## CI-domäner
+## Swift-kärna
 
-Aktuell project-context beskriver repo-lokala workflows för:
+Från repositoryts root:
 
-- Swift
-- Rust
-- .NET
-- Gradle
+```bash
+swift test
+```
 
-Apple application CI använder dessutom Xcode/XcodeGen och ska behålla Bastions dependency-wrapper.
+Det verifierar `SSHCore`, `bastion-cli` och `SSHCoreTests`.
 
-## Apple-verifiering
+Vid dependencyändringar bör även package resolution/build verifieras från ren state.
 
-När Apple-projektet genereras ska vägen gå via:
+## Apple
 
-```text
+Generera projekt genom repositoryts wrapper:
+
+```bash
 sh App/generate-project.sh
 ```
 
-Direkt generation från `App/project.yml` får inte ersätta detta utan motsvarande stöd för dependency-versionen från `App/Package.swift`.
+Använd inte direkt XcodeGen-spec som ersättning när wrappern behövs för att mata dependencyversioner från `App/Package.swift`.
 
-Verifiera att:
+Verifiera berörd target separat:
 
-- `Package.swift` inte kompileras som vanlig app source,
-- iOS-, macOS- och tvOS-schemes fortfarande matchar project-context,
-- dependency-versionen som Dependabot uppdaterar också används av den genererade appen.
+- iOS: `Bastion`
+- macOS: `Bastion-macOS`
+- tvOS: `Bastion-tvOS`
 
-## Central CI
+### Apple-fel efter dependencyändring
 
-När en lokal CI-domän flyttas till central org-CI:
+Kontrollera i ordning:
 
-1. behåll fungerande lokal gate,
-2. verifiera central required-workflow mot en riktig Bastion-PR,
-3. verifiera korrekt Custom Property/ruleset-selector,
-4. bekräfta att rätt required check kommer från rätt source/path/ref,
-5. ta först därefter bort redundant lokal implementation.
+1. `App/Package.swift`;
+2. att `generate-project.sh` läser rätt version;
+3. generated package mapping;
+4. att `Package.swift` är exkluderad från app source;
+5. target/scheme-specifik build.
 
-## Dependency graph och Dependency Review
+## Android
 
-För PR och merge queue ska Gradle dependency graph genereras i den read-only `Java CI with Gradle`-körningen och submit:as av den separata `workflow_run`-workflowen `Submit Gradle dependency graph`.
+Kör repositoryts Gradleverifiering från Androidprojektet med wrappern.
 
-Verifiera vid ändringar:
+Vid dependency graph-fel, skilj mellan:
 
-- generatorjobbet har endast `contents: read`,
-- submitter-workflowen checkar inte ut eller exekverar PR-kod,
-- submittern har endast `actions: read` och `contents: write`,
-- dependency-artifact retention hålls kort,
-- central Dependency Review får ett head-snapshot och förblir blocking.
+- buildscript `classpath`;
+- appens runtime classpaths;
+- dependency graph submission/snapshot.
 
-Aktivera inte direkt dependency submission med write-token i ett `pull_request`-jobb.
+Build-tool overrides ska inte flyttas till app-runtime enbart för att få en dependencycheck grön.
 
-## Plattformsspecifik drift
+## Linux
 
-Android, Linux och Windows ska verifieras med respektive etablerade buildsystem och repositoryts befintliga workflows. Introducera inte en ny parallell toolchain enbart för dokumentations- eller CI-bekvämlighet.
+Använd LinuxApp-projektets egen Rust-toolchain och manifest. Ändringar i delade protokollgränser ska dessutom verifiera Swift-kärnan om integrationen påverkas.
 
-## Incidenter
+## Windows
 
-Vid plattformsspecifikt CI-fel:
+Använd WindowsApp-projektets .NET-build/testflöde. Håll Windows-specifika buildproblem isolerade från rootens Swift package.
 
-- isolera felet till rätt domän,
-- verifiera att central policy och repo-profil fortfarande matchar,
-- ändra inte Custom Properties/rulesets som workaround,
-- bevara fungerande plattformar medan den felande domänen repareras.
+## CI-felsökning
+
+Klassificera först felet som:
+
+- Swift package,
+- Apple/Xcode,
+- Android/Gradle,
+- Linux/Rust,
+- Windows/.NET.
+
+Ändra inte en annan plattforms dependency- eller buildmodell för att reparera ett isolerat fel.
+
+## Säkerhetsinvariants
+
+- credentials/private keys får inte läggas i repo eller logs;
+- repo-specifika workflowvärden som används i shell ska citeras och helst föras via `env:`;
+- dependency manifests ska fortsatt representera den build de påstås styra.
+
+## Dokumentationsunderhåll
+
+När en plattforms build-, manifest- eller generationmodell ändras ska motsvarande avsnitt uppdateras samtidigt. README ska förbli en kort karta och inte växa till en plattformshandbok.
