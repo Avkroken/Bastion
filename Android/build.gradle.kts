@@ -9,6 +9,7 @@ buildscript {
             "org.bouncycastle:bcpkix-jdk18on:1.86",
             "org.bouncycastle:bcutil-jdk18on:1.86",
             "org.bitbucket.b_c:jose4j:0.9.6",
+            "org.jdom:jdom2:2.0.6.1",
         )
     }
     dependencies {
@@ -17,8 +18,8 @@ buildscript {
 }
 
 // Android Gradle Plugin 9.4.1 currently requests vulnerable build-tool
-// transitive dependencies (Bouncy Castle 1.80.2 and jose4j 0.9.5). Keep AGP
-// stable while forcing patched buildscript-classpath versions. These overrides
+// transitive dependencies (Bouncy Castle 1.80.2, jose4j 0.9.5 and JDOM 2.0.6). Keep AGP
+// stable while forcing patched buildscript-classpath versions (including JDOM 2.0.6.1). These overrides
 // do not add either library to the application runtime.
 
 // CodeQL Default Setup uses Gradle autobuild for Kotlin and invokes the generic
