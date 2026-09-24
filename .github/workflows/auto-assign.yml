@@ -10,9 +10,20 @@ permissions: {}
 
 jobs:
   assign:
+    name: Assign owner
+    runs-on: ubuntu-latest
     permissions:
       issues: write
       pull-requests: write
-    uses: Avkroken/.github/.github/workflows/reusable-auto-assign.yml@fdae2c7859b95cedd8df84ce1583ac420b66b7b7
-    with:
-      number: ${{ format('{0}', github.event.issue.number || github.event.pull_request.number) }}
+    steps:
+      - name: Assign issue or pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ format('{0}', github.event.issue.number || github.event.pull_request.number) }}
+          ASSIGNEE: blixten85
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$ISSUE_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Invalid issue or PR number."; exit 1; }
+          payload="$(jq -cn --arg assignee "$ASSIGNEE" '{assignees: [$assignee]}')"
+          gh api --method POST --header "Accept: application/vnd.github+json" "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/assignees" --input - <<<"$payload" >/dev/null

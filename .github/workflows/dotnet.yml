@@ -13,6 +13,7 @@ on:
 
 jobs:
   build:
+    name: .NET tests
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -40,6 +41,7 @@ jobs:
         run: dotnet test --no-build --verbosity normal
 
   application:
+    name: Windows application
     runs-on: windows-2025
     permissions:
       contents: read
