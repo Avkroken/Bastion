@@ -17,6 +17,7 @@ on:
 
 jobs:
   build:
+    name: Android Gradle
     runs-on: ubuntu-latest
     permissions:
       contents: read
