@@ -1,71 +1,62 @@
 # Arkitektur
 
-**Senast verifierad mot project-context:** 2026-09-23
-
 ## Översikt
 
-Bastion är ett multiplattformsrepository där plattformarna delar domän-/kärnlogik men har separata buildsystem och applikationsprojekt.
+Bastion delar transport-/SSH-logik men håller UI- och plattformsintegration separat.
 
 ```text
-                Shared repository
-                      |
-      +---------------+----------------+
-      |               |                |
- Swift package      App/            Platform apps
- Sources/Tests      XcodeGen        Android / Linux / Windows
-      |               |                |
-   SwiftPM       iOS/macOS/tvOS    Gradle / Rust / .NET
+                 +----------------+
+                 |    SSHCore     |
+                 | SwiftNIO SSH   |
+                 +-------+--------+
+                         |
+          +--------------+---------------+
+          |              |               |
+    bastion-cli       Apple UI       plattformsspecifika appar
+       Swift          Swift/Xcode     Android / Linux / Windows
 ```
 
-## Komponentgränser
+## Delad Swift-kärna
 
-### Delad Swift-kärna
+Rootpaketet producerar `SSHCore` och `bastion-cli`.
 
-Repository root, `Sources/`, `Tests/` och `Package.swift` innehåller Swift package-/kärnlogik.
+`SSHCore` ska innehålla den delade SSH-/transportlogik som kan byggas utan plattformsspecifikt UI.
 
-### Apple
+Det gör att kärnans tester kan köras med Swift Package Manager oberoende av Xcode, Android, Rust eller .NET.
 
-`App/` innehåller iOS-, macOS- och tvOS-targets. Xcode-projektet genereras med XcodeGen.
+## Apple
 
-Den kritiska dependencykedjan är:
+`App/` är en separat applikationsyta ovanpå delad logik.
 
-```text
-App/Package.swift
-      |
-      | läses av
-      v
-App/generate-project.sh
-      |
-      | SWIFTTERM_VERSION
-      v
-App/project.dependencies.yml
-      |
-      v
-XcodeGen / generated project
-```
+Xcode-projektet genereras med XcodeGen. Dependency-versioner som hanteras via `App/Package.swift` måste gå igenom `App/generate-project.sh` så att manifestet och genererat projekt inte driver isär.
 
-Det innebär att `App/Package.swift` både är Dependabot-synlig manifestkälla och source of truth för den version som den genererade appen använder.
+## Android
 
-### Android
+`Android/` är en Gradle-domän. Buildscriptdependencies och appens runtime dependencies har olika ansvar och ska hållas isär i dokumentation och dependency review.
 
-`Android/` är Gradle-domänen.
+## Linux
 
-### Linux
+`LinuxApp/` är ett eget paket/projekt och ska inte pressas in i rootens Swift package-definition bara för att repositoryt är gemensamt.
 
-`LinuxApp/` är Rust-domänen.
+## Windows
 
-### Windows
+`WindowsApp/` har .NET-baserad buildyta och ska kunna verifieras separat från Swift/Apple.
 
-`WindowsApp/` är .NET-domänen.
+## Dependency boundaries
 
-## CI-/policygräns
+- root `Package.swift` — Swift-kärna/CLI;
+- `App/Package.swift` — Apple dependency automation/source;
+- Android Gradlefiler — Android/build-tool graph;
+- Linux/Windows manifests — respektive plattform.
 
-Avkrokens centrala rulesets väljer stackar och plattformar genom Custom Properties. Repo-lokala workflows och central CI får inte skapa dubbla konkurrerande required checks för samma domän utan en avsiktlig migrationsplan.
+En dependencyuppdatering ska göras i manifestet som faktiskt äger dependencyförhållandet.
 
-## Säkerhetsinvariant
+## Säkerhetsgräns
 
-Repo-specifika values som når shell i reusable workflows ska passera via `env:` och citerade shell-variabler. Interpolera inte osäkra workflow-inputs direkt i `run:`.
+SSH-kärnan hanterar säkerhetskänslig transportlogik. UI-lager ska inte kringgå kärnans host-/transportvalidering genom att implementera parallella osäkra genvägar.
 
-## Dokumentationskälla
+Secrets, privata nycklar och credentials ska aldrig hårdkodas i plattformsprojekt eller testdata.
 
-Detaljer om aktuella Custom Properties, rulesets, schemes och migrationsordning finns i [project-context.md](project-context.md). Den filen har företräde framför denna arkitektursammanfattning när current-state ändras.
+## Dokumentationsgräns
+
+Denna fil beskriver repositoryts kodarkitektur. Organisationsgemensam CI/governance hör hemma i central organisationsdokumentation, inte här.
