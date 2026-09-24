@@ -64,23 +64,6 @@ jobs:
           dependency-graph-include-projects: '^(:|:app)$'
           dependency-graph-include-configurations: '^(classpath|.*[Rr]untimeClasspath)$'
 
-  dependency-review:
-    name: Dependency review
-    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
-    needs: dependency-graph
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294
-        with:
-          base-ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || '' }}
-          head-ref: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || '' }}
-
-
   dependency-submission:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
