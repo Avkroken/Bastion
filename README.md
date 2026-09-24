@@ -1,19 +1,30 @@
 # Bastion
 
-Repositoryt underhålls av Avkroken.
+Bastion är ett multiplattformsrepository med delad kärna och separata applikationsytor för Apple-plattformar, Android, Linux och Windows.
 
-## Projektkontext
+## Struktur
 
-[`docs/project-context.md`](docs/project-context.md) är Bastions levande, versionsstyrda current-state för plattformar, CI, rulesets och viktiga bygginvarianter. Uppdatera den när motsvarande implementation eller GitHub-konfiguration ändras.
+- **Swift package / kärna:** repository root, `Sources/`, `Tests/`, `Package.swift`
+- **Apple:** `App/` för iOS, macOS och tvOS via XcodeGen
+- **Android:** `Android/` via Gradle
+- **Linux:** `LinuxApp/` via Rust
+- **Windows:** `WindowsApp/` via .NET
 
-## Issues
+## Dokumentation
 
-Använd GitHub Issues för reproducerbara fel eller förbättringsförslag. Mallarna i `.github/ISSUE_TEMPLATE/` används för nya ärenden.
+- [Projektkontext](docs/project-context.md) — canonical current-state för plattformar, CI, rulesets och viktiga bygginvarianter
+- [Arkitektur](docs/architecture.md)
+- [Drift och verifiering](docs/operations.md)
+- [Avkrokens dokumentationsstandard](https://github.com/Avkroken/.github/blob/main/docs/documentation-standard.md)
 
-## Säkerhet
+## Viktig Apple-invariant
 
-Rapportera inte sårbarheter eller hemligheter i publika issues. Följ [SECURITY.md](SECURITY.md) för privat rapportering.
+`App/Package.swift` är Dependabot-synlig source of truth för SwiftPM-beroenden. Xcode-projektet genereras via `App/generate-project.sh`, som matar dependency-versioner vidare till XcodeGen. En direkt ersättning med `xcodegen generate --spec App/project.yml` kan därför bryta kopplingen mellan Dependabot och den faktiskt byggda appen.
 
-## Finansiering
+## CI
 
-GitHub Sponsors-konfigurationen finns i `.github/FUNDING.yml`.
+Bastion omfattar flera separata CI-domäner: Swift, Rust, .NET, Gradle samt Apple/Xcode. Repositoryts aktuella [projektkontext](docs/project-context.md) beskriver vilka centrala rulesets och profiler som gäller.
+
+## Issues och säkerhet
+
+Använd GitHub Issues för reproducerbara fel eller förbättringsförslag. Rapportera sårbarheter privat enligt [SECURITY.md](SECURITY.md).

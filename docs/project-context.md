@@ -2,7 +2,7 @@
 
 Det här dokumentet är Bastions levande, versionsstyrda projektkontext. Det ska bära sådant som annars lätt blir fel i chattar eller agentminne: plattformsindelning, CI-domäner, ruleset-kopplingar och viktiga bygginvarianter.
 
-**Senast verifierad:** 2026-09-18
+**Senast verifierad:** 2026-09-24
 
 Organisationsgemensam styrning finns i:
 
@@ -162,7 +162,22 @@ unable to resolve module dependency: 'PackageDescription'
 
 Rätt fix är **inte** att ta bort manifestet. Rätt fix är att hålla manifestet utanför application target sources.
 
-### CI måste använda dependency-wrappern
+### Dependency review och Android build-tool graph
+
+Bastions Android-build använder Android Gradle Plugin 9.4.1. AGP begär äldre build-tool-beroenden transitivt, bland annat Bouncy Castle 1.80.2, jose4j 0.9.5 och JDOM 2.0.6. `Android/build.gradle.kts` tvingar därför buildscript-classpathen till Bouncy Castle 1.86, jose4j 0.9.6 och JDOM 2.0.6.1. Dessa overrides lägger inte till biblioteken i appens runtime.
+
+Dependency Review behöver samtidigt jämföra samma dependency-snapshotmodell på PR-head som på `main`. Dependency-grafen inkluderar root-projektet `:` och app-projektet `:app`, samt både buildscript-`classpath` och `*RuntimeClasspath`. Därmed finns både AGP/build-tool-beroenden och applikationens runtimeberoenden i snapshoten.
+
+Bastions Gradle-workflow använder därför två steg för PR och merge queue:
+
+1. `Java CI with Gradle` genererar dependency-grafen med `contents: read` och laddar upp snapshoten som ett kortlivat workflow-artifact.
+2. `Submit Gradle dependency graph` triggas via `workflow_run`, kör ingen PR-kod och har endast `actions: read` + `contents: write` för att ladda ned och submit:a den redan genererade grafen.
+
+På `push` till `main` kan den betrodda default-branch-koden fortsatt generera och submit:a grafen direkt.
+
+Denna separation gör att Dependency Review kan förbli en strikt blocking gate utan att PR-kontrollerad Gradle-kod får write-permission.
+
+## CI måste använda dependency-wrappern
 
 När Apple-projektet genereras i CI ska dependency-versionen fortfarande matas från `App/Package.swift`.
 
