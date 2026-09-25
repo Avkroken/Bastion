@@ -7,6 +7,8 @@
 3. [docs/architecture.md](docs/architecture.md) — komponentgränser.
 4. [docs/operations.md](docs/operations.md) — verifieringskommandon och plattformsspecifik drift.
 
+Repositoryts egna dokument, manifests, workflows och versionerade konfiguration är auktoritativa för Bastions tekniska arbete.
+
 ## Arbetsregler
 
 - Utgå från aktuell `main` och arbeta i separat arbetsgren.
@@ -17,4 +19,4 @@
 - Repo-specifika värden som når shell ska hanteras via `env:` och citerade variabler.
 - Lägg aldrig secrets eller credentials i repository eller publik dokumentation.
 
-Organisationsgemensam GitHub-policy dokumenteras centralt och ska inte dupliceras som Bastion-current-state här.
+- Extern GitHub-governance är provider-state och ska inte dokumenteras som Bastion-current-state.
