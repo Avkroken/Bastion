@@ -1,8 +1,8 @@
 # Bastion project context
 
-**Senast verifierad:** 2026-09-24
+**Senast verifierad mot repositoryt:** 2026-09-25
 
-Detta dokument beskriver Bastions repo-specifika current-state: plattformsindelning, manifests och bygginvarianter. Organisationsgemensam GitHub-governance dokumenteras inte här.
+Detta dokument beskriver Bastions egen current-state: plattformsindelning, manifests och bygginvarianter. Repositoryts publika kod och versionerade konfiguration är underlaget.
 
 ## Repositorystruktur
 
@@ -68,6 +68,10 @@ Dependency graph-generering ska omfatta de configurations som verifieringsflöde
 ## Plattformsspecifika ändringar
 
 En ändring i en plattformsapp ska inte antas vara neutral för övriga plattformar. Dokumentera och verifiera den plattform som ändras samt delad kärna om gränssnittet påverkas.
+
+## Extern governance
+
+GitHub-plan, branch protection/rulesets och annan provider-live-state verifieras i GitHub när det behövs. Bastions tekniska dokumentation ska inte vara beroende av ett annat repository för att beskriva Bastions egen implementation.
 
 ## Uppdateringskontrakt
 
