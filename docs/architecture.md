@@ -59,4 +59,4 @@ Secrets, privata nycklar och credentials ska aldrig hårdkodas i plattformsproje
 
 ## Dokumentationsgräns
 
-Denna fil beskriver repositoryts kodarkitektur. Organisationsgemensam CI/governance hör hemma i central organisationsdokumentation, inte här.
+Denna fil beskriver Bastions egen kodarkitektur. Repositoryts README, `docs/`, manifests och workflows bär Bastions tekniska kontrakt. Extern GitHub-/provider-governance verifieras utanför repositoryt när den är relevant och är inte en dokumentationsberoende källa för Bastion.
