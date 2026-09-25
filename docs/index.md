@@ -54,4 +54,4 @@ Behandla respektive app som separat builddomän med egen toolchain, men låt gem
 
 ## Wiki
 
-GitHub Wiki är aktiverad och lämpar sig för en klickbar plattformsindelad manual. Den ska spegla den versionsstyrda dokumentationen här; repo-specifik teknisk current-state ska inte bara finnas i Wiki.
+Om GitHub Wiki används kan den ge en klickbar plattformsindelad manual. Den ska spegla den versionsstyrda dokumentationen här; repo-specifik teknisk current-state ska inte bara finnas i Wiki.
