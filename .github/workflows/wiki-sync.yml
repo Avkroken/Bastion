@@ -1,0 +1,185 @@
+name: Sync repository Wiki
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "README.md"
+      - "docs/**"
+      - ".github/workflows/wiki-sync.yml"
+
+concurrency:
+  group: wiki-sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Checkout Wiki
+        uses: actions/checkout@v6
+        with:
+          repository: \${{ github.repository }}.wiki
+          path: _wiki
+          token: \${{ github.token }}
+
+      - name: Generate Wiki navigation
+        env:
+          REPOSITORY: \${{ github.repository }}
+          DEFAULT_BRANCH: \${{ github.event.repository.default_branch }}
+        run: |
+          python3 <<'PY'
+          import os
+          import posixpath
+          import re
+          from pathlib import Path
+
+          full = os.environ["REPOSITORY"]
+          owner, repo = full.split("/", 1)
+          branch = os.environ["DEFAULT_BRANCH"]
+          base = f"https://github.com/{full}"
+
+          readme_path = Path("README.md")
+          readme = readme_path.read_text(encoding="utf-8", errors="replace") if readme_path.exists() else ""
+          lines = readme.splitlines()
+
+          description = ""
+          paragraph = []
+          seen_h1 = False
+          for line in lines:
+              stripped = line.strip()
+              if stripped.startswith("# "):
+                  seen_h1 = True
+                  continue
+              if not seen_h1:
+                  continue
+              if not stripped:
+                  if paragraph:
+                      description = " ".join(paragraph)
+                      break
+                  continue
+              if stripped.startswith(("#", "![", "[!", "|", "-")):
+                  if paragraph:
+                      description = " ".join(paragraph)
+                      break
+                  continue
+              paragraph.append(stripped)
+
+          if not description and paragraph:
+              description = " ".join(paragraph)
+          if not description:
+              description = f"Dokumentation för {repo}."
+
+          index_path = Path("docs/index.md")
+          doc_links = []
+          if index_path.exists():
+              index = index_path.read_text(encoding="utf-8", errors="replace")
+              for label, href in re.findall(r"\[([^\]]+)\]\(([^)]+)\)", index):
+                  href = href.strip()
+                  if (
+                      not href
+                      or href.startswith(("http://", "https://", "#", "mailto:"))
+                      or "{{" in href
+                      or "}}" in href
+                  ):
+                      continue
+                  clean = href.split("#", 1)[0].split("?", 1)[0]
+                  resolved = posixpath.normpath(posixpath.join("docs", clean))
+                  if resolved.startswith("../"):
+                      continue
+                  if clean.endswith("/") or "." not in posixpath.basename(resolved):
+                      url = f"{base}/tree/{branch}/{resolved.rstrip('/')}"
+                  else:
+                      url = f"{base}/blob/{branch}/{resolved}"
+                  item = (label, url)
+                  if item not in doc_links:
+                      doc_links.append(item)
+
+          wiki = Path("_wiki")
+          wiki.mkdir(exist_ok=True)
+
+          home = f"""# {repo}
+
+          {description}
+
+          ## Ingångar
+
+          - [Dokumentation](Documentation)
+          - [Repository]({base})
+          - [README]({base}/blob/{branch}/README.md)
+          - [Versionsstyrda docs]({base}/tree/{branch}/docs)
+          - [Issues]({base}/issues)
+          - [Discussions]({base}/discussions)
+
+          ## Ägarskap
+
+          Det här repositoryt äger sin egen dokumentation, Wiki, Issues och Discussions.
+
+          Wiki är ett navigations- och presentationslager. Teknisk current-state ska finnas i repositoryts versionsstyrda dokumentation och länkas härifrån.
+          """
+          (wiki / "Home.md").write_text(home.strip() + "\n", encoding="utf-8")
+
+          listing = "\n".join(f"- **[{label}]({url})**" for label, url in doc_links)
+          if not listing:
+              listing = (
+                  f"- [README]({base}/blob/{branch}/README.md)\n"
+                  f"- [docs/]({base}/tree/{branch}/docs)"
+              )
+
+          documentation = f"""# Dokumentation
+
+          Tillbaka till [Home](Home).
+
+          ## Canonical dokument
+
+          {listing}
+
+          ## Samarbete
+
+          - [Issues]({base}/issues)
+          - [Discussions]({base}/discussions)
+
+          Ändringar i teknisk dokumentation görs i repositoryt. Wikin sammanfattar och navigerar, men ersätter inte versionsstyrd dokumentation.
+          """
+          (wiki / "Documentation.md").write_text(
+              documentation.strip() + "\n", encoding="utf-8"
+          )
+
+          sidebar = f"""**{repo}**
+
+          - [Home](Home)
+          - [Dokumentation](Documentation)
+
+          **Canonical**
+
+          - [README]({base}/blob/{branch}/README.md)
+          - [docs/]({base}/tree/{branch}/docs)
+
+          **Samarbete**
+
+          - [Issues]({base}/issues)
+          - [Discussions]({base}/discussions)
+          """
+          (wiki / "_Sidebar.md").write_text(sidebar.strip() + "\n", encoding="utf-8")
+          PY
+
+      - name: Publish Wiki changes
+        working-directory: _wiki
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Home.md Documentation.md _Sidebar.md
+          if git diff --cached --quiet; then
+            echo "Wiki already up to date."
+            exit 0
+          fi
+          git commit -m "docs: sync Wiki navigation from main"
+          git push
