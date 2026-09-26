@@ -20,7 +20,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ format('{0}', github.event.issue.number || github.event.pull_request.number) }}
-          ASSIGNEE: blixten85
+          ASSIGNEE: ${{ github.repository_owner }}
         shell: bash
         run: |
           set -euo pipefail
