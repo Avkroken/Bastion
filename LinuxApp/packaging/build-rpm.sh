@@ -7,7 +7,26 @@
 # biblioteksfamilj), och bygger .rpm-paketet.
 set -euo pipefail
 
-REPOSITORY_URL="${REPOSITORY_URL:-https://github.com/avkroken/bastion}"
+if [ -z "${REPOSITORY_URL:-}" ]; then
+  if [ -n "${GITHUB_REPOSITORY:-}" ]; then
+    REPOSITORY_URL="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY}"
+  else
+    ORIGIN_URL="$(git -C /work remote get-url origin 2>/dev/null || true)"
+    case "$ORIGIN_URL" in
+      https://github.com/*)
+        REPOSITORY_URL="${ORIGIN_URL%.git}"
+        ;;
+      git@github.com:*)
+        REPOSITORY_URL="https://github.com/${ORIGIN_URL#git@github.com:}"
+        REPOSITORY_URL="${REPOSITORY_URL%.git}"
+        ;;
+      *)
+        echo "::error::Sätt REPOSITORY_URL eller kör från en checkout med GitHub-origin"
+        exit 1
+        ;;
+    esac
+  fi
+fi
 
 dnf install -y -q gtk4-devel libadwaita-devel vte291-gtk4-devel gtksourceview5-devel \
   pkgconf-pkg-config rpm-build binutils gcc curl
