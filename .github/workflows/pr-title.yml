@@ -25,7 +25,7 @@ jobs:
 
           pattern = re.compile(
               r"^(feat|fix|perf|refactor|docs|test|build|ci|chore|revert)"
-              r"(\([^)]+\))?!?: [^\s].*$"
+              r"(\((?!\s*\))[^)]+\))?!?: [^\s].*$"
           )
 
           valid = (
@@ -44,6 +44,7 @@ jobs:
               "feat add SSH capability",
               "feat:",
               "Feat: add SSH capability",
+              "feat( ): add SSH capability",
           )
 
           for fixture in valid:
