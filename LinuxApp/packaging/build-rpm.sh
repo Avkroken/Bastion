@@ -7,7 +7,7 @@
 # biblioteksfamilj), och bygger .rpm-paketet.
 set -euo pipefail
 
-REPOSITORY_URL="${REPOSITORY_URL:-https://github.com/avkroken/bastion}"
+REPOSITORY_URL="${REPOSITORY_URL:-https://github.com/${GITHUB_REPOSITORY:-blixten85/Bastion}}"
 
 dnf install -y -q gtk4-devel libadwaita-devel vte291-gtk4-devel gtksourceview5-devel \
   pkgconf-pkg-config rpm-build binutils gcc curl
