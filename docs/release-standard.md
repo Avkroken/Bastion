@@ -1,6 +1,6 @@
 # Release- och versionsstandard
 
-**Senast verifierad:** 2026-09-25
+**Senast verifierad:** 2026-09-26
 
 Det här dokumentet gäller **Avkroken/Bastion**. Repositoryts egna dokument, manifests, workflows, taggar och GitHub Releases äger release- och versionskontraktet.
 
