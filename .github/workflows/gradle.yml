@@ -82,5 +82,8 @@ jobs:
         uses: gradle/actions/dependency-submission@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
         with:
           build-root-directory: Android
-          dependency-graph-include-projects: '^(:|:app)$'
-          dependency-graph-include-configurations: '^(classpath|.*[Rr]untimeClasspath)$'
+          dependency-graph-continue-on-failure: false
+          dependency-graph-include-projects: '^(:|:app)
+
+          dependency-graph-include-configurations: '^(classpath|.*[Rr]untimeClasspath)
+
