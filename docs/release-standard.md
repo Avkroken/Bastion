@@ -2,7 +2,7 @@
 
 **Senast verifierad:** 2026-09-26
 
-Det här dokumentet gäller **Avkroken/Bastion**. Repositoryts egna dokument, manifests, workflows, taggar och GitHub Releases äger release- och versionskontraktet.
+Det här dokumentet gäller **Bastion-repositoryt**. Repositoryts egna dokument, manifests, workflows, taggar och GitHub Releases äger release- och versionskontraktet.
 
 ## Nuvarande release-state
 
