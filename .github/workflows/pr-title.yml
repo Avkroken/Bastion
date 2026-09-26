@@ -1,0 +1,70 @@
+name: PR title
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, reopened, synchronize]
+
+permissions: {}
+
+jobs:
+  conventional-title:
+    name: Conventional PR title
+    runs-on: ubuntu-latest
+    env:
+      PR_TITLE: ${{ github.event.pull_request.title }}
+    steps:
+      - name: Validate Conventional Commit title
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+
+          pattern = re.compile(
+              r"^(feat|fix|perf|refactor|docs|test|build|ci|chore|revert)"
+              r"(\((?!\s*\))[^)]+\))?!?: [^\s].*$"
+          )
+
+          valid = (
+              "feat: add SSH capability",
+              "fix(apple): preserve project generation",
+              "perf!: replace shared transport contract",
+              "docs: clarify platform verification",
+              "build(deps): update Swift dependency",
+              "ci: harden Linux validation",
+              "refactor(ssh): isolate connection state",
+              "revert: restore previous Android behavior",
+          )
+          invalid = (
+              "Add SSH capability",
+              "feature: add SSH capability",
+              "feat add SSH capability",
+              "feat:",
+              "Feat: add SSH capability",
+              "feat( ): add SSH capability",
+          )
+
+          for fixture in valid:
+              if not pattern.fullmatch(fixture):
+                  print(f"::error::validator rejected valid fixture: {fixture}")
+                  sys.exit(1)
+
+          for fixture in invalid:
+              if pattern.fullmatch(fixture):
+                  print(f"::error::validator accepted invalid fixture: {fixture}")
+                  sys.exit(1)
+
+          title = os.environ.get("PR_TITLE", "").strip()
+          if pattern.fullmatch(title):
+              print(f"PR title follows Conventional Commits: {title}")
+              sys.exit(0)
+
+          print("::error title=Invalid PR title::Use Conventional Commits, for example: "
+                "feat: add SSH capability, fix(apple): preserve generation, "
+                "or feat!: change the shared contract.")
+          print(f"Received: {title!r}")
+          sys.exit(1)
+          PY
