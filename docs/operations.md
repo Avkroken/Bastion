@@ -54,6 +54,10 @@ Vid dependency graph-fel, skilj mellan:
 
 Build-tool overrides ska inte flyttas till app-runtime enbart för att få en dependencycheck grön.
 
+Om GitHub flaggar en sårbar build-tool dependency som endast är transitiv i den inskickade Gradle-grafen, verifiera först den faktiska resolutionen. Om parent-dependencyn inte kan uppgraderas till en säker transitiv version och Gradle/AGP stöder en override, deklarera den patchade dependency-versionen explicit på buildscript-classpathen. Det behåller säkerhetstäckningen och gör dependency maskinellt uppdateringsbar i stället för att filtrera bort den.
+
+Efter en sådan ändring ska Android-builden vara grön och dependency graph-artifacten verifieras innehålla den patchade versionen. Default-branchens dependency submission är fail-closed och får inte göras best-effort för att dölja submissionsfel.
+
 ## Linux
 
 Använd LinuxApp-projektets egen Rust-toolchain och manifest. Ändringar i delade protokollgränser ska dessutom verifiera Swift-kärnan om integrationen påverkas.
