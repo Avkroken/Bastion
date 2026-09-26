@@ -9,6 +9,7 @@ Navigationssida för Bastion.
 | repositoryts plattformar och bygginvarianter | [Projektkontext](project-context.md) |
 | delad kärna och plattformsgränser | [Arkitektur](architecture.md) |
 | bygg/test för Swift, Apple, Android, Linux eller Windows | [Drift](operations.md) |
+| versionering, PR-titlar och GitHub Releases | [Release- och versionsstandard](release-standard.md) |
 | Apple-prototyper | [prototyp/](prototyp/) |
 | säkerhetsrapportering | [SECURITY.md](../SECURITY.md) |
 
@@ -51,6 +52,10 @@ Läs Androids Gradlekonfiguration och operations-dokumentets dependency-graph-gr
 ### Linux/Windows
 
 Behandla respektive app som separat builddomän med egen toolchain, men låt gemensam protokoll-/SSH-logik ligga i avsedd delad kärna där arkitekturen medger det.
+
+### Release
+
+Läs release-standard för Conventional Commit-kompatibla PR-titlar, SemVer, GitHub Release-gränsen och varför repositoryrelease inte implicit innebär plattformsdistribution.
 
 ## Wiki
 
