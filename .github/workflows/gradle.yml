@@ -83,7 +83,5 @@ jobs:
         with:
           build-root-directory: Android
           dependency-graph-continue-on-failure: false
-          dependency-graph-include-projects: '^(:|:app)
-
-          dependency-graph-include-configurations: '^(classpath|.*[Rr]untimeClasspath)
-
+          dependency-graph-include-projects: '^(:|:app)$'
+          dependency-graph-include-configurations: '^(classpath|.*[Rr]untimeClasspath)$'
