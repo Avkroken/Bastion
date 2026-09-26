@@ -14,13 +14,23 @@ buildscript {
     }
     dependencies {
         classpath("com.android.tools.build:gradle:9.4.1")
+
+        // AGP exposes these as transitive build-tool dependencies, but GitHub
+        // dependency submission can alert on transitive Gradle dependencies
+        // without Dependabot being able to update them in the repository.
+        // Keep them explicit so security fixes remain both enforced and
+        // machine-updatable without removing dependency-graph coverage.
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.20")
+        classpath("org.apache.commons:commons-lang3:3.18.0")
     }
 }
 
-// Android Gradle Plugin 9.4.1 currently requests vulnerable build-tool
-// transitive dependencies (Bouncy Castle 1.80.2, jose4j 0.9.5 and JDOM 2.0.6). Keep AGP
-// stable while forcing patched buildscript-classpath versions (including JDOM 2.0.6.1). These overrides
-// do not add either library to the application runtime.
+// Android Gradle Plugin 9.4.1 currently requests build-tool transitive
+// dependencies with known vulnerabilities. Keep AGP stable while selecting
+// patched buildscript-classpath versions. Explicit classpath entries above
+// make Kotlin Gradle Plugin and Commons Lang directly updateable by Dependabot;
+// the forced entries cover the remaining build-only transitives. None of these
+// dependencies are added to the application runtime.
 
 // CodeQL Default Setup uses Gradle autobuild for Kotlin and invokes the generic
 // testClasses task. Android Gradle Plugin does not create that lifecycle task,

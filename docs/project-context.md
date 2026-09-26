@@ -1,6 +1,6 @@
 # Bastion project context
 
-**Senast verifierad mot repositoryt:** 2026-09-25
+**Senast verifierad mot repositoryt:** 2026-09-26
 
 Detta dokument beskriver Bastions egen current-state: plattformsindelning, manifests och bygginvarianter. Repositoryts publika kod och versionerade konfiguration är underlaget.
 
@@ -63,7 +63,9 @@ Android använder Gradle. Buildscript-classpath och runtime dependencies är sep
 
 Repositoryts Gradlekonfiguration innehåller explicita build-tool overrides för vissa transitiva dependencies. Dessa ska inte beskrivas som app-runtime dependencies om de endast gäller buildscript graph.
 
-Dependency graph-generering ska omfatta de configurations som verifieringsflödet faktiskt behöver.
+När GitHubs dependency submission identifierar en sårbar transitiv Gradle build-tool dependency som Dependabot inte kan ändra direkt, ska den säkra versionen deklareras explicit på buildscript-classpathen när Gradle/AGP stöder det. Då behålls full dependency-graph- och alert-täckning samtidigt som dependency blir maskinellt uppdateringsbar. Den får inte flyttas till app-runtime för att lösa ett build-tool alertproblem.
+
+Dependency graph-generering ska omfatta de configurations som verifieringsflödet faktiskt behöver. Submission från default branch är fail-closed: ett submissionsfel ska göra CI-körningen felaktig i stället för att tyst lämna en äldre dependency snapshot som aktuell.
 
 ## Plattformsspecifika ändringar
 
