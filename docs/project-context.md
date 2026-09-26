@@ -1,6 +1,6 @@
 # Bastion project context
 
-**Senast verifierad mot repositoryt:** 2026-09-25
+**Senast verifierad mot repositoryt:** 2026-09-26
 
 Detta dokument beskriver Bastions egen current-state: plattformsindelning, manifests och bygginvarianter. Repositoryts publika kod och versionerade konfiguration är underlaget.
 
