@@ -28,6 +28,7 @@ swift test
 - [Projektkontext](docs/project-context.md) — plattformar och bygginvarianter
 - [Arkitektur](docs/architecture.md) — komponentgränser och delad kärna
 - [Drift och verifiering](docs/operations.md) — plattformsspecifika kontroller
+- [Release- och versionsstandard](docs/release-standard.md) — SemVer, PR-titlar och releasegränser
 - [SECURITY.md](SECURITY.md) — säkerhetsrapportering
 
 ## Viktig Apple-invariant
