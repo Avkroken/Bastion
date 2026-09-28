@@ -116,20 +116,40 @@ jobs:
               with urllib.request.urlopen(request, timeout=30) as response:
                   return json.load(response)
 
+          def all_runs():
+              runs = []
+              page = 1
+              while True:
+                  data = api(
+                      f"/actions/workflows/release.yml/runs?per_page=100&page={page}"
+                  )
+                  batch = data.get("workflow_runs", [])
+                  runs.extend(batch)
+                  if len(batch) < 100:
+                      return runs
+                  page += 1
+
           while True:
               if time.monotonic() - started > 1800:
                   raise SystemExit("Timed out waiting for an earlier release run.")
-              data = api("/actions/workflows/release.yml/runs?per_page=100")
+
               active = sorted(
                   int(run["id"])
-                  for run in data.get("workflow_runs", [])
+                  for run in all_runs()
                   if run.get("event") in {"push", "workflow_dispatch"}
-                  and run.get("status") in {"queued", "in_progress"}
+                  and run.get("status") != "completed"
                   and run.get("head_branch") == "main"
               )
-              if own_id not in active or own_id == active[0]:
+
+              if own_id not in active:
+                  raise SystemExit(
+                      "Current release run is absent from the active-run lock set; refusing to fail open."
+                  )
+
+              if own_id == active[0]:
                   print("Release turn acquired.")
                   break
+
               print(f"Waiting for earlier release run {active[0]}.")
               time.sleep(10)
           PY
@@ -164,8 +184,14 @@ jobs:
         run: |
           set -euo pipefail
           for tag in "${BASE_TAG}" "${ACTIVE_PRERELEASE_TAG}"; do
-            if [[ -n "${tag}" ]] && ! gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            [[ -z "${tag}" ]] && continue
+            release_json="$(gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" --json isDraft,tagName 2>/dev/null || true)"
+            if [[ -z "${release_json}" ]]; then
               echo "::error::Tag ${tag} exists without a GitHub Release; reconcile it before advancing the release line."
+              exit 1
+            fi
+            if [[ "$(printf '%s' "${release_json}" | jq -r '.isDraft')" == "true" ]]; then
+              echo "::error::Release anchor ${tag} is still a draft and cannot advance canonical release history."
               exit 1
             fi
           done
