@@ -166,7 +166,21 @@ jobs:
           fi
 
           latest_feedback="$(
-            jq -r '[
+            jq -r '
+            def actionable_conversation_comment:
+              ((.body // "") | length > 0)
+              and (
+                ((.body // "") | test("^\s*@(dependabot|coderabbitai)(\s|$)"; "i"))
+                | not
+              )
+              and (
+                (
+                  (.body // "")
+                  | contains("<!-- This is an auto-generated comment: skip review by coderabbit.ai -->")
+                )
+                | not
+              );
+            [
               (
                 .data.repository.pullRequest.reviews.nodes[]
                 | select(
@@ -177,7 +191,7 @@ jobs:
               ),
               (
                 .data.repository.pullRequest.comments.nodes[]
-                | select((.body // "") | length > 0)
+                | select(actionable_conversation_comment)
                 | .createdAt
               ),
               (
