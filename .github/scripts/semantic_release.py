@@ -6,7 +6,7 @@ import re
 import subprocess
 
 STABLE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
-PRERELEASE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)-([0-9A-Za-z.-]+)$")
+RC = re.compile(r"^v(\d+)\.(\d+)\.(\d+)-rc\.(\d+)$")
 CONVENTIONAL = re.compile(
     r"^(feat|fix|perf|revert|refactor|docs|test|build|ci|chore)"
     r"(?:\(([^)]+)\))?(!)?:\s+(.+)$"
@@ -36,15 +36,15 @@ def semver_key(tag):
 
 
 def prerelease_key(tag):
-    match = PRERELEASE.fullmatch(tag)
+    match = RC.fullmatch(tag)
     if not match:
         return None
-    major, minor, patch, suffix = match.groups()
-    return (int(major), int(minor), int(patch), suffix)
+    major, minor, patch, sequence = match.groups()
+    return (int(major), int(minor), int(patch), int(sequence))
 
 
-def is_ancestor(ref):
-    return git("merge-base", "--is-ancestor", ref, "HEAD", check=False).returncode == 0
+def is_ancestor(ref, head="HEAD"):
+    return git("merge-base", "--is-ancestor", ref, head, check=False).returncode == 0
 
 
 def write_output(path, name, value):
@@ -96,10 +96,10 @@ def commit_record(sha, subject, body):
 
 
 def default_bump(item):
-    if item["release_as"]:
-        return None if item["release_as"] == "none" else item["release_as"]
     if item["breaking"]:
         return "major"
+    if item["release_as"]:
+        return None if item["release_as"] == "none" else item["release_as"]
     if item["type"] == "feat":
         return "minor"
     if item["type"] in {"fix", "perf", "revert"}:
@@ -122,9 +122,32 @@ def format_core(core):
     return f"v{core[0]}.{core[1]}.{core[2]}"
 
 
+def category_for(item):
+    if (item["scope"] or "").lower() == "security":
+        return "Security"
+    mapping = {
+        "feat": "Features",
+        "fix": "Fixes",
+        "perf": "Performance",
+        "revert": "Reverts",
+        "refactor": "Refactoring",
+        "docs": "Documentation",
+        "build": "Build",
+        "ci": "CI",
+        "test": "Tests",
+        "chore": "Chores",
+    }
+    if item["type"] in mapping:
+        return mapping[item["type"]]
+    if item["breaking"]:
+        return "Breaking changes"
+    return "Other changes"
+
+
 def main():
     args = parse_args()
     all_tags = git("tag", "--list", "v*").stdout.splitlines()
+
     stable_tags = [tag for tag in all_tags if STABLE.fullmatch(tag)]
     reachable_stable = [tag for tag in stable_tags if is_ancestor(tag)]
     stable_tags.sort(key=semver_key, reverse=True)
@@ -140,7 +163,7 @@ def main():
     current = semver_key(last_tag) if last_tag else (0, 0, 0)
     reachable_pre = [
         tag for tag in all_tags
-        if PRERELEASE.fullmatch(tag) and is_ancestor(tag)
+        if RC.fullmatch(tag) and is_ancestor(tag)
     ]
     reachable_pre.sort(key=prerelease_key, reverse=True)
     active_pre = next(
@@ -151,17 +174,30 @@ def main():
         None,
     )
 
+    forced = args.forced_bump
+    release_ref = active_pre if forced == "promote" and active_pre else "HEAD"
+
+    if forced == "promote":
+        if args.channel != "stable":
+            raise SystemExit("promote is only valid for the stable channel.")
+        if not active_pre:
+            raise SystemExit("No active prerelease exists to promote.")
+
     if last_tag:
-        revision_range = f"{last_tag}..HEAD"
+        revision_range = f"{last_tag}..{release_ref}"
+        base_label = last_tag
     else:
         baseline = pathlib.Path(".github/release-baseline")
-        if baseline.exists():
-            baseline_sha = baseline.read_text(encoding="utf-8").strip()
-            if not baseline_sha or not is_ancestor(baseline_sha):
-                raise SystemExit("Configured release baseline is not an ancestor of HEAD.")
-            revision_range = f"{baseline_sha}..HEAD"
-        else:
-            revision_range = "HEAD"
+        if not baseline.exists():
+            raise SystemExit(
+                "No stable release exists and .github/release-baseline is missing; "
+                "refusing to publish repository history implicitly."
+            )
+        baseline_sha = baseline.read_text(encoding="utf-8").strip()
+        if not baseline_sha or not is_ancestor(baseline_sha, release_ref):
+            raise SystemExit("Configured release baseline is not an ancestor of the release target.")
+        revision_range = f"{baseline_sha}..{release_ref}"
+        base_label = "repository release baseline"
 
     raw = git(
         "log",
@@ -179,16 +215,10 @@ def main():
             continue
         commits.append(commit_record(*fields))
 
-    forced = args.forced_bump
     bump = None
     if forced in {"major", "minor", "patch"}:
         bump = forced
-    elif forced == "promote":
-        if args.channel != "stable":
-            raise SystemExit("promote is only valid for the stable channel.")
-        if not active_pre:
-            raise SystemExit("No active prerelease exists to promote.")
-    else:
+    elif forced != "promote":
         for item in commits:
             candidate = default_bump(item)
             if RANK[candidate] > RANK[bump]:
@@ -220,24 +250,38 @@ def main():
         tag = format_core(target_core)
     else:
         prerelease = True
+        if forced == "promote":
+            raise SystemExit("promote cannot create a prerelease.")
+
+        desired_core = bump_version(current, bump) if bump else None
         if active_pre:
             active_key = prerelease_key(active_pre)
-            target_core = active_key[:3]
+            active_core = active_key[:3]
             if not git("rev-list", f"{active_pre}..HEAD").stdout.strip():
                 print(f"No commits since {active_pre}; no new release candidate.")
                 write_output(args.output, "release", "false")
                 return
-            suffix_match = re.fullmatch(r"rc\.(\d+)", active_key[3])
-            next_rc = int(suffix_match.group(1)) + 1 if suffix_match else 1
-            bump_label = "prerelease"
+
+            if forced in {"major", "minor", "patch"} and desired_core < active_core:
+                raise SystemExit(
+                    f"Forced {forced} bump targets {format_core(desired_core)}, "
+                    f"which is behind active prerelease {active_pre}."
+                )
+
+            if desired_core and desired_core > active_core:
+                target_core = desired_core
+                next_rc = 1
+                bump_label = bump
+            else:
+                target_core = active_core
+                next_rc = active_key[3] + 1
+                bump_label = "prerelease"
         else:
-            if forced == "promote":
-                raise SystemExit("promote cannot create a prerelease.")
             if not bump:
                 print("No release-worthy change for a release candidate.")
                 write_output(args.output, "release", "false")
                 return
-            target_core = bump_version(current, bump)
+            target_core = desired_core
             next_rc = 1
             bump_label = bump
         tag = f"{format_core(target_core)}-rc.{next_rc}"
@@ -246,37 +290,41 @@ def main():
         raise SystemExit(f"Tag {tag} already exists.")
 
     repository = os.environ.get("GITHUB_REPOSITORY", "repository")
-    categories = [
-        ("Breaking changes", lambda c: c["breaking"]),
-        ("Security", lambda c: (c["scope"] or "").lower() == "security"),
-        ("Features", lambda c: c["type"] == "feat"),
-        ("Fixes", lambda c: c["type"] == "fix"),
-        ("Performance", lambda c: c["type"] == "perf"),
-        ("Reverts", lambda c: c["type"] == "revert"),
-        ("Refactoring", lambda c: c["type"] == "refactor"),
-        ("Documentation", lambda c: c["type"] == "docs"),
-        ("Build", lambda c: c["type"] == "build"),
-        ("CI", lambda c: c["type"] == "ci"),
-        ("Tests", lambda c: c["type"] == "test"),
-        ("Chores", lambda c: c["type"] == "chore"),
-        ("Other changes", lambda c: c["type"] is None),
+    category_order = [
+        "Breaking changes",
+        "Security",
+        "Features",
+        "Fixes",
+        "Performance",
+        "Reverts",
+        "Refactoring",
+        "Documentation",
+        "Build",
+        "CI",
+        "Tests",
+        "Chores",
+        "Other changes",
     ]
+    grouped = {heading: [] for heading in category_order}
+    for item in commits:
+        grouped[category_for(item)].append(item)
 
     lines = [
         f"# {tag}",
         "",
-        f"Changes since {last_tag}." if last_tag else "Changes since the repository release baseline.",
+        f"Changes since {base_label}.",
         "",
     ]
-    for heading, predicate in categories:
-        selected = [item for item in commits if predicate(item)]
+    for heading in category_order:
+        selected = grouped[heading]
         if not selected:
             continue
         lines.extend([f"## {heading}", ""])
         for item in selected:
             short = item["sha"][:7]
             url = f"https://github.com/{repository}/commit/{item['sha']}"
-            lines.append(f"- {item['subject']} ([{short}]({url}))")
+            breaking_prefix = "**Breaking:** " if item["breaking"] else ""
+            lines.append(f"- {breaking_prefix}{item['subject']} ([{short}]({url}))")
         lines.append("")
 
     pathlib.Path(args.notes).write_text(
@@ -284,15 +332,18 @@ def main():
         encoding="utf-8",
     )
 
+    target_sha = git("rev-parse", release_ref).stdout.strip()
     print(f"Release bump: {bump_label}")
     print(f"Previous stable tag: {last_tag or 'none'}")
     print(f"Next tag: {tag}")
+    print(f"Release target: {target_sha}")
     write_output(args.output, "release", "true")
     write_output(args.output, "tag", tag)
     write_output(args.output, "bump", bump_label)
     write_output(args.output, "base_tag", last_tag or "")
     write_output(args.output, "active_prerelease_tag", active_pre or "")
     write_output(args.output, "prerelease", "true" if prerelease else "false")
+    write_output(args.output, "target_sha", target_sha)
 
 
 if __name__ == "__main__":
