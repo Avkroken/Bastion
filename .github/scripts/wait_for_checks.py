@@ -58,16 +58,65 @@ def load_required(path):
     return names
 
 
-def latest_by_name(items, key):
+def latest_checks(items):
     latest = {}
     for item in items:
-        name = item.get(key, "")
+        name = item.get("name", "")
         if not name:
             continue
-        current = latest.get(name)
+        app = item.get("app") or {}
+        app_identity = str(app.get("id") or app.get("slug") or "unknown")
+        key = (name, app_identity)
+        current = latest.get(key)
         if current is None or int(item.get("id") or 0) > int(current.get("id") or 0):
-            latest[name] = item
+            latest[key] = item
     return latest
+
+
+def latest_statuses(items):
+    latest = {}
+    for item in items:
+        context = item.get("context", "")
+        if not context:
+            continue
+        creator = item.get("creator") or {}
+        creator_identity = str(creator.get("id") or creator.get("login") or "unknown")
+        key = (context, creator_identity)
+        current = latest.get(key)
+        if current is None or int(item.get("id") or 0) > int(current.get("id") or 0):
+            latest[key] = item
+    return latest
+
+
+def all_check_runs(repository, sha):
+    items = []
+    page = 1
+    while True:
+        data = api(
+            repository,
+            f"/commits/{sha}/check-runs?per_page=100&page={page}",
+        )
+        batch = data.get("check_runs", [])
+        items.extend(batch)
+        total = int(data.get("total_count") or 0)
+        if not batch or len(items) >= total:
+            return items
+        page += 1
+
+
+def all_statuses(repository, sha):
+    items = []
+    page = 1
+    while True:
+        data = api(
+            repository,
+            f"/commits/{sha}/status?per_page=100&page={page}",
+        )
+        batch = data.get("statuses", [])
+        items.extend(batch)
+        if len(batch) < 100:
+            return items
+        page += 1
 
 
 def main():
@@ -84,24 +133,23 @@ def main():
         if now - started > args.timeout:
             raise SystemExit("Timed out waiting for repository checks.")
 
-        checks_data = api(
-            args.repository,
-            f"/commits/{args.sha}/check-runs?per_page=100",
-        )
         raw_checks = [
-            item for item in checks_data.get("check_runs", [])
+            item for item in all_check_runs(args.repository, args.sha)
             if own_run_fragment not in (item.get("details_url") or "")
             and item.get("name") not in IGNORED_CHECK_NAMES
         ]
-        checks_by_name = latest_by_name(raw_checks, "name")
-        checks = list(checks_by_name.values())
+        checks_by_identity = latest_checks(raw_checks)
+        checks = list(checks_by_identity.values())
 
-        status_data = api(args.repository, f"/commits/{args.sha}/status")
-        raw_statuses = status_data.get("statuses", [])
-        statuses_by_name = latest_by_name(raw_statuses, "context")
-        statuses = list(statuses_by_name.values())
+        raw_statuses = all_statuses(args.repository, args.sha)
+        statuses_by_identity = latest_statuses(raw_statuses)
+        statuses = list(statuses_by_identity.values())
 
-        observed = set(checks_by_name) | set(statuses_by_name)
+        observed = {
+            item.get("name", "") for item in checks if item.get("name")
+        } | {
+            item.get("context", "") for item in statuses if item.get("context")
+        }
         missing_required = sorted(required - observed)
 
         failed_checks = [
