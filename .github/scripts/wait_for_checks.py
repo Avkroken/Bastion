@@ -12,6 +12,7 @@ IGNORED_CHECK_NAMES = {"Semantic release", "Validate semantic release"}
 
 
 def parse_args():
+    """Parse command-line options for the release check gate."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--repository", required=True)
     parser.add_argument("--sha", required=True)
@@ -28,6 +29,7 @@ def parse_args():
 
 
 def api(repository, path):
+    """Call a GitHub repository API endpoint with the workflow token."""
     token = os.environ.get("GITHUB_TOKEN", "")
     if not token:
         raise SystemExit("GITHUB_TOKEN is required.")
@@ -45,6 +47,7 @@ def api(repository, path):
 
 
 def load_required(path):
+    """Load required check names from the configured text file."""
     config = pathlib.Path(path)
     if not config.exists():
         raise SystemExit(f"Required-check configuration is missing: {config}")
@@ -59,6 +62,7 @@ def load_required(path):
 
 
 def latest_checks(items):
+    """Select the newest check run for each name and GitHub App identity."""
     latest = {}
     for item in items:
         name = item.get("name", "")
@@ -74,6 +78,7 @@ def latest_checks(items):
 
 
 def latest_statuses(items):
+    """Select the newest commit status for each context and creator identity."""
     latest = {}
     for item in items:
         context = item.get("context", "")
@@ -89,6 +94,7 @@ def latest_statuses(items):
 
 
 def all_check_runs(repository, sha):
+    """Fetch every page of check runs for a commit."""
     items = []
     page = 1
     while True:
@@ -105,6 +111,7 @@ def all_check_runs(repository, sha):
 
 
 def all_statuses(repository, sha):
+    """Fetch every page of commit statuses for a commit."""
     items = []
     page = 1
     while True:
@@ -120,6 +127,7 @@ def all_statuses(repository, sha):
 
 
 def main():
+    """Wait until required repository checks are observed, stable, and successful."""
     args = parse_args()
     required = load_required(args.required_checks_file)
     started = time.monotonic()
