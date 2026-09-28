@@ -6,26 +6,30 @@ on:
     paths:
       - ".github/workflows/release.yml"
       - ".github/scripts/semantic_release.py"
+      - ".github/scripts/wait_for_checks.py"
+      - ".github/release-baseline"
   push:
     branches: [main]
   workflow_dispatch:
     inputs:
       release_type:
-        description: Optional forced SemVer bump
+        description: SemVer bump override
         required: true
         default: auto
         type: choice
-        options:
-          - auto
-          - patch
-          - minor
-          - major
+        options: [auto, patch, minor, major, promote]
+      channel:
+        description: Release channel
+        required: true
+        default: stable
+        type: choice
+        options: [stable, rc]
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.repository }}
+  group: ${{ github.event_name == 'pull_request' && format('release-validate-{0}', github.ref) || format('release-{0}', github.repository) }}
   cancel-in-progress: false
 
 jobs:
@@ -40,22 +44,28 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Validate version and changelog calculation
+      - name: Validate release scripts
         shell: bash
         run: |
           set -euo pipefail
+          python3 -m py_compile \
+            .github/scripts/semantic_release.py \
+            .github/scripts/wait_for_checks.py
           python3 .github/scripts/semantic_release.py \
             --forced-bump auto \
+            --channel stable \
             --notes "${RUNNER_TEMP}/release-notes.md"
 
   release:
     name: Semantic release
-    if: ${{ github.event_name != 'pull_request' }}
+    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 40
     permissions:
+      actions: read
+      checks: read
       contents: write
+      statuses: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -68,12 +78,40 @@ jobs:
         shell: bash
         env:
           FORCED_BUMP: ${{ github.event_name == 'workflow_dispatch' && inputs.release_type || 'auto' }}
+          CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.channel || 'stable' }}
         run: |
           set -euo pipefail
           python3 .github/scripts/semantic_release.py \
             --forced-bump "${FORCED_BUMP}" \
+            --channel "${CHANNEL}" \
             --notes "${RUNNER_TEMP}/release-notes.md" \
             --output "${GITHUB_OUTPUT}"
+
+      - name: Verify existing release anchors
+        if: ${{ steps.release.outputs.release == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_TAG: ${{ steps.release.outputs.base_tag }}
+          ACTIVE_PRERELEASE_TAG: ${{ steps.release.outputs.active_prerelease_tag }}
+        run: |
+          set -euo pipefail
+          for tag in "${BASE_TAG}" "${ACTIVE_PRERELEASE_TAG}"; do
+            if [[ -n "${tag}" ]] && ! gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+              echo "::error::Tag ${tag} exists without a GitHub Release; reconcile it before advancing the release line."
+              exit 1
+            fi
+          done
+
+      - name: Wait for repository checks
+        if: ${{ steps.release.outputs.release == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 .github/scripts/wait_for_checks.py \
+            --repository "${GITHUB_REPOSITORY}" \
+            --sha "${GITHUB_SHA}" \
+            --run-id "${GITHUB_RUN_ID}"
 
       - name: Create GitHub release
         if: ${{ steps.release.outputs.release == 'true' }}
@@ -81,14 +119,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
         run: |
           set -euo pipefail
           if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
             echo "Release ${TAG} already exists; nothing to do."
             exit 0
           fi
-          gh release create "${TAG}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --target "${GITHUB_SHA}" \
-            --title "${TAG}" \
+          args=(
+            "${TAG}"
+            --repo "${GITHUB_REPOSITORY}"
+            --target "${GITHUB_SHA}"
+            --title "${TAG}"
             --notes-file "${RUNNER_TEMP}/release-notes.md"
+          )
+          if [[ "${PRERELEASE}" == "true" ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "${args[@]}"
