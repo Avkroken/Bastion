@@ -1,7 +1,14 @@
 # Based on GitHub Docs: Automating Dependabot with GitHub Actions
 name: Dependabot auto-merge
 
-on: pull_request
+on:
+  pull_request:
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+  issue_comment:
+    types: [created, edited, deleted]
 
 permissions:
   contents: write
@@ -10,10 +17,203 @@ permissions:
 jobs:
   dependabot:
     runs-on: ubuntu-latest
-    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    if: github.event_name != 'issue_comment' || github.event.issue.pull_request
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+      PR_URL: https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number || github.event.issue.number }}
     steps:
-      - name: Enable auto-merge for Dependabot PRs
-        run: gh pr merge --auto --merge "$PR_URL"
+      - name: Identify open Dependabot PR
+        id: pr
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          pr_state="$(
+            gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" \
+              --jq '[.user.login, .state] | @tsv'
+          )"
+          IFS=$'\t' read -r author state <<<"$pr_state"
+
+          if [[ "$author" == "dependabot[bot]" && "$state" == "open" ]]; then
+            echo "eligible=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "eligible=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pause existing auto-merge before reassessment
+        if: steps.pr.outputs.eligible == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          auto_merge_state="$(
+            gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" \
+              --jq 'if .auto_merge == null then "disabled" else "enabled" end'
+          )"
+
+          if [[ "$auto_merge_state" == "enabled" ]]; then
+            gh pr merge --disable-auto "$PR_URL"
+          fi
+
+      - name: Verify complete review state
+        if: steps.pr.outputs.eligible == 'true'
         env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          query="$(
+            cat <<'GRAPHQL'
+          query($owner: String!, $repo: String!, $number: Int!) {
+            repository(owner: $owner, name: $repo) {
+              pullRequest(number: $number) {
+                reviewDecision
+                reviews(first: 100) {
+                  nodes {
+                    state
+                    body
+                    submittedAt
+                    authorAssociation
+                  }
+                  pageInfo {
+                    hasNextPage
+                  }
+                }
+                comments(first: 100) {
+                  nodes {
+                    body
+                    createdAt
+                    authorAssociation
+                  }
+                  pageInfo {
+                    hasNextPage
+                  }
+                }
+                reviewThreads(first: 100) {
+                  nodes {
+                    isResolved
+                    isOutdated
+                    comments(first: 100) {
+                      nodes {
+                        body
+                        createdAt
+                        authorAssociation
+                      }
+                      pageInfo {
+                        hasNextPage
+                      }
+                    }
+                  }
+                  pageInfo {
+                    hasNextPage
+                  }
+                }
+              }
+            }
+          }
+          GRAPHQL
+          )"
+
+          review_state="$(
+            gh api graphql \
+              -f query="$query" \
+              -F owner="$OWNER" \
+              -F repo="$REPO_NAME" \
+              -F number="$PR_NUMBER"
+          )"
+
+          incomplete_connections="$(
+            jq '[
+              .data.repository.pullRequest.reviews.pageInfo.hasNextPage,
+              .data.repository.pullRequest.comments.pageInfo.hasNextPage,
+              .data.repository.pullRequest.reviewThreads.pageInfo.hasNextPage,
+              (
+                .data.repository.pullRequest.reviewThreads.nodes[]
+                | .comments.pageInfo.hasNextPage
+              )
+            ]
+            | map(select(. == true))
+            | length' <<<"$review_state"
+          )"
+
+          if (( incomplete_connections > 0 )); then
+            echo "::error::Review state exceeds the bounded query. Refusing auto-merge until the complete review history can be assessed."
+            exit 1
+          fi
+
+          unresolved_count="$(
+            jq '[
+              .data.repository.pullRequest.reviewThreads.nodes[]
+              | select(.isResolved == false)
+            ] | length' <<<"$review_state"
+          )"
+
+          if (( unresolved_count > 0 )); then
+            echo "::error::$unresolved_count unresolved review thread(s) remain."
+            exit 1
+          fi
+
+          review_decision="$(
+            jq -r '.data.repository.pullRequest.reviewDecision // "NONE"' <<<"$review_state"
+          )"
+
+          if [[ "$review_decision" == "CHANGES_REQUESTED" ]]; then
+            echo "::error::Pull request still has requested changes."
+            exit 1
+          fi
+
+          latest_feedback="$(
+            jq -r '[
+              (
+                .data.repository.pullRequest.reviews.nodes[]
+                | select(
+                    (.state == "COMMENTED" or .state == "CHANGES_REQUESTED")
+                    and ((.body // "") | length > 0)
+                  )
+                | .submittedAt
+              ),
+              (
+                .data.repository.pullRequest.comments.nodes[]
+                | select((.body // "") | length > 0)
+                | .createdAt
+              ),
+              (
+                .data.repository.pullRequest.reviewThreads.nodes[]
+                | .comments.nodes[]
+                | select((.body // "") | length > 0)
+                | .createdAt
+              )
+            ]
+            | map(select(. != null))
+            | max // empty' <<<"$review_state"
+          )"
+
+          latest_trusted_approval="$(
+            jq -r '[
+              .data.repository.pullRequest.reviews.nodes[]
+              | select(
+                  .state == "APPROVED"
+                  and (
+                    .authorAssociation == "OWNER"
+                    or .authorAssociation == "MEMBER"
+                    or .authorAssociation == "COLLABORATOR"
+                  )
+                )
+              | .submittedAt
+            ]
+            | map(select(. != null))
+            | max // empty' <<<"$review_state"
+          )"
+
+          if [[ -n "$latest_feedback" ]] \
+            && [[ -z "$latest_trusted_approval" || "$latest_trusted_approval" < "$latest_feedback" ]]; then
+            echo "::error::Review feedback exists without a later trusted approval. Assess all review feedback, including PR conversation comments and resolved or outdated threads, before enabling auto-merge."
+            exit 1
+          fi
+
+      - name: Enable auto-merge for Dependabot PRs
+        if: steps.pr.outputs.eligible == 'true'
+        run: gh pr merge --auto --merge "$PR_URL"
