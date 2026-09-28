@@ -13,18 +13,14 @@ jobs:
   conventional-title:
     name: Conventional PR title
     runs-on: ubuntu-latest
-    env:
-      PR_TITLE: ${{ github.event.pull_request.title || '' }}
-      EVENT_NAME: ${{ github.event_name }}
     steps:
       - name: Validate Conventional Commit title
+        if: ${{ github.event_name == 'pull_request' }}
         shell: bash
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
-          if [[ "${EVENT_NAME}" == "merge_group" ]]; then
-            echo "PR title was validated on the pull request; merge-group check passes through."
-            exit 0
-          fi
           python3 - <<'PY'
           import os
           import re
@@ -34,7 +30,6 @@ jobs:
               r"^(feat|fix|perf|refactor|docs|test|build|ci|chore|revert)"
               r"(\((?!\s*\))[^)]+\))?!?: [^\s].*$"
           )
-
           title = os.environ.get("PR_TITLE", "").strip()
           if pattern.fullmatch(title):
               print(f"PR title follows Conventional Commits: {title}")
@@ -48,3 +43,7 @@ jobs:
           print(f"Received: {title!r}")
           sys.exit(1)
           PY
+
+      - name: Preserve required check in merge queue
+        if: ${{ github.event_name == 'merge_group' }}
+        run: echo "PR titles were validated before entering the merge queue."
