@@ -52,6 +52,24 @@ jobs:
           python3 -m py_compile \
             .github/scripts/semantic_release.py \
             .github/scripts/wait_for_checks.py
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+
+          path = Path(".github/scripts/semantic_release.py")
+          spec = importlib.util.spec_from_file_location("semantic_release", path)
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+
+          trailers = module.commit_trailers(
+              "Release notes example\n\nRelease-As: minor\nBREAKING CHANGE: contract changed\n"
+          )
+          assert trailers["Release-As"] == "minor"
+          assert trailers["BREAKING CHANGE"] == "contract changed"
+          assert module.commit_trailers(
+              "Release-As: major\n\nordinary paragraph after the example\n"
+          ) == {}
+          PY
           python3 .github/scripts/semantic_release.py \
             --forced-bump auto \
             --channel stable \
