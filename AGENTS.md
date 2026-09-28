@@ -11,12 +11,13 @@ Repositoryts egna dokument, manifests, workflows och versionerade konfiguration 
 
 ## Arbetsregler
 
-- Utgå från aktuell `main` och arbeta i separat arbetsgren.
+- Utgå från aktuell default branch och arbeta i separat arbetsgren enligt `{agent}/{feature}/{YYYY-MM-DD}`.
+- Commits ska använda Conventional Commits eller motsvarande tydlig typ, exempelvis `feat:`, `fix:`, `docs:`, `chore:`, `ci:` eller `test:`.
+- Läs hela PR-review-state före merge, inklusive kommentarer och trådar som GitHub markerar som `outdated`; verifiera att grundproblemet faktiskt är löst.
 - Bevara gränsen mellan delad `SSHCore` och plattformsspecifika UI/appar.
 - Apple-projektgenerering ska gå via `App/generate-project.sh` när dependency-wrappern behövs.
 - `App/Package.swift` får inte börja kompileras som vanlig app-source i Xcode-targets.
 - Ändra plattformsspecifika build paths och manifests tillsammans med relevant dokumentation.
 - Repo-specifika värden som når shell ska hanteras via `env:` och citerade variabler.
 - Lägg aldrig secrets eller credentials i repository eller publik dokumentation.
-
-- Extern GitHub-governance är provider-state och ska inte dokumenteras som Bastion-current-state.
+- Extern GitHub-governance är provider-state. Anta inte organization-scope eller andra org-funktioner utan live-verifiering.
