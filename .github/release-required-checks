@@ -6,3 +6,9 @@ Windows application
 Swift package (ubuntu-latest)
 Swift package (macos-latest)
 Apple applications
+CodeQL (actions)
+CodeQL (csharp)
+CodeQL (java-kotlin)
+CodeQL (ruby)
+CodeQL (rust)
+CodeQL (swift)
