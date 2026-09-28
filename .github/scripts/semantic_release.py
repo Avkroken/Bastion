@@ -17,6 +17,7 @@ RANK = {None: 0, "patch": 1, "minor": 2, "major": 3}
 
 
 def git(*args, check=True):
+    """Run a Git command and return its completed process result."""
     result = subprocess.run(
         ["git", *args],
         text=True,
@@ -29,6 +30,7 @@ def git(*args, check=True):
 
 
 def semver_key(tag):
+    """Return a sortable semantic-version tuple for a stable tag."""
     match = STABLE.fullmatch(tag)
     if not match:
         return None
@@ -36,6 +38,7 @@ def semver_key(tag):
 
 
 def prerelease_key(tag):
+    """Return a sortable semantic-version tuple including the RC sequence."""
     match = RC.fullmatch(tag)
     if not match:
         return None
@@ -44,10 +47,12 @@ def prerelease_key(tag):
 
 
 def is_ancestor(ref, head="HEAD"):
+    """Return whether ref is an ancestor of the selected head."""
     return git("merge-base", "--is-ancestor", ref, head, check=False).returncode == 0
 
 
 def write_output(path, name, value):
+    """Append a name/value pair to a GitHub Actions output file when configured."""
     if not path:
         return
     with open(path, "a", encoding="utf-8") as handle:
@@ -55,6 +60,7 @@ def write_output(path, name, value):
 
 
 def parse_args():
+    """Parse command-line options for release calculation."""
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--forced-bump",
@@ -68,6 +74,7 @@ def parse_args():
 
 
 def release_line(subject, body):
+    """Select the Conventional Commit line used to classify a commit."""
     candidates = [subject.strip()]
     if subject.startswith("Merge pull request #"):
         candidates.extend(line.strip() for line in body.splitlines() if line.strip())
@@ -78,6 +85,7 @@ def release_line(subject, body):
 
 
 def commit_record(sha, subject, body):
+    """Normalize commit metadata used by release classification."""
     line = release_line(subject, body)
     match = CONVENTIONAL.fullmatch(line)
     commit_type = match.group(1) if match else None
@@ -96,6 +104,7 @@ def commit_record(sha, subject, body):
 
 
 def commits_in(revision_range):
+    """Return normalized first-parent commits in a revision range."""
     raw = git(
         "log",
         "--first-parent",
@@ -114,6 +123,7 @@ def commits_in(revision_range):
 
 
 def default_bump(item):
+    """Return the default SemVer bump implied by a normalized commit."""
     if item["breaking"]:
         return "major"
     if item["release_as"]:
@@ -126,6 +136,7 @@ def default_bump(item):
 
 
 def bump_version(current, bump):
+    """Apply a major, minor, or patch bump to a semantic version tuple."""
     major, minor, patch = current
     if bump == "major":
         return (major + 1, 0, 0)
@@ -137,10 +148,12 @@ def bump_version(current, bump):
 
 
 def format_core(core):
+    """Format a semantic-version core tuple as a v-prefixed tag."""
     return f"v{core[0]}.{core[1]}.{core[2]}"
 
 
 def category_for(item):
+    """Return the changelog category for a normalized commit."""
     if (item["scope"] or "").lower() == "security":
         return "Security"
     mapping = {
@@ -163,6 +176,7 @@ def category_for(item):
 
 
 def main():
+    """Calculate release metadata and changelog output for the requested channel."""
     args = parse_args()
     all_tags = git("tag", "--list", "v*").stdout.splitlines()
 
