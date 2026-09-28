@@ -1,0 +1,195 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: Optional forced SemVer bump
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Semantic release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Refresh release tags
+        shell: bash
+        run: git fetch --force --tags origin
+
+      - name: Calculate version and changelog
+        id: release
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          FORCED_BUMP: ${{ github.event_name == 'workflow_dispatch' && inputs.release_type || 'auto' }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+          import subprocess
+
+          SEMVER = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+          CONVENTIONAL = re.compile(
+              r"^(feat|fix|perf|revert|refactor|docs|test|build|ci|chore)"
+              r"(?:\([^)]+\))?(!)?:\s+(.+)$"
+          )
+
+          def git(*args):
+              return subprocess.check_output(["git", *args], text=True).strip()
+
+          def set_output(name, value):
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                  fh.write(f"{name}={value}\n")
+
+          tags = git("tag", "--list", "v[0-9]*.[0-9]*.[0-9]*", "--sort=-v:refname").splitlines()
+          last_tag = next((tag for tag in tags if SEMVER.fullmatch(tag)), None)
+
+          if last_tag:
+              match = SEMVER.fullmatch(last_tag)
+              current = tuple(int(part) for part in match.groups())
+              revision_range = f"{last_tag}..HEAD"
+          else:
+              current = (0, 0, 0)
+              revision_range = "HEAD"
+
+          raw = subprocess.check_output(
+              ["git", "log", "--no-merges", "--format=%H%x1f%s%x1f%b%x1e", revision_range],
+              text=True,
+          )
+
+          commits = []
+          for record in raw.split("\x1e"):
+              record = record.strip("\n")
+              if not record:
+                  continue
+              fields = record.split("\x1f", 2)
+              if len(fields) != 3:
+                  continue
+              sha, subject, body = fields
+              match = CONVENTIONAL.fullmatch(subject.strip())
+              commit_type = match.group(1) if match else None
+              breaking = bool(match and match.group(2)) or bool(
+                  re.search(r"(?im)^BREAKING[ -]CHANGE:\s*", body)
+              )
+              commits.append(
+                  {
+                      "sha": sha,
+                      "subject": subject.strip(),
+                      "type": commit_type,
+                      "breaking": breaking,
+                  }
+              )
+
+          forced = os.environ.get("FORCED_BUMP", "auto").strip().lower()
+          if forced not in {"auto", "patch", "minor", "major"}:
+              raise SystemExit(f"Unsupported release_type: {forced}")
+
+          if forced != "auto":
+              bump = forced
+          elif any(item["breaking"] for item in commits):
+              bump = "major"
+          elif any(item["type"] == "feat" for item in commits):
+              bump = "minor"
+          elif any(item["type"] in {"fix", "perf", "revert"} for item in commits):
+              bump = "patch"
+          else:
+              print("No release-worthy Conventional Commit since the latest SemVer tag.")
+              set_output("release", "false")
+              raise SystemExit(0)
+
+          major, minor, patch = current
+          if bump == "major":
+              major, minor, patch = major + 1, 0, 0
+          elif bump == "minor":
+              minor, patch = minor + 1, 0
+          else:
+              patch += 1
+
+          tag = f"v{major}.{minor}.{patch}"
+          repository = os.environ["REPOSITORY"]
+
+          categories = [
+              ("Breaking changes", lambda c: c["breaking"]),
+              ("Features", lambda c: not c["breaking"] and c["type"] == "feat"),
+              ("Fixes", lambda c: not c["breaking"] and c["type"] == "fix"),
+              ("Performance", lambda c: not c["breaking"] and c["type"] == "perf"),
+              ("Reverts", lambda c: not c["breaking"] and c["type"] == "revert"),
+              ("Refactoring", lambda c: not c["breaking"] and c["type"] == "refactor"),
+              ("Documentation", lambda c: not c["breaking"] and c["type"] == "docs"),
+              ("Build", lambda c: not c["breaking"] and c["type"] == "build"),
+              ("CI", lambda c: not c["breaking"] and c["type"] == "ci"),
+              ("Tests", lambda c: not c["breaking"] and c["type"] == "test"),
+              ("Chores", lambda c: not c["breaking"] and c["type"] == "chore"),
+              ("Other changes", lambda c: not c["breaking"] and c["type"] is None),
+          ]
+
+          lines = [
+              f"# {tag}",
+              "",
+              f"Changes since {last_tag}." if last_tag else "Initial automated release.",
+              "",
+          ]
+          for heading, predicate in categories:
+              selected = [item for item in commits if predicate(item)]
+              if not selected:
+                  continue
+              lines.extend([f"## {heading}", ""])
+              for item in selected:
+                  short = item["sha"][:7]
+                  url = f"https://github.com/{repository}/commit/{item['sha']}"
+                  lines.append(f"- {item['subject']} ([{short}]({url}))")
+              lines.append("")
+
+          notes_path = pathlib.Path(os.environ["RUNNER_TEMP"]) / "release-notes.md"
+          notes_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+
+          print(f"Release bump: {bump}")
+          print(f"Previous tag: {last_tag or 'none'}")
+          print(f"Next tag: {tag}")
+          set_output("release", "true")
+          set_output("tag", tag)
+          set_output("bump", bump)
+          PY
+
+      - name: Create GitHub release
+        if: ${{ steps.release.outputs.release == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists; nothing to do."
+            exit 0
+          fi
+          gh release create "${TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "${TAG}" \
+            --notes-file "${RUNNER_TEMP}/release-notes.md"
