@@ -24,3 +24,14 @@ Repositoryts egna dokument, manifests, workflows och versionerade konfiguration 
 - Repo-specifika värden som når shell ska hanteras via `env:` och citerade variabler.
 - Lägg aldrig secrets eller credentials i repository eller publik dokumentation.
 - Extern GitHub-governance är provider-state. Anta inte organization-scope eller andra org-funktioner utan live-verifiering.
+
+## Agent skills
+
+### Issue tracker
+
+Use this repository's GitHub Issues for issues and specifications. Read `docs/agents/issue-tracker.md` before reading, creating, or publishing tickets.
+
+### Domain docs
+
+Use the single-context convention in `docs/agents/domain.md`; existing project-context, architecture, operations, and ADR documentation remain authoritative.
+
