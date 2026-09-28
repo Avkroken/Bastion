@@ -95,6 +95,24 @@ def commit_record(sha, subject, body):
     }
 
 
+def commits_in(revision_range):
+    raw = git(
+        "log",
+        "--first-parent",
+        "--format=%H%x1f%s%x1f%b%x1e",
+        revision_range,
+    ).stdout
+    commits = []
+    for block in raw.split("\x1e"):
+        block = block.strip("\n")
+        if not block:
+            continue
+        fields = block.split("\x1f", 2)
+        if len(fields) == 3:
+            commits.append(commit_record(*fields))
+    return commits
+
+
 def default_bump(item):
     if item["breaking"]:
         return "major"
@@ -203,21 +221,7 @@ def main():
         revision_range = f"{baseline_sha}..{release_ref}"
         base_label = "repository release baseline"
 
-    raw = git(
-        "log",
-        "--first-parent",
-        "--format=%H%x1f%s%x1f%b%x1e",
-        revision_range,
-    ).stdout
-    commits = []
-    for block in raw.split("\x1e"):
-        block = block.strip("\n")
-        if not block:
-            continue
-        fields = block.split("\x1f", 2)
-        if len(fields) != 3:
-            continue
-        commits.append(commit_record(*fields))
+    commits = commits_in(revision_range)
 
     bump = None
     if forced in {"major", "minor", "patch"}:
@@ -265,6 +269,17 @@ def main():
                 print(f"No commits since {active_pre}; no new release candidate.")
                 write_output(args.output, "release", "false")
                 return
+
+            if forced == "auto":
+                post_rc_bump = None
+                for item in commits_in(f"{active_pre}..HEAD"):
+                    candidate = default_bump(item)
+                    if RANK[candidate] > RANK[post_rc_bump]:
+                        post_rc_bump = candidate
+                if not post_rc_bump:
+                    print("No release-worthy change since the active release candidate.")
+                    write_output(args.output, "release", "false")
+                    return
 
             if forced in {"major", "minor", "patch"} and desired_core < active_core:
                 raise SystemExit(
