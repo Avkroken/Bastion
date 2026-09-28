@@ -6,7 +6,7 @@ import pathlib
 import time
 import urllib.request
 
-PASS = {"success", "neutral", "skipped"}
+PASS = {"success"}
 FAIL = {"failure", "cancelled", "timed_out", "action_required", "stale", "startup_failure"}
 IGNORED_CHECK_NAMES = {"Semantic release", "Validate semantic release"}
 
@@ -153,35 +153,59 @@ def main():
         statuses_by_identity = latest_statuses(raw_statuses)
         statuses = list(statuses_by_identity.values())
 
-        observed = {
-            item.get("name", "") for item in checks if item.get("name")
-        } | {
-            item.get("context", "") for item in statuses if item.get("context")
-        }
-        missing_required = sorted(required - observed)
+        checks_by_name = {}
+        for item in checks:
+            name = item.get("name", "")
+            if name in required:
+                checks_by_name.setdefault(name, []).append(item)
 
-        failed_checks = [
-            item for item in checks
-            if item.get("status") == "completed"
-            and item.get("conclusion") in FAIL
-        ]
-        failed_statuses = [
-            item for item in statuses
-            if item.get("state") in {"failure", "error"}
-        ]
-        if failed_checks or failed_statuses:
-            names = [item.get("name", "check") for item in failed_checks]
-            names += [item.get("context", "status") for item in failed_statuses]
-            raise SystemExit("Release blocked by failed checks: " + ", ".join(names))
+        statuses_by_name = {}
+        for item in statuses:
+            context = item.get("context", "")
+            if context in required:
+                statuses_by_name.setdefault(context, []).append(item)
 
-        pending_checks = [
+        missing_required = []
+        failed_required = []
+        pending_required = []
+        for name in sorted(required):
+            matching_checks = checks_by_name.get(name, [])
+            matching_statuses = statuses_by_name.get(name, [])
+            if not matching_checks and not matching_statuses:
+                missing_required.append(name)
+                continue
+
+            for item in matching_checks:
+                if (
+                    item.get("status") == "completed"
+                    and item.get("conclusion") in FAIL
+                ):
+                    failed_required.append(name)
+                elif (
+                    item.get("status") != "completed"
+                    or item.get("conclusion") not in PASS
+                ):
+                    pending_required.append(name)
+
+            for item in matching_statuses:
+                if item.get("state") in {"failure", "error"}:
+                    failed_required.append(name)
+                elif item.get("state") != "success":
+                    pending_required.append(name)
+
+        if failed_required:
+            raise SystemExit(
+                "Release blocked by failed required checks: "
+                + ", ".join(sorted(set(failed_required)))
+            )
+
+        required_checks = [
             item for item in checks
-            if item.get("status") != "completed"
-            or item.get("conclusion") not in PASS
+            if item.get("name", "") in required
         ]
-        pending_statuses = [
+        required_statuses = [
             item for item in statuses
-            if item.get("state") != "success"
+            if item.get("context", "") in required
         ]
 
         signature = tuple(sorted(
@@ -191,7 +215,7 @@ def main():
                 item.get("status", ""),
                 str(item.get("conclusion")),
             )
-            for item in checks
+            for item in required_checks
         )) + tuple(sorted(
             (
                 str(item.get("id")),
@@ -199,14 +223,10 @@ def main():
                 item.get("state", ""),
                 item.get("target_url", ""),
             )
-            for item in statuses
+            for item in required_statuses
         ))
 
-        waiting = [
-            item.get("name", "check") for item in pending_checks
-        ] + [
-            item.get("context", "status") for item in pending_statuses
-        ] + [
+        waiting = sorted(set(pending_required)) + [
             f"{name} (not observed)" for name in missing_required
         ]
 

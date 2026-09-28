@@ -78,7 +78,7 @@ Ingen release skapas för att ”komma runt” CI, review eller repositoryskydd.
 
 ## Required checks
 
-Bastions release-target ska ha lyckad verifiering från repositoryts plattformsdomäner:
+Bastions release-target ska ha lyckad verifiering från repositoryts plattforms- och säkerhetsdomäner:
 
 - Rust;
 - Android Gradle;
@@ -87,11 +87,12 @@ Bastions release-target ska ha lyckad verifiering från repositoryts plattformsd
 - Windows application;
 - Swift package på Ubuntu;
 - Swift package på macOS;
-- Apple applications.
+- Apple applications;
+- CodeQL för Actions, C#, Java/Kotlin, Ruby, Rust och Swift.
 
-Checknamnen versioneras i `.github/release-required-checks`.
+Checknamnen versioneras i `.github/release-required-checks`. Releasegaten bedömer endast dessa uttryckligen required checks och kräver `success` för dem.
 
-Dependency submission eller andra event-specifika jobb kan vara kompletterande men ersätter inte de obligatoriska release-checkarna.
+Dependency submission, Dependabot-automerge, wiki-sync eller andra event-/underhållsspecifika jobb kan vara kompletterande men får inte ersätta eller oavsiktligt blockera de obligatoriska release-checkarna.
 
 ## Release är inte distribution
 
