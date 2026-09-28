@@ -61,7 +61,7 @@ jobs:
     name: Semantic release
     if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 70
     permissions:
       actions: read
       checks: read
@@ -175,14 +175,35 @@ jobs:
           PRERELEASE: ${{ steps.release.outputs.prerelease }}
         run: |
           set -euo pipefail
+
+          verify_tag_target() {
+            git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}" >/dev/null 2>&1 || return 1
+            local actual
+            actual="$(git rev-parse --verify "refs/tags/${TAG}^{commit}")"
+            if [[ "${actual}" != "${TARGET_SHA}" ]]; then
+              echo "::error::Tag ${TAG} points at ${actual}, expected ${TARGET_SHA}."
+              exit 1
+            fi
+          }
+
+          if ! verify_tag_target; then
+            if ! gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${TAG}" \
+              -f sha="${TARGET_SHA}" >/dev/null; then
+              echo "Tag ${TAG} appeared concurrently; verifying its target."
+            fi
+            verify_tag_target
+          fi
+
           if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            echo "Release ${TAG} already exists; nothing to do."
+            echo "Release ${TAG} already exists at the verified target; nothing to do."
             exit 0
           fi
+
           args=(
             "${TAG}"
             --repo "${GITHUB_REPOSITORY}"
-            --target "${TARGET_SHA}"
+            --verify-tag
             --title "${TAG}"
             --notes-file "${RUNNER_TEMP}/release-notes.md"
           )
