@@ -1,0 +1,257 @@
+name: Release
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/release.yml"
+      - ".github/scripts/semantic_release.py"
+      - ".github/scripts/wait_for_checks.py"
+      - ".github/release-baseline"
+      - ".github/release-required-checks"
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: SemVer bump override
+        required: true
+        default: auto
+        type: choice
+        options: [auto, patch, minor, major, promote]
+      channel:
+        description: Release channel
+        required: true
+        default: stable
+        type: choice
+        options: [stable, rc]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate semantic release
+    if: ${{ github.event_name == 'pull_request' }}
+    concurrency:
+      group: ${{ format('release-validate-{0}', github.ref) }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate release configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s .github/release-required-checks
+          python3 -m py_compile \
+            .github/scripts/semantic_release.py \
+            .github/scripts/wait_for_checks.py
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+
+          path = Path(".github/scripts/semantic_release.py")
+          spec = importlib.util.spec_from_file_location("semantic_release", path)
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+
+          trailers = module.commit_trailers(
+              "Release notes example\n\nRelease-As: minor\nBREAKING CHANGE: contract changed\n"
+          )
+          assert trailers["Release-As"] == "minor"
+          assert trailers["BREAKING CHANGE"] == "contract changed"
+          assert module.commit_trailers(
+              "Release-As: major\n\nordinary paragraph after the example\n"
+          ) == {}
+          PY
+          python3 .github/scripts/semantic_release.py \
+            --forced-bump auto \
+            --channel stable \
+            --notes "${RUNNER_TEMP}/release-notes.md"
+
+  release:
+    name: Semantic release
+    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    permissions:
+      actions: read
+      checks: read
+      contents: write
+      statuses: read
+    steps:
+      - name: Wait for release turn
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.request
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          own_id = int(os.environ["GITHUB_RUN_ID"])
+          token = os.environ["GITHUB_TOKEN"]
+          started = time.monotonic()
+
+          def api(path):
+              request = urllib.request.Request(
+                  f"https://api.github.com/repos/{repository}{path}",
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {token}",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                      "User-Agent": "repository-release-lock",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
+          def all_runs():
+              runs = []
+              page = 1
+              while True:
+                  data = api(
+                      f"/actions/workflows/release.yml/runs?per_page=100&page={page}"
+                  )
+                  batch = data.get("workflow_runs", [])
+                  runs.extend(batch)
+                  if len(batch) < 100:
+                      return runs
+                  page += 1
+
+          while True:
+              if time.monotonic() - started > 1800:
+                  raise SystemExit("Timed out waiting for an earlier release run.")
+
+              active = sorted(
+                  int(run["id"])
+                  for run in all_runs()
+                  if run.get("event") in {"push", "workflow_dispatch"}
+                  and run.get("status") != "completed"
+                  and run.get("head_branch") == "main"
+              )
+
+              if own_id not in active:
+                  raise SystemExit(
+                      "Current release run is absent from the active-run lock set; refusing to fail open."
+                  )
+
+              if own_id == active[0]:
+                  print("Release turn acquired.")
+                  break
+
+              print(f"Waiting for earlier release run {active[0]}.")
+              time.sleep(10)
+          PY
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Calculate version and changelog
+        id: release
+        shell: bash
+        env:
+          FORCED_BUMP: ${{ github.event_name == 'workflow_dispatch' && inputs.release_type || 'auto' }}
+          CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.channel || 'stable' }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/semantic_release.py \
+            --forced-bump "${FORCED_BUMP}" \
+            --channel "${CHANNEL}" \
+            --notes "${RUNNER_TEMP}/release-notes.md" \
+            --output "${GITHUB_OUTPUT}"
+
+      - name: Verify existing release anchors
+        if: ${{ steps.release.outputs.release == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_TAG: ${{ steps.release.outputs.base_tag }}
+          ACTIVE_PRERELEASE_TAG: ${{ steps.release.outputs.active_prerelease_tag }}
+        run: |
+          set -euo pipefail
+          for tag in "${BASE_TAG}" "${ACTIVE_PRERELEASE_TAG}"; do
+            [[ -z "${tag}" ]] && continue
+            release_json="$(gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" --json isDraft,tagName 2>/dev/null || true)"
+            if [[ -z "${release_json}" ]]; then
+              echo "::error::Tag ${tag} exists without a GitHub Release; reconcile it before advancing the release line."
+              exit 1
+            fi
+            if [[ "$(printf '%s' "${release_json}" | jq -r '.isDraft')" == "true" ]]; then
+              echo "::error::Release anchor ${tag} is still a draft and cannot advance canonical release history."
+              exit 1
+            fi
+          done
+
+      - name: Wait for repository checks
+        if: ${{ steps.release.outputs.release == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ steps.release.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/wait_for_checks.py \
+            --repository "${GITHUB_REPOSITORY}" \
+            --sha "${TARGET_SHA}" \
+            --run-id "${GITHUB_RUN_ID}" \
+            --required-checks-file ".github/release-required-checks"
+
+      - name: Create GitHub release
+        if: ${{ steps.release.outputs.release == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          TARGET_SHA: ${{ steps.release.outputs.target_sha }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+
+          verify_tag_target() {
+            git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}" >/dev/null 2>&1 || return 1
+            local actual
+            actual="$(git rev-parse --verify "refs/tags/${TAG}^{commit}")"
+            if [[ "${actual}" != "${TARGET_SHA}" ]]; then
+              echo "::error::Tag ${TAG} points at ${actual}, expected ${TARGET_SHA}."
+              exit 1
+            fi
+          }
+
+          if ! verify_tag_target; then
+            if ! gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref="refs/tags/${TAG}" \
+              -f sha="${TARGET_SHA}" >/dev/null; then
+              echo "Tag ${TAG} appeared concurrently; verifying its target."
+            fi
+            verify_tag_target
+          fi
+
+          if gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists at the verified target; nothing to do."
+            exit 0
+          fi
+
+          args=(
+            "${TAG}"
+            --repo "${GITHUB_REPOSITORY}"
+            --verify-tag
+            --title "${TAG}"
+            --notes-file "${RUNNER_TEMP}/release-notes.md"
+          )
+          if [[ "${PRERELEASE}" == "true" ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "${args[@]}"

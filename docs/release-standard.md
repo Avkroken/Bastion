@@ -1,40 +1,24 @@
 # Release- och versionsstandard
 
-**Senast verifierad:** 2026-09-26
+**Senast verifierad:** 2026-09-28
 
 Det här dokumentet gäller **Bastion-repositoryt**. Repositoryts egna dokument, manifests, workflows, taggar och GitHub Releases äger release- och versionskontraktet.
 
-## Nuvarande release-state
-
-Bastion har publicerad GitHub Release-historik med SemVer-taggar. Senast verifierade publicerade release är `v0.24.1` från 2026-09-07.
-
-Current `main` har:
-
-- ingen aktiv Release Please-workflow;
-- ingen `.release-please-manifest.json`;
-- ingen `release-please-config.json`;
-- ingen repoövergripande lokal versionsfil som motsvarar GitHub Release-versionen;
-- `.github/release.yml` för GitHubs genererade release notes-kategorier.
-
-Release Please användes historiskt men togs avsiktligt bort i mergad PR #486 (`chore: use GitHub-native release defaults`). Historiska `release-please--branches--main`-PR:er beskriver därför äldre automation, inte current-state.
-
-Inför inte Release Please igen enbart därför att äldre releasehistorik har Release Please-format.
-
 ## Versionsankare
 
-Repositoryts versionerade releases använder:
+Bastions versionerade repositoryreleases använder:
 
 ```text
 vMAJOR.MINOR.PATCH
 ```
 
-Git-taggen och motsvarande GitHub Release är repositoryts versionsankare.
+Git-taggen och motsvarande GitHub Release är repositoryts kanoniska versionsankare.
 
-Bastions plattformar har även egna manifest-/buildversioner. Exempelvis innehåller Apple-projektet `MARKETING_VERSION` och delprojekt kan ha egna packageversioner. De värdena är plattformsspecifika och ska inte automatiskt behandlas som repositoryts GitHub Release-version.
+Plattformarnas egna manifest- och buildversioner är separata. Exempelvis är Apple `MARKETING_VERSION` och andra plattformsspecifika versionsfält inte automatiskt repositoryts GitHub Release-version.
 
-Inför inte `version.txt` eller en andra manuellt underhållen global versionskälla utan ett separat versionsarkitekturbeslut.
+Inför inte `version.txt` eller en andra manuellt underhållen global versionskälla.
 
-## PR-titlar och squash commits
+## PR-titlar och merge queue
 
 Pull request-titlar ska följa Conventional Commits:
 
@@ -42,124 +26,107 @@ Pull request-titlar ska följa Conventional Commits:
 <type>[optional scope][!]: <description>
 ```
 
-Tillåtna typer:
-
-- `feat` — ny funktion;
-- `fix` — buggfix;
-- `perf` — prestandaförändring;
-- `refactor` — beteendebevarande omstrukturering;
-- `docs` — dokumentation;
-- `test` — tester;
-- `build` — build-/paketeringssystem;
-- `ci` — CI/CD;
-- `chore` — underhåll utan produktfunktion;
-- `revert` — återställning av tidigare förändring.
+Tillåtna typer är `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore` och `revert`.
 
 Scope är valfri och kan exempelvis vara `ssh`, `apple`, `android`, `linux`, `windows` eller `deps`.
 
-`!` markerar breaking change:
+`!` eller en `BREAKING CHANGE:`-footer markerar breaking change.
 
-```text
-feat(ssh)!: replace host configuration contract
-```
-
-Workflow `.github/workflows/pr-title.yml` validerar titeln på `pull_request`. Den använder inga secrets, checkar inte ut kod och har `permissions: {}`.
+`.github/workflows/pr-title.yml` validerar titeln på pull request-event. På `merge_group` gör workflown en pass-through eftersom PR-titeln redan verifierats. Workflown använder inga secrets och har `permissions: {}`.
 
 ## SemVer
 
-Vid en repositoryrelease gäller som normal regel:
+Automatisk versionsberäkning följer:
 
 - breaking change → **major**;
 - `feat` → **minor**;
-- `fix` → **patch**;
-- `docs`, `test`, `chore`, `ci` och `build` → normalt ingen versionshöjning ensamma;
-- `perf` och `refactor` bedöms efter faktisk användar-/kompatibilitetseffekt.
+- `fix`, `perf` och `revert` → **patch**;
+- `refactor`, `docs`, `test`, `build`, `ci` och `chore` skapar normalt ingen release ensamma;
+- `Release-As: major|minor|patch|none` får uttryckligen styra en icke-breaking ändring men får aldrig sänka en breaking change under major.
 
 En plattformsspecifik intern buildräknare är inte en SemVer-release.
 
-## När en release ska ske
+## Automatiskt releaseflöde
 
-Release sker kuraterat, inte på varje merge.
+`.github/workflows/release.yml` äger den repo-lokala releaseprocessen.
 
-En versionerad release är motiverad när exempelvis:
+Normal väg:
 
-- användarsynlig funktionalitet är färdig för en officiell versionspunkt;
-- en fix bör kunna refereras som stabil release;
-- ett delat SSH-/konfigurations-/kompatibilitetskontrakt ändras;
-- flera färdiga ändringar ska samlas till en begriplig repositoryrelease;
-- en breaking förändring kräver ny major-version.
+```text
+PR
+  -> Conventional Commit-kompatibel PR-titel
+  -> plattformsspecifik CI/review
+  -> merge till main
+  -> samma main-SHA verifieras av push-workflows
+  -> semantic release beräknar högsta nödvändiga bump
+  -> immutable SemVer-tagg
+  -> GitHub Release
+```
 
-En release ska inte skapas enbart för dokumentation, CI- eller dependencyunderhåll om det saknas en faktisk releaseeffekt.
+En merge utan releasevärdig förändring skapar ingen release.
 
-## Release är inte deployment eller distribution
+Releasejobbet:
+
+- kör endast på `refs/heads/main`;
+- serialiserar push- och manuella releasekörningar;
+- använder full Git-historik och endast nåbara releaseankare;
+- kräver de kontroller som anges i `.github/release-required-checks`;
+- väntar på dessa checks på exakt release-target SHA;
+- vägrar avancera från en SemVer-tagg som saknar motsvarande GitHub Release.
+
+Ingen release skapas för att ”komma runt” CI, review eller repositoryskydd.
+
+## Required checks
+
+Bastions release-target ska ha lyckad verifiering från repositoryts plattformsdomäner:
+
+- Rust;
+- Android Gradle;
+- Gradle dependency graph;
+- .NET tests;
+- Windows application;
+- Swift package på Ubuntu;
+- Swift package på macOS;
+- Apple applications.
+
+Checknamnen versioneras i `.github/release-required-checks`.
+
+Dependency submission eller andra event-specifika jobb kan vara kompletterande men ersätter inte de obligatoriska release-checkarna.
+
+## Release är inte distribution
 
 GitHub Release, plattformsspecifik distribution och externa store-/packageflöden är separata händelser.
 
-En tagg eller GitHub Release får inte implicit börja publicera eller deploya plattformsartefakter utan ett separat verifierat distributionskontrakt.
-
-Detta är särskilt viktigt i ett multiplattformsrepo: Apple-, Android-, Linux- och Windows-distribution kan ha olika verktyg, credentials och releasekrav.
-
-## Nuvarande releaseflöde
-
-Current `main` har ingen aktiv releaseautomation. Det verifierade flödet är därför kuraterat:
-
-```text
-main changes
-  -> Conventional Commit-kompatibla PR-titlar/squash commits
-  -> ordinarie plattformsspecifik CI
-  -> välj SemVer-version utifrån faktisk releaseeffekt
-  -> skapa immutable vMAJOR.MINOR.PATCH-tagg
-  -> skapa GitHub Release
-  -> separat distribution/deployment när sådan faktiskt ska ske
-```
-
-`.github/release.yml` styr GitHubs genererade release notes-kategorier. Den skapar inte taggar eller Releases på egen hand.
-
-## Verifiering vid release
-
-Minst de repositorychecks som gäller den ändrade koden ska vara gröna innan releasepunkten skapas.
-
-Bastions builddomäner verifieras enligt [operations.md](operations.md):
-
-- Swift-kärna;
-- Apple/Xcode;
-- Android/Gradle;
-- Linux/Rust;
-- Windows/.NET.
-
-Om en release påverkar delad kärna eller flera plattformar ska respektive berörda domäner verifieras. En releaseprocess får inte kringgå normala PR-checks eller repositoryskydd.
-
-## Releaseautomation
-
-Release Please-konfigurationen är medvetet borttagen från current `main`. Återinförande eller val av annan automation är ett separat arkitekturbeslut.
-
-En framtida release-PR-modell måste bevara:
-
-- normal CI/review på release-PR:n;
-- least-privilege write-identitet;
-- inga nya onödiga PAT:ar;
-- ingen write-permission i read-only providerintegrationer;
-- ingen koppling som automatiskt distribuerar plattformsartefakter enbart därför att en release-PR mergas.
-
-Standard-`GITHUB_TOKEN`-beteende och efterföljande workflowtriggers måste verifieras mot aktuell GitHub-dokumentation innan automation införs.
-
-## Changelog och release notes
-
-GitHub Releases är den officiella versionerade releasehistoriken.
-
-`.github/release.yml` är konfiguration för GitHubs genererade release notes och ska inte förväxlas med releaseautomation.
-
-Inför inte en separat manuellt underhållen `CHANGELOG.md` som konkurrerande source of truth. Om en versionsstyrd changelog återinförs ska den genereras som del av samma releaseprocess.
+En SemVer-tagg får inte implicit börja publicera eller deploya Apple-, Android-, Linux- eller Windows-artefakter utan ett separat verifierat distributionskontrakt och dess least-privilege credentials.
 
 ## Prereleases
 
-Prerelease används endast när det finns ett konkret test-/distributionsbehov, exempelvis:
+Manuell `workflow_dispatch` kan skapa release candidates:
 
 ```text
-v1.0.0-rc.1
+vMAJOR.MINOR.PATCH-rc.N
 ```
 
-Prerelease-status ska markeras i GitHub Release och får inte tolkas som implicit produktionsdistribution.
+RC-sekvensen sorteras numeriskt. Om en starkare SemVer-förändring tillkommer efter en aktiv RC startas en ny RC-serie på den högre versionskärnan.
+
+Promotion till stable ska alltid använda **samma commit som den aktiva RC-taggen**. En senare `main`-commit får inte följa med i stable-taggen utan att själv ha ingått i RC:n.
+
+## Release notes
+
+GitHub Releases är den officiella versionerade releasehistoriken.
+
+Varje commit klassificeras i exakt en release-note-kategori. Breaking changes markeras som breaking men behåller sin relevanta grundkategori när sådan finns.
+
+`.github/release.yml` kan fortsatt användas för GitHubs genererade release-note-kategorier, men den är inte releaseprocessen; automationen finns i `.github/workflows/release.yml`.
+
+## Credentials och permissions
+
+Releasejobbet använder repositoryts `GITHUB_TOKEN` med minsta nödvändiga permissions:
+
+- `contents: write` för tagg och GitHub Release;
+- `actions: read`, `checks: read` och `statuses: read` för verifieringsgaten.
+
+Ingen ny PAT, ingen write-permission i read-only providerintegrationer och ingen bypass ska användas.
 
 ## Hotfix och rollback
 
@@ -169,8 +136,21 @@ Publicerade taggar flyttas eller skrivs inte om. Vid felaktig release:
 
 1. korrigera eller revert:a via vanlig PR;
 2. kör relevant plattformsverifiering;
-3. skapa en ny korrigerande SemVer-version;
-4. skapa ny tagg och GitHub Release;
-5. distribuera endast den korrigerade versionen i de kanaler där det faktiskt behövs.
+3. mergea till `main`;
+4. låt releaseprocessen skapa en ny korrigerande SemVer-version;
+5. distribuera den korrigerade versionen endast i de kanaler där det behövs.
 
 Ingen force-push eller tag history rewrite används.
+
+## Verifiering
+
+Vid ändring av releasekontraktet ska minst följande verifieras:
+
+- PR-title-workflow på pull request och merge queue;
+- SemVer-, RC- och breaking-logik;
+- att release-target är nåbar från repositoryts versionshistorik;
+- att samtliga required checks faktiskt körs på main-push;
+- att release-target SHA är den SHA som checks verifierat;
+- att RC-promotion pekar på aktiv RC-commit;
+- att gamla misslyckade releasekörningar inte blockerar en senare lyckad recovery;
+- att GitHub Release fortsatt är kanonisk versionshistorik.
