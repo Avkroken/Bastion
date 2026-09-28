@@ -272,14 +272,21 @@ def main():
 
     commits = commits_in(revision_range)
 
+    calculated_bump = None
+    for item in commits:
+        candidate = default_bump(item)
+        if RANK[candidate] > RANK[calculated_bump]:
+            calculated_bump = candidate
+
     bump = None
     if forced in {"major", "minor", "patch"}:
+        if RANK[forced] < RANK[calculated_bump]:
+            raise SystemExit(
+                f"Forced {forced} bump is below required {calculated_bump} bump."
+            )
         bump = forced
     elif forced != "promote":
-        for item in commits:
-            candidate = default_bump(item)
-            if RANK[candidate] > RANK[bump]:
-                bump = candidate
+        bump = calculated_bump
 
     prerelease = False
     if args.channel == "stable":
