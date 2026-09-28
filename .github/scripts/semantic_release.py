@@ -12,7 +12,7 @@ CONVENTIONAL = re.compile(
     r"(?:\(([^)]+)\))?(!)?:\s+(.+)$"
 )
 TRAILER = re.compile(
-    r"^(?P<token>[A-Za-z][A-Za-z0-9-]*(?: [A-Za-z][A-Za-z0-9-]*)*):\\s+(?P<value>\\S.*)$"
+    r"^(?P<token>[A-Za-z][A-Za-z0-9-]*(?: [A-Za-z][A-Za-z0-9-]*)*):\s+(?P<value>\S.*)$"
 )
 RANK = {None: 0, "patch": 1, "minor": 2, "major": 3}
 
