@@ -14,36 +14,78 @@ jobs:
     name: Conventional PR title
     runs-on: ubuntu-latest
     steps:
-      - name: Validate Conventional Commit title
+      - name: Validate PR title and working branch
         if: ${{ github.event_name == 'pull_request' }}
         shell: bash
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
+          HEAD_REF: ${{ github.head_ref }}
+          PR_CREATED_AT: ${{ github.event.pull_request.created_at }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
+          import datetime as dt
           import os
           import re
           import sys
 
-          pattern = re.compile(
+          title_pattern = re.compile(
               r"^(feat|fix|perf|refactor|docs|test|build|ci|chore|revert)"
               r"(\((?!\s*\))[^)]+\))?!?: [^\s].*$"
           )
+          branch_pattern = re.compile(
+              r"^(?P<agent>[a-z0-9][a-z0-9._-]*)/"
+              r"(?P<feature>[a-z0-9][a-z0-9._-]*)/"
+              r"(?P<date>\d{4}-\d{2}-\d{2})$"
+          )
+          system_prefixes = ("dependabot/", "renovate/", "github-actions/")
+          cutover = dt.datetime(2026, 9, 28, tzinfo=dt.timezone.utc)
+
           title = os.environ.get("PR_TITLE", "").strip()
-          if pattern.fullmatch(title):
-              print(f"PR title follows Conventional Commits: {title}")
+          if not title_pattern.fullmatch(title):
+              print(
+                  "::error title=Invalid PR title::Use Conventional Commits, for example: "
+                  "feat: add capability, fix(runtime): preserve behavior, "
+                  "chore: maintain repository, or feat!: change a public contract."
+              )
+              print(f"Received title: {title!r}")
+              sys.exit(1)
+
+          created_raw = os.environ.get("PR_CREATED_AT", "").strip()
+          try:
+              created = dt.datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
+          except ValueError:
+              print(f"::error::Could not parse pull request creation time: {created_raw!r}")
+              sys.exit(1)
+
+          head = os.environ.get("HEAD_REF", "").strip()
+          if created < cutover:
+              print(f"Legacy PR branch accepted before branch-policy cutover: {head}")
               sys.exit(0)
 
-          print(
-              "::error title=Invalid PR title::Use Conventional Commits, for example: "
-              "feat: add capability, fix(runtime): preserve behavior, "
-              "chore: maintain repository, or feat!: change a public contract."
-          )
-          print(f"Received: {title!r}")
-          sys.exit(1)
+          if head.startswith(system_prefixes):
+              print(f"System branch exempt from agent branch policy: {head}")
+              sys.exit(0)
+
+          match = branch_pattern.fullmatch(head)
+          if not match:
+              print(
+                  "::error title=Invalid working branch::Use exactly "
+                  "{agent}/{feature}/{date}, for example "
+                  "chatgpt/automatic-releases/2026-09-28."
+              )
+              print(f"Received branch: {head!r}")
+              sys.exit(1)
+
+          try:
+              dt.date.fromisoformat(match.group("date"))
+          except ValueError:
+              print(f"::error::Branch date is not a real ISO date: {match.group('date')}")
+              sys.exit(1)
+
+          print(f"PR title and working branch follow repository policy: {title} / {head}")
           PY
 
       - name: Preserve required check in merge queue
         if: ${{ github.event_name == 'merge_group' }}
-        run: echo "PR titles were validated before entering the merge queue."
+        run: echo "PR title and branch were validated before entering the merge queue."
