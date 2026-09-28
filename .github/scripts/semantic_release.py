@@ -11,8 +11,9 @@ CONVENTIONAL = re.compile(
     r"^(feat|fix|perf|revert|refactor|docs|test|build|ci|chore)"
     r"(?:\(([^)]+)\))?(!)?:\s+(.+)$"
 )
-BREAKING_FOOTER = re.compile(r"(?m)^BREAKING(?: CHANGE|-CHANGE):\s+\S")
-RELEASE_AS = re.compile(r"(?m)^Release-As:\s*(major|minor|patch|none)\s*$")
+TRAILER = re.compile(
+    r"^(?P<token>[A-Za-z][A-Za-z0-9-]*(?: [A-Za-z][A-Za-z0-9-]*)*):\\s+(?P<value>\\S.*)$"
+)
 RANK = {None: 0, "patch": 1, "minor": 2, "major": 3}
 
 
@@ -84,15 +85,38 @@ def release_line(subject, body):
     return subject.strip()
 
 
+def commit_trailers(body):
+    """Return the contiguous Git trailer block at the end of a commit body."""
+    trailers = {}
+    for raw in reversed(body.rstrip().splitlines()):
+        line = raw.strip()
+        if not line:
+            if trailers:
+                break
+            continue
+        match = TRAILER.fullmatch(line)
+        if not match:
+            break
+        trailers[match.group("token")] = match.group("value").strip()
+    return trailers
+
+
 def commit_record(sha, subject, body):
     """Normalize commit metadata used by release classification."""
     line = release_line(subject, body)
     match = CONVENTIONAL.fullmatch(line)
     commit_type = match.group(1) if match else None
     scope = match.group(2) if match else None
-    breaking = bool(match and match.group(3)) or bool(BREAKING_FOOTER.search(body))
-    release_as_match = RELEASE_AS.search(body)
-    release_as = release_as_match.group(1) if release_as_match else None
+    trailers = commit_trailers(body)
+    breaking = bool(match and match.group(3)) or bool(
+        trailers.get("BREAKING CHANGE") or trailers.get("BREAKING-CHANGE")
+    )
+    release_as_value = trailers.get("Release-As", "").lower()
+    release_as = (
+        release_as_value
+        if release_as_value in {"major", "minor", "patch", "none"}
+        else None
+    )
     return {
         "sha": sha,
         "subject": line,
@@ -214,6 +238,17 @@ def main():
             raise SystemExit("promote is only valid for the stable channel.")
         if not active_pre:
             raise SystemExit("No active prerelease exists to promote.")
+
+        deferred_bump = None
+        for item in commits_in(f"{active_pre}..HEAD"):
+            candidate = default_bump(item)
+            if RANK[candidate] > RANK[deferred_bump]:
+                deferred_bump = candidate
+        if deferred_bump:
+            raise SystemExit(
+                f"Release-worthy commits exist after {active_pre}; "
+                "create a new release candidate before promotion."
+            )
 
     if last_tag:
         if not is_ancestor(last_tag, release_ref):
