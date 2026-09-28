@@ -12,6 +12,116 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event.pull_request.user.login == 'dependabot[bot]'
     steps:
+      - name: Verify complete review state
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          review_state="$(
+            gh api graphql \
+              -f query='
+                query($owner: String!, $repo: String!, $number: Int!) {
+                  repository(owner: $owner, name: $repo) {
+                    pullRequest(number: $number) {
+                      reviewDecision
+                      reviews(first: 100) {
+                        nodes {
+                          state
+                          body
+                          submittedAt
+                          authorAssociation
+                        }
+                      }
+                      reviewThreads(first: 100) {
+                        nodes {
+                          isResolved
+                          isOutdated
+                          comments(first: 100) {
+                            nodes {
+                              body
+                              createdAt
+                              authorAssociation
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }' \
+              -F owner="$OWNER" \
+              -F repo="$REPO_NAME" \
+              -F number="$PR_NUMBER"
+          )"
+
+          unresolved_count="$(
+            jq '[
+              .data.repository.pullRequest.reviewThreads.nodes[]
+              | select(.isResolved == false)
+            ] | length' <<<"$review_state"
+          )"
+
+          if (( unresolved_count > 0 )); then
+            echo "::error::$unresolved_count unresolved review thread(s) remain."
+            exit 1
+          fi
+
+          review_decision="$(
+            jq -r '.data.repository.pullRequest.reviewDecision // "NONE"' <<<"$review_state"
+          )"
+
+          if [[ "$review_decision" == "CHANGES_REQUESTED" ]]; then
+            echo "::error::Pull request still has requested changes."
+            exit 1
+          fi
+
+          latest_feedback="$(
+            jq -r '[
+              (
+                .data.repository.pullRequest.reviews.nodes[]
+                | select(
+                    (.state == "COMMENTED" or .state == "CHANGES_REQUESTED")
+                    and ((.body // "") | length > 0)
+                  )
+                | .submittedAt
+              ),
+              (
+                .data.repository.pullRequest.reviewThreads.nodes[]
+                | .comments.nodes[]
+                | .createdAt
+              )
+            ]
+            | map(select(. != null))
+            | max // empty' <<<"$review_state"
+          )"
+
+          latest_trusted_approval="$(
+            jq -r '[
+              .data.repository.pullRequest.reviews.nodes[]
+              | select(
+                  .state == "APPROVED"
+                  and (
+                    .authorAssociation == "OWNER"
+                    or .authorAssociation == "MEMBER"
+                    or .authorAssociation == "COLLABORATOR"
+                  )
+                )
+              | .submittedAt
+            ]
+            | map(select(. != null))
+            | max // empty' <<<"$review_state"
+          )"
+
+          if [[ -n "$latest_feedback" ]] \
+            && [[ -z "$latest_trusted_approval" || "$latest_trusted_approval" < "$latest_feedback" ]]; then
+            echo "::error::Review feedback exists without a later trusted approval. Assess all review feedback, including resolved or outdated threads, before enabling auto-merge."
+            exit 1
+          fi
+
       - name: Enable auto-merge for Dependabot PRs
         run: gh pr merge --auto --merge "$PR_URL"
         env:
