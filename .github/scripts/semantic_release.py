@@ -184,6 +184,10 @@ def main():
             raise SystemExit("No active prerelease exists to promote.")
 
     if last_tag:
+        if not is_ancestor(last_tag, release_ref):
+            raise SystemExit(
+                f"Stable tag {last_tag} is not an ancestor of release target {release_ref}."
+            )
         revision_range = f"{last_tag}..{release_ref}"
         base_label = last_tag
     else:
@@ -332,7 +336,7 @@ def main():
         encoding="utf-8",
     )
 
-    target_sha = git("rev-parse", release_ref).stdout.strip()
+    target_sha = git("rev-parse", "--verify", f"{release_ref}^{{commit}}").stdout.strip()
     print(f"Release bump: {bump_label}")
     print(f"Previous stable tag: {last_tag or 'none'}")
     print(f"Next tag: {tag}")
