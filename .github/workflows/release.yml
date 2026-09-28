@@ -35,10 +35,6 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Refresh release tags
-        shell: bash
-        run: git fetch --force --tags origin
-
       - name: Calculate version and changelog
         id: release
         shell: bash
