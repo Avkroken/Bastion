@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+inheritance: true
+reviews:
+  path_instructions:
+  - path: Sources/SSHCore/**
+    instructions: |
+      Treat SSH key, credential and connection handling as security-sensitive.
+      Review filesystem permissions, key lifecycle, command construction,
+      escaping, failure handling and regressions that could expose credentials.
+  - path: LinuxApp/src/**
+    instructions: |
+      Treat SSH, WireGuard, key deployment and credential handling as
+      security-sensitive. Review filesystem permissions, subprocess and command
+      construction, escaping, privilege boundaries, secret handling and failure
+      behavior.
