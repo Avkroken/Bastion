@@ -2,7 +2,16 @@ name: Agent auto-merge
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize, ready_for_review]
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
 
 permissions: {}
 
@@ -11,4 +20,4 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-    uses: Avkroken/.github/.github/workflows/agent-automerge-policy.yml@main
+    uses: Avkroken/.github/.github/workflows/agent-automerge-policy.yml@afc4f0297d162a10afecd350df2c67c01315426b
