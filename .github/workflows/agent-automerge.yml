@@ -20,4 +20,4 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-    uses: Avkroken/.github/.github/workflows/agent-automerge-policy.yml@main
+    uses: Avkroken/.github/.github/workflows/agent-automerge-policy.yml@afc4f0297d162a10afecd350df2c67c01315426b
