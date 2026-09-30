@@ -1,0 +1,14 @@
+name: Agent auto-merge
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions: {}
+
+jobs:
+  agent-auto-merge:
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: Avkroken/.github/.github/workflows/agent-automerge-policy.yml@main
