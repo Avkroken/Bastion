@@ -313,10 +313,8 @@ pub struct HostStore {
 }
 
 impl HostStore {
-    pub fn default_path() -> std::path::PathBuf {
-        dirs::home_dir()
-            .expect("kunde inte hitta hemkatalogen")
-            .join(".bastion/hosts.json")
+    pub fn default_path() -> std::io::Result<std::path::PathBuf> {
+        crate::storage_path::path("hosts.json")
     }
 
     pub fn open(path: std::path::PathBuf) -> std::io::Result<Self> {

@@ -77,7 +77,7 @@ fn key_pair_to_generated(keypair: PrivateKey, comment: &str) -> Result<Generated
 /// Filnamnet innehåller ett UUID, inte värdaliaset, så två nycklar för olika
 /// värdar (eller omgenererade nycklar för samma värd) aldrig krockar.
 pub fn save_private_key(pem: &str) -> Result<String, String> {
-    let dir = dirs::home_dir().ok_or("kunde inte hitta hemkatalogen")?.join(".bastion/keys");
+    let dir = crate::storage_path::path("keys").map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
 

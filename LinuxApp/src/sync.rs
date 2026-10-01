@@ -268,10 +268,8 @@ pub struct SyncConfig {
 }
 
 impl SyncConfig {
-    pub fn default_path() -> std::path::PathBuf {
-        dirs::home_dir()
-            .expect("kunde inte hitta hemkatalogen")
-            .join(".bastion/sync-config.json")
+    pub fn default_path() -> std::io::Result<std::path::PathBuf> {
+        crate::storage_path::path("sync-config.json")
     }
 
     pub fn load(path: &std::path::Path) -> Self {

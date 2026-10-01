@@ -394,8 +394,8 @@ pub struct OAuthTokenStore {
 }
 
 impl OAuthTokenStore {
-    pub fn default_path() -> std::path::PathBuf {
-        dirs::home_dir().expect("kunde inte hitta hemkatalogen").join(".bastion/oauth_tokens.json")
+    pub fn default_path() -> std::io::Result<std::path::PathBuf> {
+        crate::storage_path::path("oauth_tokens.json")
     }
 
     pub fn open(path: std::path::PathBuf) -> Self {
