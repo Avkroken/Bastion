@@ -156,10 +156,10 @@ Vid ändring av releasekontraktet ska minst följande verifieras:
 - att gamla misslyckade releasekörningar inte blockerar en senare lyckad recovery;
 - att GitHub Release fortsatt är kanonisk versionshistorik.
 
-### Copilot-sammanfattning
+## Copilot-sammanfattning
 
-Releaseflödet kan komplettera den deterministiska changelogen med en AI-genererad, användarorienterad sammanfattning via den SHA-pinnade `github/copilot-release-notes`-actionen. Sammanfattningen är **supplemental**: SemVer, release-target, required checks och den deterministiska changelogen ändras inte av Copilot.
+Releaseflödet kör den SHA-pinnade `github/copilot-release-notes`-actionen i ett separat read-only-jobb med `contents: read` och `pull-requests: read`. Copilot CLI förinstalleras i exakt version `1.0.90` innan `COPILOT_GITHUB_TOKEN` exponeras, så actionen använder den redan installerade binären i stället för att hämta en flytande CLI-version.
 
-Copilot-steget använder endast repository-secret `COPILOT_GITHUB_TOKEN`, som ska vara en least-privilege fine-grained PAT med `Copilot Requests: Read` och en tokenägare med aktiv Copilot-licens. Om secreten saknas eller Copilot-steget misslyckas fortsätter releasen med enbart den deterministiska changelogen. Ingen credential skapas eller roteras av releaseworkflown.
+`COPILOT_GITHUB_TOKEN` ska vara en least-privilege fine-grained PAT med `Copilot Requests: Read` och en tokenägare med aktiv Copilot-licens. Workflown skapar eller roterar ingen credential. Om secreten saknas eller Copilot-genereringen misslyckas påverkas inte releaseprocessen.
 
-AI-texten blockciteras under `## Copilot summary` efter den deterministiska changelogen. Därmed fortsätter Portalens kategoriutvinning att baseras på de verifierade release-rubrikerna och AI-texten blir inte en alternativ source of truth.
+Copilot-resultatet publiceras endast i GitHub Actions run summary som rådgivande text. Det skrivs inte in i den kanoniska GitHub Release-body:n. SemVer, release-target, required checks och release notes i GitHub Release fortsätter därför att komma enbart från `semantic_release.py`; osäkra eller ofullständiga AI-resultat kan aldrig ändra canonical changelog.
