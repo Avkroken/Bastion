@@ -281,16 +281,18 @@ jobs:
         id: copilot
         shell: bash
         env:
-          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          COPILOT_AVAILABLE: ${{ secrets.COPILOT_GITHUB_TOKEN != '' }}
           BASE_TAG: ${{ needs.release.outputs.base_tag }}
         run: |
           set -euo pipefail
           if [[ -n "${BASE_TAG}" ]]; then base_ref="${BASE_TAG}"; else base_ref="$(tr -d '[:space:]' < .github/release-baseline)"; fi
           test -n "${base_ref}"
           echo "base_ref=${base_ref}" >> "${GITHUB_OUTPUT}"
-          if [[ -n "${COPILOT_GITHUB_TOKEN}" ]]; then echo "enabled=true" >> "${GITHUB_OUTPUT}"; else echo "enabled=false" >> "${GITHUB_OUTPUT}"; echo "::notice::COPILOT_GITHUB_TOKEN is not configured; deterministic release notes remain canonical."; fi
+          if [[ "${COPILOT_AVAILABLE}" == "true" ]]; then echo "enabled=true" >> "${GITHUB_OUTPUT}"; else echo "enabled=false" >> "${GITHUB_OUTPUT}"; echo "::notice::COPILOT_GITHUB_TOKEN is not configured; deterministic release notes remain canonical."; fi
       - name: Install pinned Copilot CLI
+        id: copilot_setup
         if: ${{ steps.copilot.outputs.enabled == 'true' }}
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -298,7 +300,7 @@ jobs:
           copilot --version
       - name: Generate Copilot release notes
         id: copilot_notes
-        if: ${{ steps.copilot.outputs.enabled == 'true' }}
+        if: ${{ steps.copilot.outputs.enabled == 'true' && steps.copilot_setup.outcome == 'success' }}
         continue-on-error: true
         uses: github/copilot-release-notes@29ba181a86b88f3acee62a03369033edfa982ab9 # v1.0.3
         with:
@@ -310,7 +312,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       - name: Publish advisory Copilot summary
-        if: ${{ steps.copilot_notes.outcome == 'success' }}
+        if: ${{ steps.copilot_notes.outcome == 'success' && steps.copilot_notes.outputs.release-notes != '' }}
         shell: bash
         env:
           RELEASE_NOTES: ${{ steps.copilot_notes.outputs.release-notes }}
@@ -332,7 +334,7 @@ jobs:
               if skipped: h.write(f"ℹ️ {len(skipped)} PR(s) were skipped by the Copilot generator.\n")
           PYCODE
       - name: Report Copilot fallback
-        if: ${{ steps.copilot.outputs.enabled == 'true' && steps.copilot_notes.outcome == 'failure' }}
+        if: ${{ steps.copilot.outputs.enabled == 'true' && (steps.copilot_setup.outcome == 'failure' || steps.copilot_notes.outcome == 'failure' || (steps.copilot_notes.outcome == 'success' && steps.copilot_notes.outputs.release-notes == '')) }}
         shell: bash
-        run: echo "::notice::Copilot release-note generation failed; deterministic release notes remain canonical."
+        run: echo "::notice::Copilot release-note advisory unavailable or empty; deterministic release notes remain canonical."
 
