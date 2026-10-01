@@ -127,7 +127,7 @@ Releasejobbet använder repositoryts `GITHUB_TOKEN` med minsta nödvändiga perm
 - `contents: write` för tagg och GitHub Release;
 - `actions: read`, `checks: read` och `statuses: read` för verifieringsgaten.
 
-Ingen ny PAT, ingen write-permission i read-only providerintegrationer och ingen bypass ska användas.
+Canonical SemVer-/GitHub Release-publication använder ingen PAT, ingen write-permission i read-only providerintegrationer och ingen bypass. Det valfria rådgivande Copilot-jobbet använder endast den read-only `COPILOT_GITHUB_TOKEN` som beskrivs nedan.
 
 ## Hotfix och rollback
 
