@@ -2,17 +2,24 @@ name: Submit Gradle dependency graph
 
 on:
   workflow_run:
-    workflows: [Java CI with Gradle]
+    workflows:
+      - Java CI with Gradle
+      - Automatic Dependency Submission
     types: [completed]
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
 
 permissions:
   actions: read
   contents: write
 
 jobs:
-  submit:
+  submit-pr-graph:
     name: Submit dependency graph
     if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.name == 'Java CI with Gradle' &&
       github.event.workflow_run.conclusion == 'success' &&
       (github.event.workflow_run.event == 'pull_request' || github.event.workflow_run.event == 'merge_group')
     runs-on: ubuntu-latest
@@ -22,3 +29,34 @@ jobs:
         with:
           dependency-graph: download-and-submit
           dependency-graph-continue-on-failure: false
+
+  refresh-main-graph:
+    name: Refresh main dependency graph
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
+      (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.name == 'Automatic Dependency Submission (Gradle)' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main'
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Set up JDK 17
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - name: Generate and submit authoritative Android dependency graph
+        uses: gradle/actions/dependency-submission@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        with:
+          build-root-directory: Android
+          dependency-graph-continue-on-failure: false
+          dependency-graph-include-projects: '^(:|:app)$'
+          dependency-graph-include-configurations: '^(classpath|.*[Rr]untimeClasspath)$'
