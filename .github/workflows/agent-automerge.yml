@@ -7,6 +7,8 @@ on:
     types: [submitted, edited, dismissed]
   pull_request_review_comment:
     types: [created, edited, deleted]
+  check_run:
+    types: [completed]
   push:
     branches: [main]
   schedule:
@@ -18,6 +20,7 @@ permissions: {}
 jobs:
   agent-auto-merge:
     permissions:
+      checks: read
       contents: write
       pull-requests: write
-    uses: Avkroken/.github/.github/workflows/agent-automerge-policy.yml@afc4f0297d162a10afecd350df2c67c01315426b
+    uses: Avkroken/.github/.github/workflows/agent-automerge-policy.yml@e853bde6e0e8c88e8d8df2709cf3e2d61ddc396c
