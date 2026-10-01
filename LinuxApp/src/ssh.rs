@@ -385,13 +385,14 @@ pub(crate) async fn connect_with_forwards(
     // Faller stängt: går known_hosts-filen inte att läsa avbryts
     // anslutningen hellre än att fortsätta utan MITM-skydd (se
     // `KnownHosts::load`).
+    let known_hosts_path = match known_hosts_path_override.clone() {
+        Some(path) => path,
+        None => KnownHosts::default_path()
+            .map_err(|e| format!("kunde inte hitta known_hosts-sökvägen: {e}"))?,
+    };
     let known_hosts = Arc::new(
-        KnownHosts::open(Some(
-            known_hosts_path_override
-                .clone()
-                .unwrap_or_else(KnownHosts::default_path),
-        ))
-        .map_err(|e| format!("kunde inte läsa known_hosts (vägrar ansluta utan värdnyckelskontroll): {e}"))?,
+        KnownHosts::open(Some(known_hosts_path))
+            .map_err(|e| format!("kunde inte läsa known_hosts (vägrar ansluta utan värdnyckelskontroll): {e}"))?,
     );
     let target_handler = ClientHandler {
         host: host.host_name.clone(),
@@ -500,8 +501,13 @@ async fn connect_via_jump(
     known_hosts_path_override: Option<std::path::PathBuf>,
 ) -> Result<Handle<ClientHandler>, String> {
     // Samma "fall stängt"-regel som i `connect_direct` ovan.
+    let jump_known_hosts_path = match known_hosts_path_override {
+        Some(path) => path,
+        None => KnownHosts::default_path()
+            .map_err(|e| format!("kunde inte hitta known_hosts-sökvägen för jump-hosten: {e}"))?,
+    };
     let jump_known_hosts = Arc::new(
-        KnownHosts::open(Some(known_hosts_path_override.unwrap_or_else(KnownHosts::default_path)))
+        KnownHosts::open(Some(jump_known_hosts_path))
             .map_err(|e| format!("kunde inte läsa known_hosts för jump-hosten (vägrar ansluta utan värdnyckelskontroll): {e}"))?,
     );
     let jump_handler = ClientHandler {

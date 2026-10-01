@@ -66,7 +66,7 @@ impl KnownHostEntry {
 }
 
 impl KnownHosts {
-    pub fn default_path() -> PathBuf {
+    pub fn default_path() -> std::io::Result<PathBuf> {
         // I testbinären pekas standardsökvägen om till en temporär fil.
         // Flera tester ansluter mot riktiga test-sshd:er, och varje sådan
         // anslutning TOFU-lär in sin värdnyckel — utan omdirigeringen
@@ -79,13 +79,11 @@ impl KnownHosts {
         // Den här grenen finns inte i den byggda appen.
         #[cfg(test)]
         {
-            crate::test_support::known_hosts_path()
+            Ok(crate::test_support::known_hosts_path())
         }
         #[cfg(not(test))]
         {
-            dirs::home_dir()
-                .expect("kunde inte hitta hemkatalogen")
-                .join(".bastion/known_hosts")
+            crate::storage_path::path("known_hosts")
         }
     }
 

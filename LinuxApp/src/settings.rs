@@ -53,10 +53,8 @@ pub struct AppSettingsStore {
 }
 
 impl AppSettingsStore {
-    pub fn default_path() -> std::path::PathBuf {
-        dirs::home_dir()
-            .expect("kunde inte hitta hemkatalogen")
-            .join(".bastion/settings.json")
+    pub fn default_path() -> std::io::Result<std::path::PathBuf> {
+        crate::storage_path::path("settings.json")
     }
 
     pub fn open(path: std::path::PathBuf) -> std::io::Result<Self> {

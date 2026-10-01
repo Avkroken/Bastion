@@ -35,6 +35,7 @@ mod snippet;
 mod socks_proxy;
 mod split;
 mod ssh;
+mod storage_path;
 mod tab_title;
 mod tool_release;
 #[cfg(test)]
@@ -115,29 +116,59 @@ fn main() -> glib::ExitCode {
 }
 
 fn build_ui(app: &adw::Application) {
+    if let Err(message) = try_build_ui(app) {
+        let label = gtk::Label::builder()
+            .label(format!(
+                "Bastion kunde inte öppna sin persistenta lagring.\n\n{message}\n\nKontrollera att processen har en giltig hemkatalog och åtkomst till ~/.bastion."
+            ))
+            .wrap(true)
+            .margin_top(24)
+            .margin_bottom(24)
+            .margin_start(24)
+            .margin_end(24)
+            .build();
+        let window = adw::ApplicationWindow::builder()
+            .application(app)
+            .title("Bastion — lagringsfel")
+            .default_width(520)
+            .content(&label)
+            .build();
+        window.present();
+    }
+}
+
+fn try_build_ui(app: &adw::Application) -> Result<(), String> {
     load_host_color_css();
     let store = Rc::new(RefCell::new(
-        HostStore::open(HostStore::default_path()).expect("kunde inte öppna host-databasen"),
+        HostStore::open(HostStore::default_path().map_err(|e| e.to_string())?)
+            .map_err(|e| format!("kunde inte öppna host-databasen: {e}"))?,
     ));
     let settings_store = Rc::new(RefCell::new(
-        settings::AppSettingsStore::open(settings::AppSettingsStore::default_path())
-            .expect("kunde inte öppna inställningsfilen"),
+        settings::AppSettingsStore::open(
+            settings::AppSettingsStore::default_path().map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("kunde inte öppna inställningsfilen: {e}"))?,
     ));
     let snippet_store = Rc::new(RefCell::new(
-        snippet::SnippetStore::open(snippet::SnippetStore::default_path())
-            .expect("kunde inte öppna snippet-databasen"),
+        snippet::SnippetStore::open(
+            snippet::SnippetStore::default_path().map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("kunde inte öppna snippet-databasen: {e}"))?,
     ));
     let wireguard_store = Rc::new(RefCell::new(
-        wireguard::WireGuardProfileStore::open(wireguard::WireGuardProfileStore::default_path())
-            .expect("kunde inte öppna wireguard-profildatabasen"),
+        wireguard::WireGuardProfileStore::open(
+            wireguard::WireGuardProfileStore::default_path().map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("kunde inte öppna wireguard-profildatabasen: {e}"))?,
     ));
     let s3_store = Rc::new(RefCell::new(
-        s3::S3ConnectionStore::open(s3::S3ConnectionStore::default_path())
-            .expect("kunde inte öppna s3-anslutningsdatabasen"),
+        s3::S3ConnectionStore::open(
+            s3::S3ConnectionStore::default_path().map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| format!("kunde inte öppna s3-anslutningsdatabasen: {e}"))?,
     ));
-    let sync_config = Rc::new(RefCell::new(sync::SyncConfig::load(
-        &sync::SyncConfig::default_path(),
-    )));
+    let sync_path = sync::SyncConfig::default_path().map_err(|e| e.to_string())?;
+    let sync_config = Rc::new(RefCell::new(sync::SyncConfig::load(&sync_path)));
 
     // Delat sökfilter-tillstånd — `refresh_list` läser det själv i stället
     // för att söktexten skulle behöva trädas igenom varje enskild
@@ -750,6 +781,7 @@ fn build_ui(app: &adw::Application) {
         .build();
 
     window.present();
+    Ok(())
 }
 
 /// Bygger om värdlistan från HostStore. Långtryck på en rad öppnar
@@ -2788,7 +2820,13 @@ fn show_settings_dialog(
 
     // Ren lokal preferens (INTE synkad, se `terminal_theme.rs`s
     // modulkommentar) — motsvarar App/TerminalThemeSettingsView.swift.
-    let theme_store = terminal_theme::TerminalThemeStore::open(terminal_theme::TerminalThemeStore::default_path());
+    let theme_store = match terminal_theme::TerminalThemeStore::default_path() {
+        Ok(path) => terminal_theme::TerminalThemeStore::open(path),
+        Err(e) => {
+            eprintln!("kunde inte hitta terminaltemats lagringssökväg: {e}");
+            return;
+        }
+    };
     let themes = terminal_theme::all();
     let theme_names: Vec<&str> = themes.iter().map(|t| t.name).collect();
     let theme_row = adw::ComboRow::builder().title("Terminalfärgtema").build();
@@ -2877,7 +2915,7 @@ fn show_settings_dialog(
             passphrase_row.set_visible(row.is_active());
             let mut cfg = sync_config.borrow_mut();
             cfg.encrypted = row.is_active();
-            if let Err(e) = cfg.save(&sync::SyncConfig::default_path()) {
+            if let Err(e) = sync::SyncConfig::default_path().and_then(|path| cfg.save(&path)) {
                 eprintln!("kunde inte spara synkinställningen: {e}");
             }
         }
@@ -2938,7 +2976,7 @@ fn show_settings_dialog(
                 cfg.webdav_url = None;
                 cfg.webdav_username = None;
             }
-            if let Err(e) = cfg.save(&sync::SyncConfig::default_path()) {
+            if let Err(e) = sync::SyncConfig::default_path().and_then(|path| cfg.save(&path)) {
                 eprintln!("kunde inte spara synkinställningen: {e}");
             }
         }
@@ -2959,7 +2997,7 @@ fn show_settings_dialog(
             move |row| {
                 let mut cfg = sync_config.borrow_mut();
                 save(&mut cfg, row.text().to_string());
-                if let Err(e) = cfg.save(&sync::SyncConfig::default_path()) {
+                if let Err(e) = sync::SyncConfig::default_path().and_then(|path| cfg.save(&path)) {
                     eprintln!("kunde inte spara synkinställningen: {e}");
                 }
             }
@@ -2995,7 +3033,13 @@ fn show_settings_dialog(
         .title("Kontosynk")
         .description("Logga in för att koppla ett molnkonto — själva synken via kontot är inte byggd än, bara inloggningen.")
         .build();
-    let oauth_token_store = Rc::new(oauth::OAuthTokenStore::open(oauth::OAuthTokenStore::default_path()));
+    let oauth_token_store = match oauth::OAuthTokenStore::default_path() {
+        Ok(path) => Rc::new(oauth::OAuthTokenStore::open(path)),
+        Err(e) => {
+            eprintln!("kunde inte hitta OAuth-lagringssökvägen: {e}");
+            return;
+        }
+    };
     for provider in oauth::all_providers() {
         let row = adw::ActionRow::builder().title(provider.display_name).build();
         if !provider.is_configured() {
@@ -3284,7 +3328,7 @@ fn show_settings_dialog(
                                 let path_str = path.to_string_lossy().to_string();
                                 let mut cfg = sync_config.borrow_mut();
                                 cfg.folder_path = Some(path_str.clone());
-                                if let Err(e) = cfg.save(&sync::SyncConfig::default_path()) {
+                                if let Err(e) = sync::SyncConfig::default_path().and_then(|path| cfg.save(&path)) {
                                     eprintln!("kunde inte spara synkinställningen: {e}");
                                     return;
                                 }
@@ -3401,7 +3445,7 @@ fn show_settings_dialog(
                             // sin EGEN `HostStore`-instans, den delade
                             // `Rc<RefCell<HostStore>>` här vet inget om det
                             // förrän den öppnas igen.
-                            match host::HostStore::open(host::HostStore::default_path()) {
+                            match host::HostStore::default_path().and_then(host::HostStore::open) {
                                 Ok(reloaded) => {
                                     *store.borrow_mut() = reloaded;
                                     sync_status_label.set_text("Synkad");
@@ -3709,13 +3753,21 @@ fn new_themed_terminal() -> vte::Terminal {
         // gränsen för hur långt tillbaka ett bokmärke kan peka.
         .scrollback_lines(SCROLLBACK_LINES)
         .build();
-    let store = terminal_theme::TerminalThemeStore::open(terminal_theme::TerminalThemeStore::default_path());
-    terminal_theme::apply(&terminal, terminal_theme::theme(store.selected_id().as_deref()));
-    // Inget valt typsnitt betyder systemets monospace, inte ett påhittat
-    // namn: ett typsnitt som inte finns installerat ger en tyst fallback,
-    // och då är det bättre att aldrig ha satt något.
-    if let Some(font) = store.font() {
-        terminal.set_font(Some(&gtk::pango::FontDescription::from_string(&font)));
+    match terminal_theme::TerminalThemeStore::default_path() {
+        Ok(path) => {
+            let store = terminal_theme::TerminalThemeStore::open(path);
+            terminal_theme::apply(&terminal, terminal_theme::theme(store.selected_id().as_deref()));
+            // Inget valt typsnitt betyder systemets monospace, inte ett påhittat
+            // namn: ett typsnitt som inte finns installerat ger en tyst fallback,
+            // och då är det bättre att aldrig ha satt något.
+            if let Some(font) = store.font() {
+                terminal.set_font(Some(&gtk::pango::FontDescription::from_string(&font)));
+            }
+        }
+        Err(e) => {
+            eprintln!("kunde inte hitta terminaltemats lagringssökväg: {e}");
+            terminal_theme::apply(&terminal, terminal_theme::theme(None));
+        }
     }
     terminal
 }
@@ -4964,7 +5016,9 @@ fn refresh_known_hosts_list(list: &gtk::ListBox) {
         list.remove(&row);
     }
 
-    let known = match known_hosts::KnownHosts::open(Some(known_hosts::KnownHosts::default_path())) {
+    let known = match known_hosts::KnownHosts::default_path()
+        .and_then(|path| known_hosts::KnownHosts::open(Some(path)))
+    {
         Ok(known) => known,
         Err(e) => {
             // Ett läsfel får INTE se ut som "inga kända värdar" — det är
@@ -5031,9 +5085,8 @@ fn refresh_known_hosts_list(list: &gtk::ListBox) {
                             if response != "forget" {
                                 return;
                             }
-                            let opened = known_hosts::KnownHosts::open(Some(
-                                known_hosts::KnownHosts::default_path(),
-                            ));
+                            let opened = known_hosts::KnownHosts::default_path()
+                                .and_then(|path| known_hosts::KnownHosts::open(Some(path)));
                             match opened.and_then(|known| known.forget(&id)) {
                                 Ok(_) => refresh_known_hosts_list(&list),
                                 Err(e) => eprintln!("kunde inte glömma värdnyckeln: {e}"),
@@ -8981,8 +9034,8 @@ fn spawn_background_sync_plain(
     let (tx, rx) = async_channel::bounded(1);
     std::thread::spawn(move || {
         let result = (|| -> std::io::Result<()> {
-            let mut store = host::HostStore::open(host::HostStore::default_path())?;
-            let mut snippets = snippet::SnippetStore::open(snippet::SnippetStore::default_path())?;
+            let mut store = host::HostStore::open(host::HostStore::default_path()?)?;
+            let mut snippets = snippet::SnippetStore::open(snippet::SnippetStore::default_path()?)?;
             store.sync_with_snippets(&provider, &mut snippets)
         })();
         let _ = tx.send_blocking(result.map_err(|e| e.to_string()));
@@ -8997,8 +9050,8 @@ fn spawn_background_sync_webdav(
     let (tx, rx) = async_channel::bounded(1);
     std::thread::spawn(move || {
         let result = (|| -> std::io::Result<()> {
-            let mut store = host::HostStore::open(host::HostStore::default_path())?;
-            let mut snippets = snippet::SnippetStore::open(snippet::SnippetStore::default_path())?;
+            let mut store = host::HostStore::open(host::HostStore::default_path()?)?;
+            let mut snippets = snippet::SnippetStore::open(snippet::SnippetStore::default_path()?)?;
             store.sync_with_snippets(&provider, &mut snippets)
         })();
         let _ = tx.send_blocking(result.map_err(|e| e.to_string()));
@@ -9012,8 +9065,8 @@ fn spawn_background_sync_encrypted(
     let (tx, rx) = async_channel::bounded(1);
     std::thread::spawn(move || {
         let result = (|| -> std::io::Result<()> {
-            let mut store = host::HostStore::open(host::HostStore::default_path())?;
-            let mut snippets = snippet::SnippetStore::open(snippet::SnippetStore::default_path())?;
+            let mut store = host::HostStore::open(host::HostStore::default_path()?)?;
+            let mut snippets = snippet::SnippetStore::open(snippet::SnippetStore::default_path()?)?;
             store.sync_with_snippets(&provider, &mut snippets)
         })();
         let _ = tx.send_blocking(result.map_err(|e| e.to_string()));
@@ -9448,7 +9501,8 @@ fn build_snippet_row(
             // `delete_synced`, inte `delete`: utan gravsten kommer
             // snippeten tillbaka vid nästa synk mot en enhet som
             // fortfarande har den, och användaren får radera om och om igen.
-            let recorded = host::HostStore::open(host::HostStore::default_path())
+            let recorded = host::HostStore::default_path()
+                .and_then(host::HostStore::open)
                 .and_then(|mut hosts| snippet_store.borrow_mut().delete_synced(snippet_id, &mut hosts));
             if let Err(e) = recorded {
                 eprintln!("kunde inte ta bort snippeten: {e}");

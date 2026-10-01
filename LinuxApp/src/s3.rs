@@ -826,10 +826,8 @@ pub struct S3ConnectionStore {
 }
 
 impl S3ConnectionStore {
-    pub fn default_path() -> std::path::PathBuf {
-        dirs::home_dir()
-            .expect("kunde inte hitta hemkatalogen")
-            .join(".bastion/s3connections.json")
+    pub fn default_path() -> std::io::Result<std::path::PathBuf> {
+        crate::storage_path::path("s3connections.json")
     }
 
     pub fn open(path: std::path::PathBuf) -> std::io::Result<Self> {

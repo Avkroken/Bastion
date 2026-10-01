@@ -165,10 +165,8 @@ pub struct TerminalThemeStore {
 }
 
 impl TerminalThemeStore {
-    pub fn default_path() -> std::path::PathBuf {
-        dirs::home_dir()
-            .expect("kunde inte hitta hemkatalogen")
-            .join(".bastion/linuxapp-terminal-theme.json")
+    pub fn default_path() -> std::io::Result<std::path::PathBuf> {
+        crate::storage_path::path("linuxapp-terminal-theme.json")
     }
 
     pub fn open(path: std::path::PathBuf) -> Self {
