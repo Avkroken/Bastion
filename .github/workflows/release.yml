@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/release.yml"
+      - ".github/release-notes-instructions.md"
       - ".github/scripts/semantic_release.py"
       - ".github/scripts/wait_for_checks.py"
       - ".github/release-baseline"
@@ -49,6 +50,7 @@ jobs:
         run: |
           set -euo pipefail
           test -s .github/release-required-checks
+          test -s .github/release-notes-instructions.md
           python3 -m py_compile \
             .github/scripts/semantic_release.py \
             .github/scripts/wait_for_checks.py
@@ -84,6 +86,7 @@ jobs:
       actions: read
       checks: read
       contents: write
+      pull-requests: read
       statuses: read
     steps:
       - name: Wait for release turn
@@ -173,6 +176,79 @@ jobs:
             --channel "${CHANNEL}" \
             --notes "${RUNNER_TEMP}/release-notes.md" \
             --output "${GITHUB_OUTPUT}"
+      - name: Resolve Copilot release-note inputs
+        id: copilot
+        if: ${{ steps.release.outputs.release == 'true' }}
+        shell: bash
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          BASE_TAG: ${{ steps.release.outputs.base_tag }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${BASE_TAG}" ]]; then
+            base_ref="${BASE_TAG}"
+          else
+            base_ref="$(tr -d '[:space:]' < .github/release-baseline)"
+          fi
+          if [[ -z "${base_ref}" ]]; then
+            echo "::error::Unable to resolve Copilot release-note base ref."
+            exit 1
+          fi
+          echo "base_ref=${base_ref}" >> "${GITHUB_OUTPUT}"
+          if [[ -n "${COPILOT_GITHUB_TOKEN}" ]]; then
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+            echo "::notice::COPILOT_GITHUB_TOKEN is not configured; using deterministic release notes only."
+          fi
+
+      - name: Generate Copilot release notes
+        id: copilot_notes
+        if: ${{ steps.copilot.outputs.enabled == 'true' }}
+        continue-on-error: true
+        uses: github/copilot-release-notes@29ba181a86b88f3acee62a03369033edfa982ab9 # v1.0.3
+        with:
+          base-ref: ${{ steps.copilot.outputs.base_ref }}
+          head-ref: ${{ steps.release.outputs.target_sha }}
+          instructions: .github/release-notes-instructions.md
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+
+      - name: Append Copilot summary
+        if: ${{ steps.copilot_notes.outcome == 'success' }}
+        shell: bash
+        env:
+          COPILOT_RELEASE_NOTES: ${{ steps.copilot_notes.outputs.release-notes }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import os
+          from pathlib import Path
+
+          summary = os.environ.get("COPILOT_RELEASE_NOTES", "").strip()
+          if not summary:
+              raise SystemExit(0)
+
+          notes = Path(os.environ["RUNNER_TEMP"]) / "release-notes.md"
+          existing = notes.read_text(encoding="utf-8").rstrip()
+          quoted = "\n".join(
+              f"> {line}" if line else ">"
+              for line in summary.splitlines()
+          )
+          notes.write_text(
+              f"{existing}\n\n## Copilot summary\n\n"
+              "> AI-generated summary; deterministic changelog remains authoritative.\n>\n"
+              f"{quoted}\n",
+              encoding="utf-8",
+          )
+          PYCODE
+
+      - name: Report Copilot fallback
+        if: ${{ steps.copilot.outputs.enabled == 'true' && steps.copilot_notes.outcome == 'failure' }}
+        shell: bash
+        run: echo "::notice::Copilot release-note generation failed; using deterministic release notes only."
+
 
       - name: Verify existing release anchors
         if: ${{ steps.release.outputs.release == 'true' }}
