@@ -14,11 +14,13 @@ mod bookmarks;
 use bastion_integrations::{cloudflare, docker, github, kubernetes, proxmox, truenas, unraid};
 mod command_library;
 mod dashboard;
+mod dashboard_ui;
 mod external_binary_fetcher;
 mod fsutil;
 mod fuzzy;
 mod host;
 mod host_grouping;
+mod humanize;
 mod key_deploy;
 mod known_hosts;
 mod oauth;
@@ -7046,7 +7048,7 @@ fn refresh_unraid_category(
                             .subtitle(format!(
                                 "plats {} · {} · tillstånd {}",
                                 disk.slot,
-                                format_bytes(disk.size_bytes() as i64),
+                                humanize::format_bytes(disk.size_bytes() as i64),
                                 disk.state
                             ))
                             .build(),
@@ -8390,7 +8392,7 @@ async fn refresh_dashboard_once(host: host::Host, password: Option<String>, list
     let rx = ssh::run_command(host, password, dashboard::COMMAND.to_string(), jump);
     match rx.recv().await {
         Ok(Ok(output)) => {
-            for row in build_dashboard_rows(&dashboard::parse(&output)) {
+            for row in dashboard_ui::build_dashboard_rows(&dashboard::parse(&output)) {
                 list.append(&row);
             }
         }
@@ -8405,157 +8407,6 @@ fn refresh_dashboard(host: host::Host, password: Option<String>, list: &gtk::Lis
         list,
         async move { refresh_dashboard_once(host, password, &list, jump).await }
     ));
-}
-
-/// Formaterar en `SystemSnapshot` som en rad `adw::ActionRow`-poster —
-/// sammanfattning, drifttid, last, minne, en rad per disk, en rad per
-/// Docker-container (med en play/stop-ikon efter `is_running()`, samma
-/// signal som Swift-sidans gröna/röda statuspunkt).
-fn build_dashboard_rows(snap: &dashboard::SystemSnapshot) -> Vec<adw::ActionRow> {
-    let mut rows = Vec::new();
-
-    let mut summary = Vec::new();
-    if let Some(os) = &snap.os {
-        summary.push(os.clone());
-    }
-    if let Some(kernel) = &snap.kernel {
-        summary.push(kernel.clone());
-    }
-    if let Some(cpu) = snap.cpu_count {
-        summary.push(format!("{cpu} kärnor"));
-    }
-    rows.push(
-        adw::ActionRow::builder()
-            .title(snap.hostname.clone().unwrap_or_else(|| "Värd".to_string()))
-            .subtitle(if summary.is_empty() { "Ingen systemdata".to_string() } else { summary.join(" · ") })
-            .build(),
-    );
-
-    if let Some(uptime) = snap.uptime_seconds {
-        rows.push(adw::ActionRow::builder().title("Drifttid").subtitle(format_uptime(uptime)).build());
-    }
-    if let Some(load) = snap.load {
-        rows.push(
-            adw::ActionRow::builder()
-                .title("Systemlast")
-                .subtitle(format!("{:.2} / {:.2} / {:.2} (1/5/15 min)", load.one, load.five, load.fifteen))
-                .build(),
-        );
-    }
-    if let Some(mem) = snap.memory {
-        rows.push(
-            adw::ActionRow::builder()
-                .title("Minne")
-                .subtitle(format!(
-                    "{} / {} ({:.0} %)",
-                    format_bytes(mem.used_bytes()),
-                    format_bytes(mem.total_bytes),
-                    mem.used_fraction() * 100.0
-                ))
-                .build(),
-        );
-    }
-    for disk in &snap.disks {
-        rows.push(
-            adw::ActionRow::builder()
-                .title(disk.mount.clone())
-                .subtitle(format!(
-                    "{} / {} ({} %) — {}",
-                    format_bytes(disk.used_bytes),
-                    format_bytes(disk.size_bytes),
-                    disk.capacity_percent,
-                    disk.filesystem
-                ))
-                .build(),
-        );
-    }
-    for c in &snap.containers {
-        let row = adw::ActionRow::builder().title(c.name.clone()).subtitle(format!("{} — {}", c.image, c.status)).build();
-        let icon_name = if c.is_running() { "media-playback-start-symbolic" } else { "media-playback-stop-symbolic" };
-        row.add_prefix(&gtk::Image::from_icon_name(icon_name));
-        rows.push(row);
-    }
-
-    // Temperaturerna slås ihop till EN rad. En värd kan ha ett dussin
-    // thermal_zones, och tolv rader som mest säger "27,8 °C" dränker
-    // resten av översikten. Den varmaste först — det är den man vill se.
-    if !snap.temperatures.is_empty() {
-        let mut temps = snap.temperatures.clone();
-        temps.sort_by(|a, b| b.celsius.partial_cmp(&a.celsius).unwrap_or(std::cmp::Ordering::Equal));
-        let summary: Vec<String> = temps
-            .iter()
-            .take(4)
-            .map(|t| format!("{}: {:.1} °C", t.label, t.celsius))
-            .collect();
-        let mut subtitle = summary.join(" · ");
-        if temps.len() > 4 {
-            subtitle.push_str(&format!(" · +{} till", temps.len() - 4));
-        }
-        rows.push(adw::ActionRow::builder().title("Temperatur").subtitle(subtitle).build());
-    }
-
-    for addr in &snap.addresses {
-        rows.push(
-            adw::ActionRow::builder()
-                .title(addr.address.clone())
-                .subtitle(format!(
-                    "{} · {}",
-                    addr.interface,
-                    if addr.is_ipv6 { "IPv6" } else { "IPv4" }
-                ))
-                .build(),
-        );
-    }
-
-    // Vem KAN logga in. Fingeravtrycket är det som identifierar nyckeln;
-    // kommentaren är bara vad någon råkade skriva och kan vara tom.
-    for key in &snap.authorized_keys {
-        let who = if key.comment.is_empty() { "utan kommentar" } else { key.comment.as_str() };
-        rows.push(
-            adw::ActionRow::builder()
-                .title(who)
-                .subtitle(format!("{} {} bitar · {}", key.algorithm, key.bits, key.fingerprint))
-                .build(),
-        );
-    }
-
-    // Vem ÄR inne just nu. Raden säger varifrån när `who` vet det —
-    // skillnaden mot en lokal inloggning är värd att synas.
-    for user in &snap.active_users {
-        let mut subtitle = format!("{} · sedan {}", user.tty, user.since);
-        match &user.from {
-            Some(from) => subtitle.push_str(&format!(" · från {from}")),
-            None => subtitle.push_str(" · lokalt"),
-        }
-        rows.push(adw::ActionRow::builder().title(user.user.clone()).subtitle(subtitle).build());
-    }
-
-    rows
-}
-
-fn format_bytes(bytes: i64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut value = bytes.max(0) as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    format!("{value:.1} {}", UNITS[unit])
-}
-
-fn format_uptime(seconds: f64) -> String {
-    let total = seconds.max(0.0) as u64;
-    let days = total / 86400;
-    let hours = (total % 86400) / 3600;
-    let minutes = (total % 3600) / 60;
-    if days > 0 {
-        format!("{days}d {hours}h {minutes}m")
-    } else if hours > 0 {
-        format!("{hours}h {minutes}m")
-    } else {
-        format!("{minutes}m")
-    }
 }
 
 /// Öppnar en "Tunnel"-flik för `host`: startar/stoppar en lokal

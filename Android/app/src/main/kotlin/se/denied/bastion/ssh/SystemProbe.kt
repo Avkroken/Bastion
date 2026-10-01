@@ -54,8 +54,9 @@ object SystemProbe {
         output.lineSequence().forEach { raw ->
             val line = raw.removeSuffix("\r")
             if (line.startsWith("@@")) {
-                current = line.removePrefix("@@")
-                sections.getOrPut(current!!) { mutableListOf() }
+                val section = line.removePrefix("@@")
+                current = section
+                sections.getOrPut(section) { mutableListOf() }
             } else {
                 current?.let { sections.getOrPut(it) { mutableListOf() }.add(line) }
             }
