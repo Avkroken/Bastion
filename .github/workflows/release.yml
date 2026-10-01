@@ -312,7 +312,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       - name: Publish advisory Copilot summary
-        if: ${{ steps.copilot_notes.outcome == 'success' && steps.copilot_notes.outputs.release-notes != '' }}
+        if: ${{ steps.copilot_notes.outcome == 'success' }}
         shell: bash
         env:
           RELEASE_NOTES: ${{ steps.copilot_notes.outputs.release-notes }}
@@ -326,6 +326,9 @@ jobs:
           notes=os.environ.get("RELEASE_NOTES","").strip()
           uncertain=json.loads(os.environ.get("UNCERTAIN_ENTRIES") or "[]")
           skipped=json.loads(os.environ.get("SKIPPED_PRS") or "[]")
+          if not notes:
+              print("::notice::Copilot advisory returned no substantive notes; canonical GitHub Release is unaffected.")
+              raise SystemExit(0)
           with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a",encoding="utf-8") as h:
               h.write("# Advisory Copilot release notes\n\n")
               h.write("Canonical GitHub Release notes remain deterministic. This AI summary is review-only; upstream v1.0.3 may omit rebase-merged PRs.\n\n")
