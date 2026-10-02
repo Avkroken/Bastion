@@ -170,7 +170,7 @@ jobs:
             def actionable_conversation_comment:
               ((.body // "") | length > 0)
               and (
-                ((.body // "") | test("^\s*@(dependabot|coderabbitai)(\s|$)"; "i"))
+                ((.body // "") | test("^[[:space:]]*@(dependabot|coderabbitai)([[:space:]]|$)"; "i"))
                 | not
               )
               and (
