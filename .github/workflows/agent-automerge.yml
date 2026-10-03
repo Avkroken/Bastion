@@ -3,6 +3,9 @@ name: Agent auto-merge
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize, ready_for_review]
+  workflow_run:
+    workflows: ["Agent lifecycle signal"]
+    types: [completed]
   check_run:
     types: [completed]
   push:
