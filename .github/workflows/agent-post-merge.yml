@@ -78,6 +78,12 @@ jobs:
                 head_sha="$(jq -r '.head_sha' <<<"${merge}")"
                 merged_at="$(jq -r '.merged_at' <<<"${merge}")"
 
+                current_main_sha="$(gh api "repos/${REPOSITORY}/git/ref/heads/${default_branch}" --jq '.object.sha')"
+                if [[ "${merge_sha}" != "${current_main_sha}" ]]; then
+                  echo "Skipping stale merge ${merge_sha}; current ${default_branch} is ${current_main_sha}."
+                  continue
+                fi
+
                 release_run_name="Release ${merge_sha}"
                 if ! existing_dispatches="$(
                   gh api "repos/${REPOSITORY}/actions/workflows/release.yml/runs?event=repository_dispatch&per_page=100" |
