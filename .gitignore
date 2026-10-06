@@ -13,3 +13,6 @@ App/fastlane/Preview.html
 App/fastlane/screenshots/
 App/fastlane/test_output/
 App/vendor/
+
+# Zensical generated site
+site/
