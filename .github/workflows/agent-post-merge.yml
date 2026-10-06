@@ -61,7 +61,16 @@ jobs:
           }
 
           for _ in $(seq 1 10); do
-            mapfile -t merges < <(trusted_merges)
+            if ! merge_output="$(trusted_merges)"; then
+              echo "::error::Could not resolve trusted merged pull requests."
+              exit 1
+            fi
+
+            merges=()
+            if [[ -n "${merge_output}" ]]; then
+              mapfile -t merges <<<"${merge_output}"
+            fi
+
             if ((${#merges[@]} > 0)); then
               for merge in "${merges[@]}"; do
                 number="$(jq -r '.pr_number' <<<"${merge}")"
@@ -69,12 +78,16 @@ jobs:
                 head_sha="$(jq -r '.head_sha' <<<"${merge}")"
                 merged_at="$(jq -r '.merged_at' <<<"${merge}")"
 
-                existing_dispatches="$(
-                  gh api "repos/${REPOSITORY}/actions/runs?event=repository_dispatch&head_sha=${merge_sha}&per_page=100" \
-                    --jq '.total_count'
-                )"
+                release_run_name="Release ${merge_sha}"
+                if ! existing_dispatches="$(
+                  gh api "repos/${REPOSITORY}/actions/workflows/release.yml/runs?event=repository_dispatch&per_page=100" \
+                    --jq --arg title "${release_run_name}" '[.workflow_runs[] | select(.display_title == $title)] | length'
+                )"; then
+                  echo "::error::Could not verify dispatch idempotency for merge ${merge_sha}."
+                  exit 1
+                fi
                 if ((existing_dispatches > 0)); then
-                  echo "Dispatch already exists for merge ${merge_sha}; skipping PR #${number}."
+                  echo "Release dispatch already exists for merge ${merge_sha}; skipping PR #${number}."
                   continue
                 fi
 
