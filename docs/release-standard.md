@@ -112,6 +112,10 @@ Dokumentationskällan är repositoryts `docs/` och `zensical.toml`. Innehåll fr
 
 Pull requests som ändrar dokumentationen valideras separat med ett strikt Zensical-build innan merge.
 
+När releasejobbet skapar en stable release skickar det en explicit `release-published`-signal med den exakta taggen. Dokumentationsworkflowet validerar att taggen motsvarar en publicerad stable GitHub Release innan Pages-deploy.
+
+Dokumentationsworkflowet kör dessutom schemalagd reconciliation mot GitHubs senaste stable release. Om releasepubliceringen lyckades men den direkta docs-signalen eller efterföljande deploy avbröts, kan nästa reconciliation därför publicera samma kanoniska release utan att skapa eller flytta en tagg.
+
 Custom domain är GitHub Pages-/DNS-konfiguration och styrs inte av en genererad `CNAME`-fil i Pages-artefakten.
 
 ## Release är inte distribution
