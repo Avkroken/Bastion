@@ -21,6 +21,7 @@ permissions:
 jobs:
   analyze:
     name: CodeQL (${{ matrix.language }})
+    if: github.event_name != 'repository_dispatch' || github.sha == github.event.client_payload.merge_sha
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
