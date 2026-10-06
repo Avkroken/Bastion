@@ -16,6 +16,7 @@ env:
 jobs:
   build:
     name: Rust
+    if: github.event_name != 'repository_dispatch' || github.sha == github.event.client_payload.merge_sha
     runs-on: ubuntu-latest
     permissions:
       contents: read
