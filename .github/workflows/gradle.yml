@@ -20,6 +20,7 @@ on:
 jobs:
   build:
     name: Android Gradle
+    if: github.event_name != 'repository_dispatch' || github.sha == github.event.client_payload.merge_sha
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -44,7 +45,9 @@ jobs:
 
   dependency-graph:
     name: Generate dependency graph
-    if: github.event_name == 'push' || github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'repository_dispatch'
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'pull_request' || github.event_name == 'merge_group') ||
+      (github.event_name == 'repository_dispatch' && github.sha == github.event.client_payload.merge_sha)
     runs-on: ubuntu-latest
     permissions:
       contents: read
