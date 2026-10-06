@@ -1,6 +1,8 @@
 name: Release
 
 on:
+  repository_dispatch:
+    types: [agent-pr-merged]
   pull_request:
     branches: [main]
     paths:
@@ -83,6 +85,8 @@ jobs:
       release: ${{ steps.release.outputs.release }}
       base_tag: ${{ steps.release.outputs.base_tag }}
       target_sha: ${{ steps.release.outputs.target_sha }}
+      tag: ${{ steps.release.outputs.tag }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
     if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 70
@@ -142,7 +146,7 @@ jobs:
               active = sorted(
                   int(run["id"])
                   for run in all_runs()
-                  if run.get("event") in {"push", "workflow_dispatch"}
+                  if run.get("event") in {"push", "workflow_dispatch", "repository_dispatch"}
                   and run.get("status") != "completed"
                   and run.get("head_branch") == "main"
               )
@@ -260,6 +264,26 @@ jobs:
             args+=(--prerelease)
           fi
           gh release create "${args[@]}"
+
+  documentation:
+    name: Documentation
+    needs: release
+    if: >-
+      needs.release.result == 'success' &&
+      needs.release.outputs.release == 'true' &&
+      needs.release.outputs.prerelease == 'false'
+    permissions:
+      actions: read
+      contents: read
+      pages: write
+      id-token: write
+    uses: Avkroken/.github/.github/workflows/reusable-zensical-docs.yml@5ba4957d820fe34d2911706f3625bc96998dd4b2
+    with:
+      ref: ${{ needs.release.outputs.tag }}
+      config_file: zensical.toml
+      site_dir: site
+      python_version: "3.13"
+      zensical_version: "0.0.68"
 
   copilot-release-notes:
     name: Copilot release notes
