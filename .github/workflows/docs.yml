@@ -80,8 +80,8 @@ jobs:
             tag="$(jq -r '.tag_name // ""' <<<"${release_json}")"
           fi
 
-          draft="$(jq -r '.draft // true' <<<"${release_json}")"
-          prerelease="$(jq -r '.prerelease // true' <<<"${release_json}")"
+          draft="$(jq -r 'if has("draft") then .draft else true end' <<<"${release_json}")"
+          prerelease="$(jq -r 'if has("prerelease") then .prerelease else true end' <<<"${release_json}")"
           resolved_tag="$(jq -r '.tag_name // ""' <<<"${release_json}")"
 
           if [[ -z "${resolved_tag}" || "${draft}" == "true" || "${prerelease}" == "true" ]]; then
