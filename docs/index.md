@@ -10,8 +10,8 @@ Navigationssida för Bastion.
 | delad kärna och plattformsgränser | [Arkitektur](architecture.md) |
 | bygg/test för Swift, Apple, Android, Linux eller Windows | [Drift](operations.md) |
 | versionering, PR-titlar och GitHub Releases | [Release- och versionsstandard](release-standard.md) |
-| Apple-prototyper | [prototyp/](prototyp/) |
-| säkerhetsrapportering | [SECURITY.md](../SECURITY.md) |
+| Apple-prototyper | [GUI-prototyp](prototyp/bastion-gui.html) |
+| säkerhetsrapportering | [Security policy](https://github.com/Avkroken/Bastion/security/policy) |
 
 ## Plattformskarta
 
