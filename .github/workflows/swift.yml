@@ -16,6 +16,7 @@ on:
 jobs:
   package:
     name: Swift package (${{ matrix.os }})
+    if: github.event_name != 'repository_dispatch' || github.sha == github.event.client_payload.merge_sha
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -35,6 +36,7 @@ jobs:
 
   applications:
     name: Apple applications
+    if: github.event_name != 'repository_dispatch' || github.sha == github.event.client_payload.merge_sha
     runs-on: macos-26
     permissions:
       contents: read
