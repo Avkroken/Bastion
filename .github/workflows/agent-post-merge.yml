@@ -80,8 +80,8 @@ jobs:
 
                 release_run_name="Release ${merge_sha}"
                 if ! existing_dispatches="$(
-                  gh api "repos/${REPOSITORY}/actions/workflows/release.yml/runs?event=repository_dispatch&per_page=100" \
-                    --jq --arg title "${release_run_name}" '[.workflow_runs[] | select(.display_title == $title)] | length'
+                  gh api "repos/${REPOSITORY}/actions/workflows/release.yml/runs?event=repository_dispatch&per_page=100" |
+                    jq --arg title "${release_run_name}" '[.workflow_runs[] | select(.display_title == $title)] | length'
                 )"; then
                   echo "::error::Could not verify dispatch idempotency for merge ${merge_sha}."
                   exit 1
