@@ -94,6 +94,26 @@ Checknamnen versioneras i `.github/release-required-checks`. Releasegaten bedöm
 
 Dependency submission, Dependabot-automerge, wiki-sync eller andra event-/underhållsspecifika jobb kan vara kompletterande men får inte ersätta eller oavsiktligt blockera de obligatoriska release-checkarna.
 
+## Dokumentationsrelease
+
+När en **stable** GitHub Release skapas publiceras Bastions dokumentationssajt från exakt samma Git-tagg.
+
+Flödet är:
+
+```text
+stable GitHub Release vX.Y.Z
+  -> checkout refs/tags/vX.Y.Z
+  -> Zensical strict build
+  -> GitHub Pages
+  -> https://docs.bastion.denied.se
+```
+
+Dokumentationskällan är repositoryts `docs/` och `zensical.toml`. Innehåll från en senare `main`-commit får inte följa med i dokumentationen för en redan publicerad release.
+
+Pull requests som ändrar dokumentationen valideras separat med ett strikt Zensical-build innan merge.
+
+Custom domain är GitHub Pages-/DNS-konfiguration och styrs inte av en genererad `CNAME`-fil i Pages-artefakten.
+
 ## Release är inte distribution
 
 GitHub Release, plattformsspecifik distribution och externa store-/packageflöden är separata händelser.
