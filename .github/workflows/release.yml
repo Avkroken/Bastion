@@ -1,6 +1,9 @@
 name: Release
+run-name: Release ${{ github.event.client_payload.merge_sha || github.ref_name }}
 
 on:
+  repository_dispatch:
+    types: [agent-pr-merged]
   pull_request:
     branches: [main]
     paths:
@@ -83,7 +86,9 @@ jobs:
       release: ${{ steps.release.outputs.release }}
       base_tag: ${{ steps.release.outputs.base_tag }}
       target_sha: ${{ steps.release.outputs.target_sha }}
-    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+      tag: ${{ steps.release.outputs.tag }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+    if: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && (github.event_name != 'repository_dispatch' || github.sha == github.event.client_payload.merge_sha) }}
     runs-on: ubuntu-latest
     timeout-minutes: 70
     permissions:
@@ -142,7 +147,7 @@ jobs:
               active = sorted(
                   int(run["id"])
                   for run in all_runs()
-                  if run.get("event") in {"push", "workflow_dispatch"}
+                  if run.get("event") in {"push", "workflow_dispatch", "repository_dispatch"}
                   and run.get("status") != "completed"
                   and run.get("head_branch") == "main"
               )
@@ -163,6 +168,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.merge_sha || '' }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -260,6 +266,28 @@ jobs:
             args+=(--prerelease)
           fi
           gh release create "${args[@]}"
+
+      - name: Dispatch stable documentation release
+        if: ${{ steps.release.outputs.release == 'true' && steps.release.outputs.prerelease == 'false' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          TARGET_SHA: ${{ steps.release.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          jq -nc \
+            --arg event_type "release-published" \
+            --arg tag "${TAG}" \
+            --arg target_sha "${TARGET_SHA}" \
+            '{
+              event_type: $event_type,
+              client_payload: {
+                tag: $tag,
+                target_sha: $target_sha
+              }
+            }' |
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/dispatches" --input -
 
   copilot-release-notes:
     name: Copilot release notes

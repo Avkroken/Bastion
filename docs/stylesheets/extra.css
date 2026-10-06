@@ -1,0 +1,24 @@
+:root {
+  --bastion-accent: #f05a28;
+  --bastion-surface: rgba(127, 127, 127, 0.08);
+  --bastion-border: rgba(127, 127, 127, 0.24);
+}
+
+.md-grid {
+  max-width: 1440px;
+}
+
+.md-typeset h1 {
+  font-weight: 750;
+  letter-spacing: -0.02em;
+}
+
+.md-typeset table:not([class]) {
+  border: 1px solid var(--bastion-border);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.md-typeset code {
+  border-radius: 0.25rem;
+}

@@ -1,0 +1,114 @@
+name: Documentation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "zensical.toml"
+      - ".github/workflows/docs.yml"
+      - ".github/workflows/release.yml"
+  repository_dispatch:
+    types: [release-published]
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Zensical
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Install Zensical
+        run: python -m pip install "zensical==0.0.68"
+
+      - name: Build documentation
+        run: zensical build --clean --strict
+
+  resolve-release:
+    name: Resolve stable release
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      deploy: ${{ steps.release.outputs.deploy }}
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - name: Resolve exact stable GitHub Release
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_TAG: ${{ github.event.client_payload.tag || '' }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${EVENT_NAME}" == "repository_dispatch" ]]; then
+            tag="${DISPATCH_TAG}"
+            test -n "${tag}" || {
+              echo "::error::release-published dispatch did not include a tag."
+              exit 1
+            }
+            if ! release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}")"; then
+              echo "::error::GitHub Release ${tag} is not available."
+              exit 1
+            fi
+          else
+            if ! release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" 2>/dev/null)"; then
+              echo "deploy=false" >> "${GITHUB_OUTPUT}"
+              echo "No stable GitHub Release is available yet."
+              exit 0
+            fi
+            tag="$(jq -r '.tag_name // ""' <<<"${release_json}")"
+          fi
+
+          draft="$(jq -r '.draft // true' <<<"${release_json}")"
+          prerelease="$(jq -r '.prerelease // true' <<<"${release_json}")"
+          resolved_tag="$(jq -r '.tag_name // ""' <<<"${release_json}")"
+
+          if [[ -z "${resolved_tag}" || "${draft}" == "true" || "${prerelease}" == "true" ]]; then
+            echo "::error::Resolved release is not a published stable release."
+            exit 1
+          fi
+          if [[ -n "${tag}" && "${resolved_tag}" != "${tag}" ]]; then
+            echo "::error::Resolved release tag ${resolved_tag} does not match requested ${tag}."
+            exit 1
+          fi
+
+          echo "tag=${resolved_tag}" >> "${GITHUB_OUTPUT}"
+          echo "deploy=true" >> "${GITHUB_OUTPUT}"
+
+  deploy:
+    name: Publish released documentation
+    needs: resolve-release
+    if: ${{ needs.resolve-release.outputs.deploy == 'true' }}
+    permissions:
+      actions: read
+      contents: read
+      pages: write
+      id-token: write
+    uses: Avkroken/.github/.github/workflows/reusable-zensical-docs.yml@5ba4957d820fe34d2911706f3625bc96998dd4b2
+    with:
+      ref: ${{ needs.resolve-release.outputs.tag }}
+      config_file: zensical.toml
+      site_dir: site
+      python_version: "3.13"
+      zensical_version: "0.0.68"

@@ -24,6 +24,8 @@ swift test
 
 ## Dokumentation
 
+Den publicerade dokumentationssajten är `https://docs.bastion.denied.se`. Källan är alltid repositoryts versionsstyrda `docs/`, och stable dokumentation byggs från samma Git-tagg som Bastions GitHub Release.
+
 - [Dokumentationsöversikt](docs/index.md)
 - [Projektkontext](docs/project-context.md) — plattformar och bygginvarianter
 - [Arkitektur](docs/architecture.md) — komponentgränser och delad kärna

@@ -1,6 +1,8 @@
 name: Rust
 
 on:
+  repository_dispatch:
+    types: [agent-pr-merged]
   push:
     branches: [ main ]
   pull_request:
@@ -14,6 +16,7 @@ env:
 jobs:
   build:
     name: Rust
+    if: github.event_name != 'repository_dispatch' || github.sha == github.event.client_payload.merge_sha
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -24,6 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.merge_sha || '' }}
           persist-credentials: false
       - name: Install system dependencies
         run: |

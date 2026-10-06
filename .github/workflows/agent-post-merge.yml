@@ -1,0 +1,124 @@
+name: Agent post-merge dispatch
+
+on:
+  workflow_run:
+    workflows: ["Agent auto-merge"]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: agent-post-merge-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    name: Dispatch trusted agent merge
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: read
+    steps:
+      - name: Dispatch merged trusted agent PRs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_STARTED_AT: ${{ github.event.workflow_run.run_started_at }}
+        run: |
+          set -euo pipefail
+
+          owner="${REPOSITORY%%/*}"
+          repo_name="${REPOSITORY#*/}"
+          default_branch="$(gh api "repos/${REPOSITORY}" --jq '.default_branch')"
+
+          trusted_merges() {
+            gh api "repos/${REPOSITORY}/pulls?state=closed&sort=updated&direction=desc&per_page=100" |
+              jq -c \
+                --arg repository "${REPOSITORY}" \
+                --arg default_branch "${default_branch}" \
+                --arg started "${RUN_STARTED_AT}" '
+                  .[]
+                  | select(.merged_at != null and .merged_at >= $started)
+                  | select(.head.repo.full_name == $repository)
+                  | select(.base.ref == $default_branch)
+                  | select(.head.ref | startswith("codex/"))
+                  | select(
+                      (.user.login == "Avkroken" and .user.type == "User")
+                      or
+                      ((.user.login | split("[")[0]) == "gamnacken" and .user.type == "Bot")
+                    )
+                  | {
+                      pr_number: .number,
+                      merge_sha: .merge_commit_sha,
+                      head_sha: .head.sha,
+                      merged_at: .merged_at
+                    }
+                '
+          }
+
+          for _ in $(seq 1 10); do
+            if ! merge_output="$(trusted_merges)"; then
+              echo "::error::Could not resolve trusted merged pull requests."
+              exit 1
+            fi
+
+            merges=()
+            if [[ -n "${merge_output}" ]]; then
+              mapfile -t merges <<<"${merge_output}"
+            fi
+
+            if ((${#merges[@]} > 0)); then
+              for merge in "${merges[@]}"; do
+                number="$(jq -r '.pr_number' <<<"${merge}")"
+                merge_sha="$(jq -r '.merge_sha' <<<"${merge}")"
+                head_sha="$(jq -r '.head_sha' <<<"${merge}")"
+                merged_at="$(jq -r '.merged_at' <<<"${merge}")"
+
+                current_main_sha="$(gh api "repos/${REPOSITORY}/git/ref/heads/${default_branch}" --jq '.object.sha')"
+                if [[ "${merge_sha}" != "${current_main_sha}" ]]; then
+                  echo "Skipping stale merge ${merge_sha}; current ${default_branch} is ${current_main_sha}."
+                  continue
+                fi
+
+                release_run_name="Release ${merge_sha}"
+                if ! existing_dispatches="$(
+                  gh api "repos/${REPOSITORY}/actions/workflows/release.yml/runs?event=repository_dispatch&per_page=100" |
+                    jq --arg title "${release_run_name}" '[.workflow_runs[] | select(.display_title == $title)] | length'
+                )"; then
+                  echo "::error::Could not verify dispatch idempotency for merge ${merge_sha}."
+                  exit 1
+                fi
+                if ((existing_dispatches > 0)); then
+                  echo "Release dispatch already exists for merge ${merge_sha}; skipping PR #${number}."
+                  continue
+                fi
+
+                jq -nc \
+                  --arg event_type "agent-pr-merged" \
+                  --argjson pr_number "${number}" \
+                  --arg merge_sha "${merge_sha}" \
+                  --arg head_sha "${head_sha}" \
+                  --arg merged_at "${merged_at}" \
+                  '{
+                    event_type: $event_type,
+                    client_payload: {
+                      pr_number: $pr_number,
+                      merge_sha: $merge_sha,
+                      head_sha: $head_sha,
+                      merged_at: $merged_at
+                    }
+                  }' |
+                  gh api --method POST "repos/${owner}/${repo_name}/dispatches" --input -
+
+                echo "Dispatched agent-pr-merged for PR #${number} (${merge_sha})."
+              done
+              exit 0
+            fi
+            sleep 3
+          done
+
+          echo "No trusted agent PR merged during the source reconciliation run."

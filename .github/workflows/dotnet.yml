@@ -4,6 +4,8 @@
 name: .NET
 
 on:
+  repository_dispatch:
+    types: [agent-pr-merged]
   push:
     branches: [ main ]
   pull_request:
@@ -14,6 +16,7 @@ on:
 jobs:
   build:
     name: .NET tests
+    if: github.event_name != 'repository_dispatch' || github.sha == github.event.client_payload.merge_sha
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -24,6 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.merge_sha || '' }}
           persist-credentials: false
       - name: Install OpenSSH
         run: |
@@ -42,12 +46,14 @@ jobs:
 
   application:
     name: Windows application
+    if: github.event_name != 'repository_dispatch' || github.sha == github.event.client_payload.merge_sha
     runs-on: windows-2025
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.merge_sha || '' }}
           persist-credentials: false
       - name: Setup .NET
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0

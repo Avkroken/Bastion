@@ -1,0 +1,62 @@
+[project]
+site_name = "Bastion"
+site_url = "https://docs.bastion.denied.se"
+site_description = "Dokumentation för Bastion – multiplattforms SSH-klient från Avkroken."
+site_author = "Avkroken"
+repo_url = "https://github.com/Avkroken/Bastion"
+edit_uri = "edit/main/docs/"
+docs_dir = "docs"
+site_dir = "site"
+copyright = "Avkroken"
+nav = [
+  { "Översikt" = "index.md" },
+  { "Projektkontext" = "project-context.md" },
+  { "Arkitektur" = "architecture.md" },
+  { "Drift och verifiering" = "operations.md" },
+  { "Release och versionering" = "release-standard.md" },
+]
+extra_css = [
+  "stylesheets/extra.css",
+]
+
+[project.theme]
+variant = "modern"
+language = "sv"
+features = [
+  "navigation.instant",
+  "navigation.instant.prefetch",
+  "navigation.instant.progress",
+  "navigation.tracking",
+  "navigation.tabs",
+  "navigation.tabs.sticky",
+  "navigation.sections",
+  "navigation.path",
+  "navigation.top",
+  "toc.follow",
+  "search.highlight",
+  "content.action.edit",
+  "content.action.view",
+  "content.code.copy",
+  "content.code.select",
+]
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme)"
+toggle.icon = "lucide/sun-moon"
+toggle.name = "Följ systemets tema"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+primary = "black"
+accent = "deep orange"
+toggle.icon = "lucide/sun"
+toggle.name = "Byt till mörkt tema"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+primary = "black"
+accent = "deep orange"
+toggle.icon = "lucide/moon"
+toggle.name = "Byt till systemets tema"
