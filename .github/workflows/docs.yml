@@ -1,6 +1,10 @@
 name: Documentation
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/docs.yml"
   pull_request:
     branches: [main]
     paths:
@@ -39,6 +43,16 @@ jobs:
 
       - name: Build documentation
         run: zensical build --clean --strict
+
+      - name: Validate stable release boolean parsing
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_json='{"draft":false,"prerelease":false,"tag_name":"v0.0.0"}'
+          draft="$(jq -r 'if has("draft") then .draft else true end' <<<"${release_json}")"
+          prerelease="$(jq -r 'if has("prerelease") then .prerelease else true end' <<<"${release_json}")"
+          test "${draft}" = "false"
+          test "${prerelease}" = "false"
 
   resolve-release:
     name: Resolve stable release
@@ -80,8 +94,8 @@ jobs:
             tag="$(jq -r '.tag_name // ""' <<<"${release_json}")"
           fi
 
-          draft="$(jq -r '.draft // true' <<<"${release_json}")"
-          prerelease="$(jq -r '.prerelease // true' <<<"${release_json}")"
+          draft="$(jq -r 'if has("draft") then .draft else true end' <<<"${release_json}")"
+          prerelease="$(jq -r 'if has("prerelease") then .prerelease else true end' <<<"${release_json}")"
           resolved_tag="$(jq -r '.tag_name // ""' <<<"${release_json}")"
 
           if [[ -z "${resolved_tag}" || "${draft}" == "true" || "${prerelease}" == "true" ]]; then
