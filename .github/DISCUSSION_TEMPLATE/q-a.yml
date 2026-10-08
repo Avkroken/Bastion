@@ -1,0 +1,29 @@
+title: "[Fråga] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Använd den här kategorin för frågor om Avkrokens projekt, arbetssätt eller dokumentation.
+
+        För reproducerbara fel eller konkreta förbättringsförslag ska du använda Issues i det berörda repositoryt. Rapportera aldrig säkerhetsbrister eller hemligheter här.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Kontroll
+      options:
+        - label: Inlägget innehåller inga hemligheter, personuppgifter eller sårbarhetsdetaljer.
+          required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Fråga
+      description: Vad vill du ha hjälp att förstå eller reda ut?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Kontext
+      description: Beskriv vilket projekt eller sammanhang frågan gäller och vad du redan har provat.
+    validations:
+      required: true
