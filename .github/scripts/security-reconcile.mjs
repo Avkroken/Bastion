@@ -12,6 +12,15 @@ const known = (body,kind,num) => {
     text.includes('<!-- skvallerbyttan-alert:' + kind + ':' + num + ' -->');
 };
 const isIssue = x => Number.isInteger(x.number) && !x.pull_request;
+const isTrustedForAgent = (issue,owner) => {
+  // External issue bodies are untrusted inputs. Only the repository owner
+  // and GitHub Actions-created, marker-bearing tracking issues are eligible.
+  const author=issue.user?.login?.toLowerCase();
+  if(author===owner.toLowerCase()) return true;
+  return author==='github-actions[bot]' &&
+    sources.some(([kind]) => known(issue.body,kind,
+      Number((issue.body || '').match(new RegExp('(?:avkroken-security-alert|skvallerbyttan-alert):'+kind+':(\\d+)'))?.[1])));
+};
 const sleep = ms => new Promise(resolve => setTimeout(resolve,ms));
 const repo = process.env.GITHUB_REPOSITORY;
 const owner = repo?.split('/')[0];
@@ -115,7 +124,10 @@ catch(e) {errors.push('PR list: '+e.message);}
 const target=process.env.GITHUB_EVENT_NAME==='issues' ?
   issues.filter(x=>x.number===Number(process.env.ISSUE_NUMBER)) : issues;
 let delegated=0;
-for(const issue of target.filter(x=>x.state==='open').sort((a,b)=>a.number-b.number)) {
+if(pulls.length) console.log('Existing open PR(s); leave new issues queued until current work is finished.');
+for(const issue of (pulls.length ? [] : target)
+  .filter(x=>x.state==='open' && isTrustedForAgent(x,owner))
+  .sort((a,b)=>b.number-a.number)) {
   if(delegated>=3) break;
   if((issue.assignees||[]).some(x=>x.login==='copilot-swe-agent[bot]')) continue;
   if(pulls.some(p=>(p.body||'').match(new RegExp('(?:fixes|closes|resolves)\\s+(?:[-\\w.]+\\/[-\\w.]+)?#'+issue.number+'\\b','i')))) continue;
