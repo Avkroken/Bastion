@@ -119,7 +119,7 @@ jobs:
       contents: read
       pages: write
       id-token: write
-    uses: Avkroken/.github/.github/workflows/reusable-zensical-docs.yml@5ba4957d820fe34d2911706f3625bc96998dd4b2
+    uses: ./.github/workflows/reusable-zensical-docs.yml
     with:
       ref: ${{ needs.resolve-release.outputs.tag }}
       config_file: zensical.toml
