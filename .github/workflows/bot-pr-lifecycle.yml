@@ -1,0 +1,17 @@
+name: Bot PR lifecycle
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "37 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  reconcile:
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: Avkroken/.github/.github/workflows/reusable-bot-pr-lifecycle.yml@b3c0c2f2192cbb1f352c796a749967b04f4c3d07
