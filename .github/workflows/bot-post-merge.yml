@@ -8,7 +8,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: automation-post-merge-${{ github.repository }}
+  group: post-merge-${{ github.repository }}-${{ github.event.workflow_run.id }}
   cancel-in-progress: false
 
 jobs:
