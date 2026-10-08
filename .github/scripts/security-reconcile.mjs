@@ -12,6 +12,11 @@ const known = (body,kind,num) => {
     text.includes('<!-- skvallerbyttan-alert:' + kind + ':' + num + ' -->');
 };
 const isIssue = x => Number.isInteger(x.number) && !x.pull_request;
+const trustedOrigin = (issue,owner) =>
+  [owner.toLowerCase(), 'github-actions[bot]', 'gamnacken[bot]']
+    .includes(issue.user?.login?.toLowerCase());
+const isTrackingIssue = (issue,kind,num,owner) =>
+  trustedOrigin(issue,owner) && known(issue.body,kind,num);
 const isTrustedForAgent = (issue,owner) => {
   // External issue bodies are untrusted inputs. Only the repository owner
   // and GitHub Actions-created, marker-bearing tracking issues are eligible.
@@ -45,7 +50,8 @@ async function api(path,method='GET',data) {
       ...(data ? {body:JSON.stringify(data)} : {})
     });
     if(response.ok) return response.status === 204 ? null : response.json();
-    if([429,502,503,504].includes(response.status) && attempt < 3) {
+    // An ambiguous response to a write must never cause a duplicate issue.
+    if(method==='GET' && [429,502,503,504].includes(response.status) && attempt < 3) {
       await sleep(1500 * (attempt+1)); continue;
     }
     throw Error(method + ' ' + url.split('?')[0] + ': HTTP ' + response.status);
@@ -88,7 +94,7 @@ if(process.env.GITHUB_EVENT_NAME !== 'issues') {
     for(const alert of alerts) {
       const number=Number(alert.number);
       if(!Number.isInteger(number)||number<1) {errors.push('Invalid '+kind+' alert');continue;}
-      const existing=issues.find(x=>known(x.body,kind,number));
+      const existing=issues.find(x=>isTrackingIssue(x,kind,number,owner));
       try {
         if(existing) {
           if(existing.state!=='open' && writes<100) {
@@ -118,14 +124,17 @@ if(process.env.GITHUB_EVENT_NAME !== 'issues') {
 }
 // Assign the issue in this same run: GITHUB_TOKEN-generated issue events do
 // not trigger a second GitHub Actions workflow.
-let pulls=[];
+let pulls=null;
 try { pulls=await list(root+'/pulls?state=open'); }
-catch(e) {errors.push('PR list: '+e.message);}
+catch(e) {errors.push('PR list: '+e.message); }
+const activeAgentIssue=issues.some(x=>x.state==='open' &&
+  (x.assignees||[]).some(a=>a.login?.toLowerCase()==='copilot-swe-agent[bot]'));
 const target=process.env.GITHUB_EVENT_NAME==='issues' ?
   issues.filter(x=>x.number===Number(process.env.ISSUE_NUMBER)) : issues;
 let delegated=0;
-if(pulls.length) console.log('Existing open PR(s); leave new issues queued until current work is finished.');
-for(const issue of (pulls.length ? [] : target)
+if(pulls===null || pulls.length || activeAgentIssue)
+  console.log('PR state unavailable, PR pending, or agent active; defer new assignments.');
+for(const issue of (pulls===null || pulls.length || activeAgentIssue ? [] : target)
   .filter(x=>x.state==='open' && isTrustedForAgent(x,owner))
   .sort((a,b)=>b.number-a.number)) {
   if(delegated>=1) break;
