@@ -128,7 +128,7 @@ if(pulls.length) console.log('Existing open PR(s); leave new issues queued until
 for(const issue of (pulls.length ? [] : target)
   .filter(x=>x.state==='open' && isTrustedForAgent(x,owner))
   .sort((a,b)=>b.number-a.number)) {
-  if(delegated>=3) break;
+  if(delegated>=1) break;
   if((issue.assignees||[]).some(x=>x.login==='copilot-swe-agent[bot]')) continue;
   if(pulls.some(p=>(p.body||'').match(new RegExp('(?:fixes|closes|resolves)\\s+(?:[-\\w.]+\\/[-\\w.]+)?#'+issue.number+'\\b','i')))) continue;
   try {
