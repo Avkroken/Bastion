@@ -1,0 +1,17 @@
+name: Security alert issues
+
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  reconcile:
+    permissions:
+      contents: read
+      issues: write
+      security-events: read
+      vulnerability-alerts: read
+    uses: Avkroken/.github/.github/workflows/reusable-security-alert-issues.yml@b3c0c2f2192cbb1f352c796a749967b04f4c3d07
