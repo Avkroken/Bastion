@@ -14,8 +14,11 @@ findings, or exploit details into public issue bodies.
 The owner `Avkroken` is requested as issue assignee. Copilot is a special
 GitHub coding-agent assignment and may open a draft remediation PR once the
 agent has an actual code change; successful assignment does not guarantee
-a PR. Codex and Claude require separate integrations to receive work; CodeRabbit
-reviews pull requests when enabled and is not an ordinary issue assignee.
+a PR. Codex and Claude are supported GitHub partner coding agents when enabled in
+Copilot cloud-agent settings. Their live assignment identities/API support
+must be verified before this automation can request their sessions; they are
+not yet programmatically assigned here. CodeRabbit reviews pull requests
+when enabled and is not an ordinary issue assignee.
 No fake assignments are reported. Existing CI, CodeQL advanced setup, rulesets,
 and manual/auto-merge policies are unchanged.
 
