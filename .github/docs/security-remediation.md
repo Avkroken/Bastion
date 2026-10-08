@@ -38,8 +38,8 @@ assignments. Such failures are explicit and do not claim PR completion.
 Do not invent a new token or secret. Skvallerbyttan stays read-only.
 
 A run can create/reopen up to 100 tracking issues. It queues new agent work
-behind existing open pull requests in the repository and requests up to three
-assignments when the queue is clear. Only owner-authored issues and tracking
+behind existing open pull requests in the repository and requests at most one
+assignment when the queue is clear. Only owner-authored issues and tracking
 issues created by GitHub Actions with the expected marker are automatically
 eligible for code-agent execution; untrusted third-party issues need triage.
 Later scheduled runs resume remaining work.
