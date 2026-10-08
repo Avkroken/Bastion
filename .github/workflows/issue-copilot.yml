@@ -1,0 +1,14 @@
+name: Issue to Copilot
+
+on:
+  issues:
+    types: [opened, reopened]
+
+permissions: {}
+
+jobs:
+  delegate:
+    permissions:
+      contents: read
+      issues: write
+    uses: Avkroken/.github/.github/workflows/reusable-issue-copilot.yml@b3c0c2f2192cbb1f352c796a749967b04f4c3d07
