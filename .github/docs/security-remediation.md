@@ -25,14 +25,24 @@ and manual/auto-merge policies are unchanged.
 ## Permissions and failure reporting
 
 The workflow uses the built-in `GITHUB_TOKEN` with contents read, issues write,
-pull requests read and security events read. **That token may not grant the
-separate Dependabot alert read permission.** An unsupported or forbidden alert
-read reports an error rather than falsely claiming all alerts have been
-handled. Do not invent a new token or secret; verify an existing credential's
-name and minimal scopes before integrating it. Skvallerbyttan stays read-only.
+pull requests read, security events read, and `vulnerability-alerts: read`
+(the latter is supported by GitHub Actions as of September 2026).
+Unsupported or forbidden alert reads fail visibly instead of being counted
+as a successful reconciliation. Secret-scanning alerts require an
+independent authorized provider credential and are not exposed in public issues.
 
-A run can create/reopen up to 100 tracking issues and request up to three
-Copilot assignments. Later scheduled runs resume remaining work.
+The existing `COPILOT_GITHUB_TOKEN` is documented as **read-only** for
+release notes; it must not be used for agent assignment. GitHub's
+`GITHUB_TOKEN` may not be authorized to invoke Copilot cloud-agent
+assignments. Such failures are explicit and do not claim PR completion.
+Do not invent a new token or secret. Skvallerbyttan stays read-only.
+
+A run can create/reopen up to 100 tracking issues. It queues new agent work
+behind existing open pull requests in the repository and requests up to three
+assignments when the queue is clear. Only owner-authored issues and tracking
+issues created by GitHub Actions with the expected marker are automatically
+eligible for code-agent execution; untrusted third-party issues need triage.
+Later scheduled runs resume remaining work.
 Issues generated with `GITHUB_TOKEN` do not themselves trigger a new
 `issues` workflow, so agent requests are done in the same run.
 No empty placeholder PRs are created or auto-merged.
