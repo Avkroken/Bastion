@@ -1,0 +1,34 @@
+title: "[Idé] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Tack för idén. Använd den här kategorin för förslag som ännu inte är tillräckligt konkreta för ett issue.
+
+        När ett förslag blir konkret och genomförbart kan det flyttas vidare till ett issue.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Kontroll
+      options:
+        - label: Inlägget innehåller inga hemligheter, personuppgifter eller sårbarhetsdetaljer.
+          required: true
+  - type: textarea
+    id: need
+    attributes:
+      label: Problem eller behov
+      description: Vilket problem, behov eller förbättringsområde ligger bakom idén?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Idé
+      description: Beskriv lösningen eller riktningen du vill diskutera.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Övrig kontext
+      description: Lägg till relevanta exempel, alternativ eller avgränsningar. Undvik känsliga uppgifter.
