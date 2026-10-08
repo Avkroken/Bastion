@@ -1,0 +1,21 @@
+name: Automation post-merge dispatch
+
+on:
+  workflow_run:
+    workflows: ["Bot PR lifecycle", "Dependabot auto-merge"]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: automation-post-merge-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: read
+    uses: Avkroken/.github/.github/workflows/reusable-automation-post-merge.yml@b3c0c2f2192cbb1f352c796a749967b04f4c3d07
