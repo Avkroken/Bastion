@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: "37 * * * *"
   workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/scripts/security-reconcile.mjs"
+      - ".github/scripts/security-reconcile.test.mjs"
+      - ".github/workflows/security-alert-issues.yml"
   issues:
     types: [opened, reopened]
 
@@ -14,7 +20,21 @@ concurrency:
 permissions: {}
 
 jobs:
+  tests:
+    name: Security reconcile unit tests
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run unit tests
+        run: node --test .github/scripts/security-reconcile.test.mjs
   reconcile:
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
