@@ -20,6 +20,30 @@ concurrency:
 permissions: {}
 
 jobs:
+  alert-api-preflight:
+    name: Read-only security alert API preflight
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      security-events: read
+      vulnerability-alerts: read
+    steps:
+      - name: Verify Code Scanning and Dependabot reads
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for resource in code-scanning/alerts dependabot/alerts; do
+            if gh api "repos/${GITHUB_REPOSITORY}/${resource}?state=open&per_page=1" >/dev/null 2>&1; then
+              echo "Read-only preflight passed: ${resource}"
+            else
+              echo "::error::Read-only security alert API access failed for ${resource}."
+              exit 1
+            fi
+          done
   tests:
     name: Security reconcile unit tests
     if: ${{ github.event_name == 'pull_request' }}
