@@ -22,7 +22,7 @@ const isTrustedForAgent = (issue,owner) => {
   // and GitHub Actions-created, marker-bearing tracking issues are eligible.
   const author=issue.user?.login?.toLowerCase();
   if(author===owner.toLowerCase()) return true;
-  return author==='github-actions[bot]' &&
+  return ['github-actions[bot]','gamnacken[bot]'].includes(author) &&
     sources.some(([kind]) => known(issue.body,kind,
       Number((issue.body || '').match(new RegExp('(?:avkroken-security-alert|skvallerbyttan-alert):'+kind+':(\\d+)'))?.[1])));
 };
