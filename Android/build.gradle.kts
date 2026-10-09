@@ -21,7 +21,7 @@ buildscript {
         // Keep them explicit so security fixes remain both enforced and
         // machine-updatable without removing dependency-graph coverage.
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.4.20")
-        classpath("org.apache.commons:commons-lang3:3.20.0")
+        classpath("org.apache.commons:commons-lang3:3.21.0")
     }
 }
 
