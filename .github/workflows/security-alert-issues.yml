@@ -1,0 +1,82 @@
+name: Security alerts and issue remediation
+
+on:
+  schedule:
+    - cron: "37 * * * *"
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/scripts/security-reconcile.mjs"
+      - ".github/scripts/security-reconcile.test.mjs"
+      - ".github/workflows/security-alert-issues.yml"
+  issues:
+    types: [opened, reopened]
+
+concurrency:
+  group: security-remediation-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  alert-api-preflight:
+    name: Read-only security alert API preflight
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      security-events: read
+      vulnerability-alerts: read
+    steps:
+      - name: Verify Code Scanning and Dependabot reads
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for resource in code-scanning/alerts dependabot/alerts; do
+            if gh api "repos/${GITHUB_REPOSITORY}/${resource}?state=open&per_page=1" >/dev/null 2>&1; then
+              echo "Read-only preflight passed: ${resource}"
+            else
+              echo "::error::Read-only security alert API access failed for ${resource}."
+              exit 1
+            fi
+          done
+  tests:
+    name: Security reconcile unit tests
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run unit tests
+        run: node --test .github/scripts/security-reconcile.test.mjs
+  reconcile:
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+      security-events: read
+      vulnerability-alerts: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test reconciliation
+        run: node --test .github/scripts/security-reconcile.test.mjs
+      - name: Reconcile alerts, issues and agent assignments
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: node .github/scripts/security-reconcile.mjs
