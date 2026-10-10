@@ -3,7 +3,7 @@ site_name = "Bastion"
 site_url = "https://docs.bastion.denied.se"
 site_description = "Dokumentation för Bastion – multiplattforms SSH-klient från Avkroken."
 site_author = "Avkroken"
-repo_url = "https://github.com/Avkroken/Bastion"
+# The source link is supplied by the deployment site, not tied to a former GitHub owner.
 edit_uri = "edit/main/docs/"
 docs_dir = "docs"
 site_dir = "site"
