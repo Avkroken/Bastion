@@ -87,3 +87,11 @@ Klassificera först felet som:
 ## Dokumentationsunderhåll
 
 När en plattforms build-, manifest- eller generationmodell ändras ska motsvarande avsnitt uppdateras samtidigt. README ska förbli en kort karta och inte växa till en plattformshandbok.
+
+## Repository identity portability
+
+This source repository is not bound to a particular GitHub account. When transferring or forking, verify current `GITHUB_REPOSITORY` and configure the repository Actions variables `AUTO_ASSIGN_USER`, `TRUSTED_AGENT_USER_LOGIN`, `TRUSTED_AGENT_BOT_LOGIN` for the intended **individual** issue assignee and explicitly trusted automation principals. The workflows intentionally refuse to guess identities: if a trusted actor variable is missing, automatic privileged work is skipped rather than expanded to arbitrary bots. A GitHub organization cannot itself be an issue assignee.
+
+The documentation site does not embed a prior GitHub repository URL; set up a source link from your current deployment/repository metadata if desired.
+
+These values are external provider configuration, not packaged production credentials. A fork can test source code without inheriting the upstream owner's GitHub app, tokens, rulesets or registry permissions.
