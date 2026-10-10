@@ -19,12 +19,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          TRUSTED_AGENT_BOT_LOGIN: ${{ vars.TRUSTED_AGENT_BOT_LOGIN }}
         run: |
           set -euo pipefail
 
           owner="${REPOSITORY%%/*}"
           repo_name="${REPOSITORY#*/}"
           default_branch="$(gh api "repos/${REPOSITORY}" --jq '.default_branch')"
+          if [[ -z "${TRUSTED_AGENT_BOT_LOGIN}" ]]; then
+            echo "::notice::No trusted bot login configured. Set repository variable TRUSTED_AGENT_BOT_LOGIN; auto-merge remains disabled."
+            exit 0
+          fi
 
           log() {
             printf '[agent-pr-lifecycle] %s\n' "$*"
@@ -79,21 +84,21 @@ jobs:
           }
 
           expected_external_checks() {
-            case "$REPOSITORY" in
-              "Avkroken/Avkroken")
+            case "$repo_name" in
+              "Avkroken")
                 printf '%s\n' \
                   "Workers Builds: avkroken" \
                   "Workers Builds: dumpen" \
                   "Workers Builds: jobb" \
                   "Workers Builds: skvallerbyttan"
                 ;;
-              "Avkroken/Klarsprak")
+              "Klarsprak")
                 printf '%s\n' "Workers Builds: klarsprak"
                 ;;
-              "Avkroken/Politiker")
+              "Politiker")
                 printf '%s\n' "Workers Builds: politiker"
                 ;;
-              "Avkroken/Produkter")
+              "Produkter")
                 printf '%s\n' \
                   "Workers Builds: produkter" \
                   "Workers Builds: produkter-bearbetare" \
@@ -155,7 +160,7 @@ jobs:
             pr_url="$(jq -r '.html_url' <<<"$pr_json")"
 
             if [[ "$state" != "open" ||
-                  "$author" != "gamnacken[bot]" ||
+                  "$author" != "$TRUSTED_AGENT_BOT_LOGIN" ||
                   "$head_repo" != "$REPOSITORY" ||
                   "$base_ref" != "$default_branch" ||
                   "$head_ref" != codex/* ||

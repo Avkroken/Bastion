@@ -28,28 +28,36 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           RUN_STARTED_AT: ${{ github.event.workflow_run.run_started_at }}
+          TRUSTED_AGENT_USER_LOGIN: ${{ vars.TRUSTED_AGENT_USER_LOGIN }}
+          TRUSTED_AGENT_BOT_LOGIN: ${{ vars.TRUSTED_AGENT_BOT_LOGIN }}
         run: |
           set -euo pipefail
 
           owner="${REPOSITORY%%/*}"
           repo_name="${REPOSITORY#*/}"
           default_branch="$(gh api "repos/${REPOSITORY}" --jq '.default_branch')"
+          if [[ -z "${TRUSTED_AGENT_USER_LOGIN}" && -z "${TRUSTED_AGENT_BOT_LOGIN}" ]]; then
+            echo "::notice::No trusted post-merge principals configured; refusing autonomous dispatch."
+            exit 0
+          fi
 
           trusted_merges() {
             gh api "repos/${REPOSITORY}/pulls?state=closed&sort=updated&direction=desc&per_page=100" |
               jq -c \
                 --arg repository "${REPOSITORY}" \
                 --arg default_branch "${default_branch}" \
-                --arg started "${RUN_STARTED_AT}" '
+                --arg started "${RUN_STARTED_AT}" \
+                --arg trusted_user "${TRUSTED_AGENT_USER_LOGIN}" \
+                --arg trusted_bot "${TRUSTED_AGENT_BOT_LOGIN}" '
                   .[]
                   | select(.merged_at != null and .merged_at >= $started)
                   | select(.head.repo.full_name == $repository)
                   | select(.base.ref == $default_branch)
                   | select(.head.ref | startswith("codex/"))
                   | select(
-                      (.user.login == "Avkroken" and .user.type == "User")
+                      ($trusted_user != "" and .user.login == $trusted_user and .user.type == "User")
                       or
-                      ((.user.login | split("[")[0]) == "gamnacken" and .user.type == "Bot")
+                      ($trusted_bot != "" and .user.login == $trusted_bot and .user.type == "Bot")
                     )
                   | {
                       pr_number: .number,
